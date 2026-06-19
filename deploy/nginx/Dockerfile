@@ -1,7 +1,7 @@
 FROM nginx:alpine
 
-# Install openssl for password hashing (alpine has a minimal base)
-RUN apk add --no-cache openssl
+# Install openssl for password hashing and netcat for health checks (alpine has a minimal base)
+RUN apk add --no-cache openssl netcat-openbsd
 
 # Copy nginx configuration
 COPY nginx.conf /etc/nginx/nginx.conf

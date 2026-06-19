@@ -19,9 +19,20 @@ fi
 # Using 'openssl passwd -apr1' to generate Apache apr1 hash
 HASH=$(openssl passwd -apr1 "$BASIC_AUTH_PASS")
 echo "${BASIC_AUTH_USER}:${HASH}" > /etc/nginx/.htpasswd
-chmod 600 /etc/nginx/.htpasswd
+chmod 644 /etc/nginx/.htpasswd
 
 echo "htpasswd file generated for user: $BASIC_AUTH_USER"
+
+# Wait for API to be ready (simple retry loop)
+echo "Waiting for API to be ready..."
+for i in $(seq 1 30); do
+    if nc -z api 8000 2>/dev/null; then
+        echo "API is ready"
+        break
+    fi
+    echo "Waiting for API... (attempt $i/30)"
+    sleep 1
+done
 
 # Start nginx
 exec nginx -g 'daemon off;'
