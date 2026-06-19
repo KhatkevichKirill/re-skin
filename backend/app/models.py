@@ -123,6 +123,14 @@ class Segment(Base):
         index=True,
     )
 
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        default=_utcnow, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        default=_utcnow, onupdate=_utcnow, server_default=func.now()
+    )
+
     # Ordering
     index: Mapped[int] = mapped_column(Integer, nullable=False)
 

@@ -262,3 +262,34 @@ class TestCascadeDelete:
         # All segments should be gone too
         for sid in seg_ids:
             assert session.get(Segment, sid) is None
+
+
+class TestSegmentTimestamps:
+    def test_segment_created_at_populated(self, session):
+        job = _make_job()
+        session.add(job)
+        session.flush()
+        seg = _make_segment(job.id, 0)
+        session.add(seg)
+        session.commit()
+        assert seg.created_at is not None
+        assert seg.updated_at is not None
+
+    def test_transition_persists_updated_at_on_segment(self, session):
+        from app.state_machine import transition
+
+        job = _make_job()
+        session.add(job)
+        session.flush()
+        seg = _make_segment(job.id, 0, status=SegmentStatus.pending)
+        session.add(seg)
+        session.commit()
+
+        before = seg.updated_at
+        transition(seg, SegmentStatus.uploading)
+        session.commit()
+
+        refetched = session.get(Segment, seg.id)
+        assert refetched.status == SegmentStatus.uploading
+        assert refetched.updated_at is not None
+        assert refetched.updated_at >= before

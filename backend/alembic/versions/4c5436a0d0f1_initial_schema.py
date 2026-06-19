@@ -45,6 +45,8 @@ def upgrade() -> None:
     op.create_table('segments',
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('job_id', sa.String(length=36), nullable=False),
+    sa.Column('created_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), server_default=sa.text('(CURRENT_TIMESTAMP)'), nullable=False),
     sa.Column('index', sa.Integer(), nullable=False),
     sa.Column('start_sec', sa.Float(), nullable=False),
     sa.Column('end_sec', sa.Float(), nullable=False),
