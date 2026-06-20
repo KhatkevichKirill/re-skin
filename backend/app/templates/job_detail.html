@@ -8,7 +8,7 @@
   <a href="/" class="btn btn-sm btn-secondary">&larr; All Jobs</a>
   <h2 style="margin:0; font-size:17px">
     Job <code style="font-size:14px">{{ job.id[:8] }}</code>
-    <span class="badge badge-{{ job.status }}" id="status-badge">{{ job.status }}</span>
+    <span class="badge badge-{{ job.status.value }}" id="status-badge">{{ job.status.value }}</span>
   </h2>
 </div>
 

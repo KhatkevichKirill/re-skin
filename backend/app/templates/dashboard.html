@@ -116,7 +116,7 @@ function handleJobCreated(event) {
         <td style="max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="{{ job.source_ref }}">
           {{ job.source_ref }}
         </td>
-        <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
+        <td><span class="badge badge-{{ job.status.value }}">{{ job.status.value }}</span></td>
         <td class="text-muted" style="white-space:nowrap">{{ job.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
         <td class="text-right"><a class="btn btn-sm btn-secondary" href="/jobs/{{ job.id }}">View</a></td>
       </tr>

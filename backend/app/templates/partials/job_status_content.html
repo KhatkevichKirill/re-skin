@@ -1,4 +1,4 @@
-{% set s = job.status %}
+{% set s = job.status.value %}
 
 {% if s in ("created", "analyzing") %}
 <!-- ── Analyzing: polling ── -->
