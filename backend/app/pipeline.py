@@ -56,6 +56,10 @@ def _map_aspect(raw: Optional[str]) -> str:
     return "adaptive"
 
 
+# Seedance rejects reference videos shorter than 1.8s; pad swap clips to this floor.
+MIN_SWAP_VIDEO_SEC = 2.0
+
+
 def _clamp_duration(start: float, end: float) -> int:
     """Round the clip duration to an integer in [4, 15]."""
     dur = int(round(end - start))
@@ -447,9 +451,12 @@ def _process_swap_segment(
     clip_start = max(0.0, raw_start)
     clip_end = min(duration_sec, raw_end)
 
-    # Ensure a minimum viable clip length.
-    if clip_end - clip_start < 0.5:
-        clip_end = min(duration_sec, clip_start + 1.0)
+    # Ensure the clip meets Seedance's minimum reference-video duration (>=1.8s).
+    # Pad forward first, then backward if we're near the end of the video.
+    if clip_end - clip_start < MIN_SWAP_VIDEO_SEC:
+        clip_end = min(duration_sec, clip_start + MIN_SWAP_VIDEO_SEC)
+        if clip_end - clip_start < MIN_SWAP_VIDEO_SEC:
+            clip_start = max(0.0, clip_end - MIN_SWAP_VIDEO_SEC)
 
     # 1. Cut
     media_mod.cut_clip(source, clip_start, clip_end, clip_dst)
