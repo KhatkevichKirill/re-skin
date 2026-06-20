@@ -1,0 +1,62 @@
+{% set sv = status_val %}
+
+{% if sv in ("created", "queued", "processing", "stitching", "delivering") %}
+<!-- __ In-progress: polling __ -->
+<div class="card">
+  <div class="card-body">
+    <div
+      class="polling-section"
+      hx-get="/v2/runs/{{ run.id }}/status-fragment"
+      hx-trigger="every 2s"
+      hx-target="#run-status-content"
+      hx-swap="innerHTML"
+    >
+      <span class="spinner"></span>
+      <span>
+        Status: <strong>{{ sv }}</strong>
+        {% if total_swap %}
+          &mdash; {{ completed }} / {{ total_swap }} swap segments completed
+          {% if generating_seg %}
+            &mdash; generating segment {{ generating_seg.index }}
+          {% endif %}
+        {% endif %}
+      </span>
+    </div>
+  </div>
+</div>
+
+{% elif sv == "done" %}
+<!-- __ Done: preview + download __ -->
+<div class="card">
+  <div class="card-header"><h2>Result</h2></div>
+  <div class="card-body">
+    <video class="video-preview" controls>
+      <source src="/api/v2/runs/{{ run.id }}/result" type="video/mp4" />
+      Your browser does not support HTML5 video.
+    </video>
+    <div class="action-row">
+      <a class="btn btn-success" href="/api/v2/runs/{{ run.id }}/result" download>Download MP4</a>
+      {% if gdrive_link %}
+      <a class="btn btn-secondary" href="{{ gdrive_link }}" target="_blank" rel="noopener">Open in Google Drive</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% elif sv == "failed" %}
+<!-- __ Failed: error + retry __ -->
+<div class="card">
+  <div class="card-header"><h2>Run Failed</h2></div>
+  <div class="card-body">
+    {% if run.error_message %}
+    <div class="alert alert-danger">
+      <strong>Error:</strong> {{ run.error_message }}
+    </div>
+    {% endif %}
+    <form method="post" action="/api/v2/runs/{{ run.id }}/retry">
+      <button type="submit" class="btn btn-warning">Retry Run</button>
+    </form>
+  </div>
+</div>
+
+{% endif %}

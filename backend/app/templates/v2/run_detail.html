@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.id[:8] }} — re-skin v2{% endblock %}
+
+{% block content %}
+
+<!-- __ Header __ -->
+<div style="display:flex; align-items:center; gap:12px; margin-bottom:20px">
+  <a href="/v2/projects/{{ run.project_id }}" class="btn btn-sm btn-secondary">&larr; Project</a>
+  <h2 style="margin:0; font-size:17px">
+    Run <code style="font-size:14px">{{ run.id[:8] }}</code>
+    {% if run.name %}<span style="color:var(--color-muted);font-weight:400"> — {{ run.name }}</span>{% endif %}
+    <span class="badge badge-{{ status_val }}" id="status-badge">{{ status_val }}</span>
+  </h2>
+</div>
+
+<!-- __ Run metadata __ -->
+<div class="card">
+  <div class="card-header"><h2>Run Info</h2></div>
+  <div class="card-body">
+    <div class="meta-grid">
+      {% if run.name %}
+      <div class="meta-item">
+        <label>Name</label>
+        <div class="val">{{ run.name }}</div>
+      </div>
+      {% endif %}
+      <div class="meta-item">
+        <label>Resolution</label>
+        <div class="val">{{ run.resolution }}</div>
+      </div>
+      <div class="meta-item">
+        <label>Created</label>
+        <div class="val">{{ run.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</div>
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label>Prompt</label>
+      <div style="padding:8px 10px; background:#f8f9fa; border-radius:4px; font-size:13px; white-space:pre-wrap">{{ run.prompt }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- __ Status-driven content (polling target) __ -->
+<div id="run-status-content">
+  {% include "partials/run_status_content.html" %}
+</div>
+
+{% endblock %}

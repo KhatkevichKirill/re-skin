@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Projects — re-skin v2{% endblock %}
+
+{% block content %}
+
+<!-- ── New Project Form ── -->
+<div class="card">
+  <details id="new-project-details">
+    <summary>New Project</summary>
+    <div class="card-body">
+      <form
+        id="new-project-form"
+        hx-post="/api/v2/projects"
+        hx-encoding="multipart/form-data"
+        hx-target="#new-project-result"
+        hx-swap="innerHTML"
+        hx-on::after-request="handleProjectCreated(event)"
+        enctype="multipart/form-data"
+      >
+
+        <!-- Source -->
+        <div class="form-group">
+          <label>Video source <span style="color:#dc3545">*</span></label>
+          <p class="hint">Fill exactly one: upload a file <strong>or</strong> paste a Google Drive link.</p>
+          <div class="source-or">
+            <div style="flex:1">
+              <label style="font-weight:400">Upload file</label>
+              <input type="file" name="video_file" accept="video/*" />
+            </div>
+            <span class="or-divider">— or —</span>
+            <div style="flex:1">
+              <label style="font-weight:400">Google Drive link</label>
+              <input type="text" name="gdrive_link" placeholder="https://drive.google.com/file/d/…" />
+            </div>
+          </div>
+          <p class="hint">The prompt and reference images are entered when you create a Run, not here.</p>
+        </div>
+
+        <div class="action-row">
+          <button type="submit" class="btn btn-primary">
+            <span class="htmx-indicator spinner"></span>
+            Create Project
+          </button>
+        </div>
+      </form>
+      <div id="new-project-result" style="margin-top:12px"></div>
+    </div>
+  </details>
+</div>
+
+<script>
+function handleProjectCreated(event) {
+  if (event.detail.successful) {
+    try {
+      var data = JSON.parse(event.detail.xhr.responseText);
+      if (data.project_id) {
+        window.location.href = '/v2/projects/' + data.project_id;
+        return;
+      }
+    } catch(e) {}
+  }
+}
+</script>
+
+<!-- ── Projects List ── -->
+<div class="card">
+  <div class="card-header">
+    <h2>All Projects</h2>
+  </div>
+  {% if projects %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Source</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for project in projects %}
+      {% set sv = project.status.value if project.status.value is defined else project.status|string %}
+      <tr>
+        <td><code style="font-size:11px">{{ project.id[:8] }}…</code></td>
+        <td style="max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="{{ project.source_ref }}">
+          {{ project.source_ref }}
+        </td>
+        <td><span class="badge badge-{{ sv }}">{{ sv }}</span></td>
+        <td class="text-muted" style="white-space:nowrap">{{ project.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        <td class="text-right"><a class="btn btn-sm btn-secondary" href="/v2/projects/{{ project.id }}">View</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="card-body text-muted">No projects yet. Create one above.</div>
+  {% endif %}
+</div>
+
+{% endblock %}
