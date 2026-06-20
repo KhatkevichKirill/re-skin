@@ -38,8 +38,8 @@ Strategy: ADDITIVE — TR1 adds new models alongside v1's Job/Segment (kept gree
 
 - [x] **TR1** Data model: VideoProject, SegmentDef, Run, RunSegment + state machines + Alembic migration (additive) (Sonnet) — **DONE** (merged v2 c021d67, 269 tests)
 - [x] **TR2** Pipeline: analyze_project, process_run, storage layout, tasks enqueue (timeouts) (Sonnet) — **DONE** (merged v2 045d306, 280 tests). Agent hit account session limit before committing; orchestrator recovered the on-disk work, verified, committed & merged.
-- [ ] **TR3** API: projects + runs endpoints (Sonnet) — **IN PROGRESS**
-- [ ] **TR4** Frontend: projects dashboard, project page (segment editor + runs panel), run view (Sonnet)
+- [x] **TR3** API: projects + runs endpoints (Sonnet) — **DONE** (merged v2 95be090, 319 tests, 13 routes, v1 untouched)
+- [ ] **TR4** Frontend: projects dashboard, project page (segment editor + runs panel), run view (Sonnet) — **IN PROGRESS**
 - [ ] **TR5** Deployed-stack e2e + remove v1 Job/Segment + README/docs (Sonnet)
 
 ## Review log
