@@ -193,6 +193,14 @@ class TestDashboard:
         # Short ID prefix should appear
         assert job.id[:8] in resp.text
 
+    def test_dashboard_status_badge_uses_clean_value(self, client, db_session):
+        # Regression: badge must render "created", not "JobStatus.created",
+        # and the CSS class must be "badge-created" (not "badge-JobStatus.created").
+        _make_job(db_session, status=JobStatus.created)
+        resp = client.get("/")
+        assert "badge-created" in resp.text
+        assert "JobStatus." not in resp.text
+
 
 # ---------------------------------------------------------------------------
 # Job detail tests
