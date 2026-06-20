@@ -15,6 +15,7 @@ run_process(job_id)   Instantiate real clients and call pipeline.process_job.
 from __future__ import annotations
 
 import logging
+import os
 
 from redis import Redis
 from rq import Queue
@@ -24,6 +25,14 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 _DEFAULT_QUEUE = "default"
+
+# RQ's default job_timeout is 180s, far too short: analyze runs InsightFace over
+# the whole video, and process runs several Seedance jobs sequentially (each can
+# take minutes). Without these, long jobs are killed mid-flight with
+# "Task exceeded maximum timeout value (180 seconds)" while the Seedance task
+# keeps running on kie.ai. Override generously (seconds); tunable via env.
+ANALYZE_JOB_TIMEOUT = int(os.getenv("ANALYZE_JOB_TIMEOUT", "1800"))      # 30 min
+PROCESS_JOB_TIMEOUT = int(os.getenv("PROCESS_JOB_TIMEOUT", "10800"))     # 3 hours
 
 
 def _get_queue() -> Queue:
@@ -80,7 +89,7 @@ def enqueue_analyze(job_id: str) -> None:
         The UUID of the job to analyse.
     """
     q = _get_queue()
-    job = q.enqueue("app.tasks.run_analyze", job_id)
+    job = q.enqueue("app.tasks.run_analyze", job_id, job_timeout=ANALYZE_JOB_TIMEOUT)
     log.info("Enqueued analyze for job_id=%s → rq_job=%s", job_id, job.id)
 
 
@@ -94,5 +103,5 @@ def enqueue_process(job_id: str) -> None:
         The UUID of the job to process.
     """
     q = _get_queue()
-    job = q.enqueue("app.tasks.run_process", job_id)
+    job = q.enqueue("app.tasks.run_process", job_id, job_timeout=PROCESS_JOB_TIMEOUT)
     log.info("Enqueued process for job_id=%s → rq_job=%s", job_id, job.id)
