@@ -1,0 +1,25 @@
+# Keep the Docker build context small — never ship runtime data, secrets, or VCS.
+.git
+.gitignore
+data/
+secrets/
+*.env
+.env
+.env.*
+**/__pycache__/
+*.pyc
+*.pyo
+*.mp4
+*.mov
+*.jpg
+*.jpeg
+*.png
+.venv/
+venv/
+node_modules/
+*.db
+*.db-wal
+*.db-shm
+tasks/
+docs/
+scripts/e2e_*.py
