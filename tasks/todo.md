@@ -27,7 +27,20 @@ Checkpoints for user acceptance: after T1, after T7 (full run, no UI), after T9 
 - [x] **T9** HTMX frontend: ingest, segment review+edit, status, result preview/download (Sonnet) — **DONE** (merged b7178e1, 190 tests)
 - [x] **T10** Deploy hardening: upload limits, long-job timeouts, logs, deployed-stack e2e (Sonnet, upgraded from Haiku) — **DONE** (merged 66b70af). Full docker stack verified: nginx auth + api+worker+redis shared volume; worker ran analyze→review through real RQ. Fixed relative-path fragility via BASE_DIR.
 
-ALL TASKS COMPLETE. Full test suite on main: 190 passing. Backend e2e verified on real Erewhon (delivered to GDrive); deployed stack wiring verified without spending credits.
+v1 COMPLETE (on main, deployed). Post-launch fixes also merged: RQ job_timeout, retry segment reset, status-badge .value, compose v2 adoption, live-progress commits, prompt example/hint.
+
+---
+
+# v2 — Project → Runs (multi-character per video)
+
+Design: docs/v2-project-runs.md. Integration branch `v2` (task branches merge into v2; main/v1 deploy untouched until v2 verified, then v2→main).
+Strategy: ADDITIVE — TR1 adds new models alongside v1's Job/Segment (kept green); TR2–TR4 migrate pipeline/api/frontend to the new model; final cleanup removes Job/Segment. Carry over all v1 hardening.
+
+- [ ] **TR1** Data model: VideoProject, SegmentDef, Run, RunSegment + state machines + Alembic migration (additive) (Sonnet) — **IN PROGRESS**
+- [ ] **TR2** Pipeline: analyze_project, process_run, storage layout, tasks enqueue (timeouts) (Sonnet)
+- [ ] **TR3** API: projects + runs endpoints (Sonnet)
+- [ ] **TR4** Frontend: projects dashboard, project page (segment editor + runs panel), run view (Sonnet)
+- [ ] **TR5** Deployed-stack e2e + remove v1 Job/Segment + README/docs (Sonnet)
 
 ## Review log
 - **T1** (Haiku, adbcbf5) — APPROVED. Secrets untracked (only .env.example); scaffold matches spec; smoke 401(no auth)/200(auth) on :8847. Direct to main (empty repo).
