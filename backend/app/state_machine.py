@@ -90,7 +90,7 @@ RUN_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
     RunStatus.processing: {RunStatus.stitching, RunStatus.failed},
     RunStatus.stitching:  {RunStatus.delivering, RunStatus.failed},
     RunStatus.delivering: {RunStatus.done, RunStatus.failed},
-    RunStatus.done:       set(),
+    RunStatus.done:       {RunStatus.queued},  # allowed for per-segment re-run
     RunStatus.failed:     {RunStatus.queued},
 }
 

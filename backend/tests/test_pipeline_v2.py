@@ -181,7 +181,7 @@ class FakeKieClient:
     Fake KieClient.
 
     - upload_file  → returns a fake URL, records calls.
-    - create_task  → returns a fake task ID.
+    - create_task  → returns a fake task ID; records prompt + reference_image_urls.
     - poll_task    → returns a fake result URL (raises KieTaskFailed if the
                      task_id matches fail_task_id).
     - download_result → copies the synthetic video to dst so it is a real file.
@@ -192,6 +192,8 @@ class FakeKieClient:
         self._fail_task_id = fail_task_id
         self.upload_calls: list[str] = []
         self.create_task_calls: list[str] = []
+        # Each entry: {"task_id": str, "prompt": str, "reference_image_urls": list}
+        self.create_task_records: list[dict] = []
         self.poll_calls: list[str] = []
 
     def upload_file(self, local_path: str, upload_path: str = "charswap", **kw) -> str:
@@ -210,6 +212,11 @@ class FakeKieClient:
     ) -> str:
         task_id = f"fake-task-{uuid.uuid4().hex[:8]}"
         self.create_task_calls.append(task_id)
+        self.create_task_records.append({
+            "task_id": task_id,
+            "prompt": prompt,
+            "reference_image_urls": list(reference_image_urls),
+        })
         return task_id
 
     def poll_task(self, task_id: str, **kw) -> str:
@@ -746,3 +753,158 @@ class TestProcessRun:
 
         with pytest.raises(ValueError, match="Run not found"):
             process_run(str(uuid.uuid4()))
+
+
+# ---------------------------------------------------------------------------
+# Tests: TR6 per-segment override
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentOverride:
+    """
+    Tests for per-segment prompt_override and reference_image_urls_override.
+    """
+
+    def _setup(self, db_session, db_engine, synthetic_video, patch_propose):
+        from app.pipeline_v2 import analyze_project
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+        run_id = _create_run(db_session, project_id, prompt="run-level prompt")
+        return project_id, run_id
+
+    def test_prompt_override_used_for_segment(
+        self, db_engine, db_session, synthetic_video, patch_propose
+    ):
+        """A RunSegment with prompt_override causes create_task to use that prompt."""
+        from app.pipeline_v2 import process_run
+
+        project_id, run_id = self._setup(db_session, db_engine, synthetic_video, patch_propose)
+
+        Session = sessionmaker(bind=db_engine)
+        # Pre-create RunSegments; set prompt_override on the first one.
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            swap_defs = [sd for sd in project.segments if sd.action == "swap"]
+            for i, sd in enumerate(swap_defs):
+                rs = RunSegment(
+                    run_id=run_id,
+                    segment_def_id=sd.id,
+                    index=sd.index,
+                    status=SegmentStatus.pending,
+                    prompt_override="override prompt for seg 0" if i == 0 else None,
+                )
+                s.add(rs)
+            s.commit()
+
+        fake_kie = FakeKieClient(synthetic_video)
+        from app.pipeline_v2 import process_run
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        # Check that two create_task calls were made and the first used the override.
+        assert len(fake_kie.create_task_records) == 2
+        prompts = {r["prompt"] for r in fake_kie.create_task_records}
+        assert "override prompt for seg 0" in prompts
+        assert "run-level prompt" in prompts
+
+    def test_reference_override_used_for_segment(
+        self, db_engine, db_session, synthetic_video, patch_propose
+    ):
+        """A RunSegment with reference_image_urls_override uses those URLs for create_task."""
+        from app.pipeline_v2 import process_run
+
+        project_id, run_id = self._setup(db_session, db_engine, synthetic_video, patch_propose)
+
+        Session = sessionmaker(bind=db_engine)
+        override_refs = ["https://override-ref.example.com/img.jpg"]
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            swap_defs = [sd for sd in project.segments if sd.action == "swap"]
+            for i, sd in enumerate(swap_defs):
+                rs = RunSegment(
+                    run_id=run_id,
+                    segment_def_id=sd.id,
+                    index=sd.index,
+                    status=SegmentStatus.pending,
+                    reference_image_urls_override=override_refs if i == 0 else None,
+                )
+                s.add(rs)
+            s.commit()
+
+        fake_kie = FakeKieClient(synthetic_video)
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert len(fake_kie.create_task_records) == 2
+        ref_sets = [frozenset(r["reference_image_urls"]) for r in fake_kie.create_task_records]
+        # One record should include the override ref
+        assert any("override-ref.example.com" in u for refs in ref_sets for u in refs)
+
+    def test_single_segment_rerun_scenario(
+        self, db_engine, db_session, synthetic_video, patch_propose
+    ):
+        """
+        Simulate the full per-segment re-run flow:
+        1. Pre-complete BOTH swap RunSegments (run is effectively done).
+        2. Reset ONE to pending with a prompt_override.
+        3. Call process_run → only that one is reprocessed (1 create_task call).
+        4. Run ends done.
+        """
+        from app.pipeline_v2 import analyze_project, process_run
+        from app.storage import run_results_dir
+
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+        run_id = _create_run(db_session, project_id, prompt="original prompt")
+
+        r_dir = run_results_dir(run_id, project_id)
+
+        Session = sessionmaker(bind=db_engine)
+
+        # Pre-create RunSegments and mark both as completed.
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            swap_defs = sorted(
+                [sd for sd in project.segments if sd.action == "swap"],
+                key=lambda sd: sd.index,
+            )
+            rs_ids = []
+            for sd in swap_defs:
+                fake_result = os.path.join(r_dir, f"result_{sd.index:04d}.mp4")
+                shutil.copy2(synthetic_video, fake_result)
+                rs = RunSegment(
+                    run_id=run_id,
+                    segment_def_id=sd.id,
+                    index=sd.index,
+                    status=SegmentStatus.completed,
+                    local_result_path=fake_result,
+                    seedance_task_id=f"pre-task-{sd.index}",
+                    seedance_result_url=f"https://fake/pre-{sd.index}.mp4",
+                )
+                s.add(rs)
+                s.flush()
+                rs_ids.append(rs.id)
+            s.commit()
+
+        # Now reset the FIRST RunSegment to pending with an override prompt.
+        with Session() as s:
+            rs0 = s.get(RunSegment, rs_ids[0])
+            rs0.status = SegmentStatus.pending
+            rs0.error_message = None
+            rs0.seedance_task_id = None
+            rs0.seedance_result_url = None
+            rs0.local_result_path = None
+            rs0.prompt_override = "per-segment override prompt"
+            s.commit()
+
+        fake_kie = FakeKieClient(synthetic_video)
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        # Only ONE create_task call (the second was already completed, skipped).
+        assert len(fake_kie.create_task_calls) == 1, (
+            f"Expected 1 create_task (only the reset segment), "
+            f"got {len(fake_kie.create_task_calls)}"
+        )
+        assert fake_kie.create_task_records[0]["prompt"] == "per-segment override prompt"
+
+        with Session() as s:
+            run = s.get(Run, run_id)
+            assert run.status == RunStatus.done

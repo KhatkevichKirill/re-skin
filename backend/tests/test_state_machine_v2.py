@@ -148,9 +148,17 @@ class TestRunStatusTransitions:
     def test_created_to_processing_invalid(self):
         assert not can_transition(RunStatus.created, RunStatus.processing)
 
-    def test_done_to_anything_invalid(self):
+    def test_done_to_queued_allowed_for_segment_rerun(self):
+        """done → queued must be allowed so a completed run can be re-queued after a per-segment edit."""
+        assert can_transition(RunStatus.done, RunStatus.queued)
+
+    def test_done_to_non_queued_invalid(self):
+        """done can only go to queued — all other targets remain invalid."""
         for status in RunStatus:
-            assert not can_transition(RunStatus.done, status)
+            if status != RunStatus.queued:
+                assert not can_transition(RunStatus.done, status), (
+                    f"Expected done → {status.value} to be invalid"
+                )
 
     def test_queued_to_done_invalid(self):
         assert not can_transition(RunStatus.queued, RunStatus.done)

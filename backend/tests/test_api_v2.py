@@ -198,6 +198,20 @@ def _make_segment_def(session, project_id: str, index: int, **kwargs) -> Segment
     return s
 
 
+def _make_run_segment(session, run_id: str, segment_def_id: str, index: int = 0, **kwargs) -> RunSegment:
+    defaults = dict(
+        run_id=run_id,
+        segment_def_id=segment_def_id,
+        index=index,
+        status=SegmentStatus.pending,
+    )
+    defaults.update(kwargs)
+    rs = RunSegment(**defaults)
+    session.add(rs)
+    session.commit()
+    return rs
+
+
 def _make_run(session, project_id: str, **kwargs) -> Run:
     defaults = dict(
         project_id=project_id,
@@ -715,4 +729,155 @@ class TestRetryRun:
 
     def test_retry_missing_run_is_404(self, client):
         response = client.post("/api/v2/runs/no-such-run/retry")
+        assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/v2/runs/{rid}/segments/{rsid}
+# ---------------------------------------------------------------------------
+
+
+class TestPatchRunSegment:
+    def test_patch_sets_prompt_override(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.done)
+        rs = _make_run_segment(db_session, run.id, sd.id, status=SegmentStatus.completed)
+
+        response = client.patch(
+            f"/api/v2/runs/{run.id}/segments/{rs.id}",
+            data={"prompt": "per-segment override"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["prompt_override"] == "per-segment override"
+
+    def test_patch_while_processing_is_409(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.processing)
+        rs = _make_run_segment(db_session, run.id, sd.id, status=SegmentStatus.generating)
+
+        response = client.patch(
+            f"/api/v2/runs/{run.id}/segments/{rs.id}",
+            data={"prompt": "override"},
+        )
+        assert response.status_code == 409
+
+    def test_patch_empty_prompt_clears_override(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.done)
+        rs = _make_run_segment(
+            db_session, run.id, sd.id,
+            status=SegmentStatus.completed,
+            prompt_override="old override",
+        )
+
+        response = client.patch(
+            f"/api/v2/runs/{run.id}/segments/{rs.id}",
+            data={"prompt": ""},
+        )
+        assert response.status_code == 200
+        assert response.json()["prompt_override"] is None
+
+    def test_patch_too_many_refs_is_400(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.failed)
+        rs = _make_run_segment(db_session, run.id, sd.id)
+
+        response = client.patch(
+            f"/api/v2/runs/{run.id}/segments/{rs.id}",
+            data={"reference_urls": "https://a.com/1.jpg,https://a.com/2.jpg,https://a.com/3.jpg"},
+        )
+        assert response.status_code == 400
+        assert "too many" in response.json()["detail"].lower()
+
+    def test_patch_missing_segment_is_404(self, client, db_session):
+        project = _make_project(db_session)
+        run = _make_run(db_session, project.id, status=RunStatus.done)
+
+        response = client.patch(
+            f"/api/v2/runs/{run.id}/segments/no-such-seg",
+            data={"prompt": "override"},
+        )
+        assert response.status_code == 404
+
+    def test_patch_sets_reference_urls_override(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.done)
+        rs = _make_run_segment(db_session, run.id, sd.id, status=SegmentStatus.completed)
+
+        response = client.patch(
+            f"/api/v2/runs/{run.id}/segments/{rs.id}",
+            data={"reference_urls": "https://example.com/ref1.jpg"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["reference_image_urls_override"] is not None
+        assert len(body["reference_image_urls_override"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v2/runs/{rid}/segments/{rsid}/rerun
+# ---------------------------------------------------------------------------
+
+
+class TestRerunSegment:
+    def test_rerun_resets_segment_and_enqueues(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        sd = _make_segment_def(session, project.id, 0)
+        run = _make_run(session, project.id, status=RunStatus.done)
+        rs = _make_run_segment(
+            session, run.id, sd.id,
+            status=SegmentStatus.completed,
+            seedance_task_id="old-task-id",
+        )
+        session.close()
+
+        response = client.post(f"/api/v2/runs/{run.id}/segments/{rs.id}/rerun")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "queued"
+        # enqueue_process_run should have been called
+        assert spy["process_run"] == [run.id]
+
+        # Verify the RunSegment was reset
+        session2 = SessionFactory()
+        rs_fetched = session2.get(RunSegment, rs.id)
+        session2.close()
+        assert rs_fetched.status == SegmentStatus.pending
+        assert rs_fetched.seedance_task_id is None
+
+    def test_rerun_on_failed_run_also_works(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        sd = _make_segment_def(session, project.id, 0)
+        run = _make_run(session, project.id, status=RunStatus.failed)
+        rs = _make_run_segment(session, run.id, sd.id, status=SegmentStatus.failed)
+        session.close()
+
+        response = client.post(f"/api/v2/runs/{run.id}/segments/{rs.id}/rerun")
+        assert response.status_code == 200
+        assert response.json()["status"] == "queued"
+
+    def test_rerun_on_processing_run_is_409(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.processing)
+        rs = _make_run_segment(db_session, run.id, sd.id, status=SegmentStatus.generating)
+
+        response = client.post(f"/api/v2/runs/{run.id}/segments/{rs.id}/rerun")
+        assert response.status_code == 409
+
+    def test_rerun_missing_segment_is_404(self, client, db_session):
+        project = _make_project(db_session)
+        run = _make_run(db_session, project.id, status=RunStatus.done)
+
+        response = client.post(f"/api/v2/runs/{run.id}/segments/no-such-seg/rerun")
         assert response.status_code == 404

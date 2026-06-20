@@ -327,6 +327,67 @@ class TestCascadeDelete:
         assert session.get(SegmentDef, sd_id) is not None
 
 
+class TestRunSegmentOverrides:
+    """Verify that prompt_override and reference_image_urls_override round-trip correctly."""
+
+    def test_prompt_override_round_trip(self, session):
+        proj = make_project(session)
+        sd = SegmentDef(
+            project_id=proj.id, index=0, start_sec=0.0, end_sec=5.0,
+            has_face=True, action="swap"
+        )
+        session.add(sd)
+        session.flush()
+        run = make_run(session, proj.id)
+        rs = RunSegment(
+            run_id=run.id, segment_def_id=sd.id, index=0,
+            prompt_override="Swap to redhead for this segment only",
+        )
+        session.add(rs)
+        session.commit()
+
+        fetched = session.get(RunSegment, rs.id)
+        assert fetched.prompt_override == "Swap to redhead for this segment only"
+
+    def test_reference_image_urls_override_round_trip(self, session):
+        proj = make_project(session)
+        sd = SegmentDef(
+            project_id=proj.id, index=1, start_sec=5.0, end_sec=10.0,
+            has_face=True, action="swap"
+        )
+        session.add(sd)
+        session.flush()
+        run = make_run(session, proj.id)
+        override_urls = ["/data/refs/a.jpg", "https://cdn.example.com/b.jpg"]
+        rs = RunSegment(
+            run_id=run.id, segment_def_id=sd.id, index=1,
+            reference_image_urls_override=override_urls,
+        )
+        session.add(rs)
+        session.commit()
+
+        fetched = session.get(RunSegment, rs.id)
+        assert fetched.reference_image_urls_override == override_urls
+        assert isinstance(fetched.reference_image_urls_override, list)
+
+    def test_overrides_default_to_none(self, session):
+        proj = make_project(session)
+        sd = SegmentDef(
+            project_id=proj.id, index=2, start_sec=10.0, end_sec=15.0,
+            has_face=True, action="swap"
+        )
+        session.add(sd)
+        session.flush()
+        run = make_run(session, proj.id)
+        rs = RunSegment(run_id=run.id, segment_def_id=sd.id, index=2)
+        session.add(rs)
+        session.commit()
+
+        fetched = session.get(RunSegment, rs.id)
+        assert fetched.prompt_override is None
+        assert fetched.reference_image_urls_override is None
+
+
 class TestTableCreation:
     """Smoke test — verify all v2 tables exist after Base.metadata.create_all."""
 
