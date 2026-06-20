@@ -15,6 +15,7 @@ Strategy
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -216,6 +217,14 @@ class FakeKieClient:
         if self._fail_task_id and task_id == self._fail_task_id:
             raise KieTaskFailed("injected failure")
         return f"https://fake-kie.example.com/results/{task_id}.mp4"
+
+    def get_task(self, task_id: str, **kw) -> dict:
+        # The v2 poll loop uses get_task; return a terminal recordInfo 'data' dict.
+        self.poll_calls.append(task_id)
+        if self._fail_task_id and task_id == self._fail_task_id:
+            return {"state": "fail", "failMsg": "injected failure"}
+        url = f"https://fake-kie.example.com/results/{task_id}.mp4"
+        return {"state": "success", "resultJson": json.dumps({"resultUrls": [url]})}
 
     def download_result(self, url: str, dst_path: str) -> None:
         os.makedirs(os.path.dirname(dst_path), exist_ok=True)
@@ -620,7 +629,7 @@ class TestProcessRun:
         observed = {}
 
         class ObservingKie(FakeKieClient):
-            def poll_task(self, task_id, **kw):
+            def get_task(self, task_id, **kw):
                 # Read from a SEPARATE session/connection mid-processing.
                 with sessionmaker(bind=db_engine)() as s2:
                     r = s2.get(Run, run_id)
@@ -630,7 +639,7 @@ class TestProcessRun:
                         for rs in r.run_segments
                         if rs.status == SegmentStatus.generating
                     ]
-                return super().poll_task(task_id, **kw)
+                return super().get_task(task_id, **kw)
 
         process_run(
             run_id, kie=ObservingKie(synthetic_video), gdrive=FakeGDriveClient()
@@ -641,12 +650,13 @@ class TestProcessRun:
         assert observed.get("run_status") == RunStatus.processing
         assert len(observed.get("generating", [])) >= 1
 
-    def test_segment_failure_drives_run_to_failed(
+    def test_segment_failure_is_skipped_run_completes(
         self, db_engine, db_session, synthetic_video, patch_propose
     ):
         """
-        When poll_task raises KieTaskFailed, the RunSegment and Run both end in
-        failed; error_message is stored on both.
+        When ONE task fails, that RunSegment is skipped (marked failed, original
+        clip used) but the run still completes 'done' and the other segment
+        succeeds — one bad segment must not block or fail the whole run.
         """
         from app.pipeline_v2 import analyze_project, process_run
 
@@ -654,7 +664,7 @@ class TestProcessRun:
         analyze_project(project_id)
         run_id = _create_run(db_session, project_id)
 
-        class FailOnPollKieClient(FakeKieClient):
+        class FailOneKieClient(FakeKieClient):
             def __init__(self, src):
                 super().__init__(src)
                 self._first_task: str | None = None
@@ -665,30 +675,32 @@ class TestProcessRun:
                     self._first_task = task_id
                 return task_id
 
-            def poll_task(self, task_id: str, **kw) -> str:
+            def get_task(self, task_id: str, **kw) -> dict:
                 self.poll_calls.append(task_id)
                 if task_id == self._first_task:
-                    raise KieTaskFailed("injected failure for test")
-                return f"https://fake/results/{task_id}.mp4"
+                    return {"state": "fail", "failMsg": "injected failure for test"}
+                url = f"https://fake/results/{task_id}.mp4"
+                return {"state": "success",
+                        "resultJson": json.dumps({"resultUrls": [url]})}
 
-        fake_kie = FailOnPollKieClient(synthetic_video)
+        fake_kie = FailOneKieClient(synthetic_video)
         fake_gdrive = FakeGDriveClient()
 
-        with pytest.raises(KieTaskFailed):
-            process_run(run_id, kie=fake_kie, gdrive=fake_gdrive)
+        # Must NOT raise — the failed segment is skipped, run completes.
+        process_run(run_id, kie=fake_kie, gdrive=fake_gdrive)
 
         Session = sessionmaker(bind=db_engine)
         with Session() as s:
             run = s.get(Run, run_id)
-            assert run.status == RunStatus.failed
-            assert run.error_message is not None
+            assert run.status == RunStatus.done
+            assert run.result_local_path is not None
+            assert os.path.exists(run.result_local_path)
 
-            failed_segs = [
-                rs for rs in run.run_segments if rs.status == SegmentStatus.failed
-            ]
-            assert len(failed_segs) == 1
-            assert failed_segs[0].error_message is not None
-            assert "injected failure" in failed_segs[0].error_message
+            failed = [rs for rs in run.run_segments if rs.status == SegmentStatus.failed]
+            completed = [rs for rs in run.run_segments if rs.status == SegmentStatus.completed]
+            assert len(failed) == 1
+            assert "injected failure" in (failed[0].error_message or "")
+            assert len(completed) == 1
 
     def test_run_segments_created_idempotently(
         self, db_engine, db_session, synthetic_video, patch_propose
