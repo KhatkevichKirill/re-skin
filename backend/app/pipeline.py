@@ -281,7 +281,7 @@ def process_job(
         try:
             # queued → processing
             transition(job, JobStatus.processing)
-            session.flush()
+            session.commit()  # publish status so the UI/API see progress live
 
             source = job.source_local_path
             if not source or not os.path.exists(source):
@@ -382,7 +382,7 @@ def process_job(
             # Stitch
             # ------------------------------------------------------------------
             transition(job, JobStatus.stitching)
-            session.flush()
+            session.commit()  # publish status before the (slow) stitch
 
             final_dst = os.path.join(r_dir, "final.mp4")
             log.info(
@@ -408,7 +408,7 @@ def process_job(
             # Deliver
             # ------------------------------------------------------------------
             transition(job, JobStatus.delivering)
-            session.flush()
+            session.commit()  # publish status before the (slow) Drive upload
 
             folder_id = job.gdrive_folder_id or settings.GDRIVE_DEFAULT_FOLDER_ID
             if folder_id:
@@ -480,7 +480,7 @@ def _process_swap_segment(
 
     # 2. Upload clip to kie
     transition(seg, SegmentStatus.uploading)
-    session.flush()
+    session.commit()  # publish live segment status
 
     clip_url = kie.upload_file(clip_dst, "charswap/segments")
     seg.kie_upload_url = clip_url
@@ -492,7 +492,7 @@ def _process_swap_segment(
 
     # 4. Create task
     transition(seg, SegmentStatus.submitted)
-    session.flush()
+    session.commit()  # publish live segment status
 
     aspect = _map_aspect(job.aspect_ratio)
     clip_duration = _clamp_duration(clip_start, clip_end)
@@ -511,7 +511,7 @@ def _process_swap_segment(
 
     # 5. Poll
     transition(seg, SegmentStatus.generating)
-    session.flush()
+    session.commit()  # publish live segment status
 
     result_url = kie.poll_task(task_id)
     seg.seedance_result_url = result_url
@@ -524,5 +524,5 @@ def _process_swap_segment(
 
     # 7. Mark complete
     transition(seg, SegmentStatus.completed)
-    session.flush()
+    session.commit()  # publish completion so the UI progress count advances live
     log.info("Segment %s completed → %s", seg.id, result_dst)

@@ -514,6 +514,45 @@ class TestProcessJob:
         # The reset segment was actually reprocessed.
         assert len(fake_kie.create_task_calls) == 1
 
+    def test_progress_is_committed_during_processing(
+        self, db_engine, db_session, synthetic_video, patch_propose
+    ):
+        """
+        Regression: process_job must COMMIT intermediate state so a separate
+        reader (the API/UI) sees live progress — not stay 'queued / 0 done'
+        until the whole job finishes.
+        """
+        from app.pipeline import process_job, analyze_job
+        from app.state_machine import transition as sm_transition
+
+        job_id = _create_job(db_session, synthetic_video)
+        analyze_job(job_id)
+        with sessionmaker(bind=db_engine)() as s:
+            job = s.get(Job, job_id)
+            sm_transition(job, JobStatus.queued)
+            s.commit()
+
+        observed = {}
+
+        class ObservingKie(FakeKieClient):
+            def poll_task(self, task_id, **kw):
+                # Read from a SEPARATE session/connection mid-processing.
+                with sessionmaker(bind=db_engine)() as s2:
+                    j = s2.get(Job, job_id)
+                    observed["job_status"] = j.status
+                    observed["generating"] = [
+                        sg.index for sg in j.segments
+                        if sg.status == SegmentStatus.generating
+                    ]
+                return super().poll_task(task_id, **kw)
+
+        process_job(job_id, kie=ObservingKie(synthetic_video), gdrive=FakeGDriveClient())
+
+        # While the first segment was generating, a separate session saw the job
+        # already in 'processing' and that segment marked 'generating' (committed).
+        assert observed.get("job_status") == JobStatus.processing
+        assert len(observed.get("generating", [])) == 1
+
     def test_segment_failure_drives_job_to_failed(
         self, db_engine, db_session, synthetic_video, patch_propose
     ):
