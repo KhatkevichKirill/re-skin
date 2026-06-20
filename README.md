@@ -53,7 +53,7 @@ Share the target Google Drive folder with the service account email address
 ### 3. Start the stack
 
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
 This builds a single image (used by both `api` and `worker`) that includes
@@ -69,7 +69,7 @@ ffmpeg and all Python dependencies.
 ### 4. Verify services are up
 
 ```bash
-docker-compose ps
+docker compose ps
 # All four services (redis, api, worker, nginx) should show "Up".
 ```
 
@@ -81,7 +81,7 @@ Open `http://<SERVER_IP>:8847` and authenticate with your `BASIC_AUTH_USER`
 ## Stopping
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 Data in `./data/` persists on the host.
@@ -112,9 +112,9 @@ PYTHONPATH=backend python -m worker.worker
 ### View logs
 
 ```bash
-docker-compose logs -f api
-docker-compose logs -f worker
-docker-compose logs -f nginx
+docker compose logs -f api
+docker compose logs -f worker
+docker compose logs -f nginx
 ```
 
 ## Project layout
