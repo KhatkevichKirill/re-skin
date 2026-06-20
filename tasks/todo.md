@@ -41,7 +41,7 @@ Strategy: ADDITIVE — TR1 adds new models alongside v1's Job/Segment (kept gree
 - [x] **TR3** API: projects + runs endpoints (Sonnet) — **DONE** (merged v2 95be090, 319 tests, 13 routes, v1 untouched)
 - [x] **TR4** Frontend: projects dashboard, project page (segment editor + runs panel), run view (Sonnet) — **DONE** (merged v2 fad1929, 349 tests, v1 untouched; v2 UI at /v2)
 - [x] **TR5a** Real v2 e2e (orchestrator) — **DONE**. Parallel submit + concurrent poll verified on real Erewhon 480p: 3 swap segments submitted at once, all completed, stitched 1080p, swap confirmed (redhead). Drive delivery confirmed by uploading the produced final.mp4 (host-script BASE_DIR quirk fixed in e2e script; Docker delivery unaffected). PARALLEL/skip feature added to process_run.
-- [ ] **TR5a.2** Rebuild live stack from v2 so user can browser-test /v2 — NEXT
+- [x] **TR5a.2** Live stack rebuilt from v2; /v2 UI + /api/v2 + v2 worker live (v1 still at /). Fixed en route: added .dockerignore (build was shipping data/ → disk full), created v2 tables in deployed DB via create_all (deploy doesn't run alembic on startup — TR5b should), pruned docker/data to free disk.
 - [ ] **TR5b** Cleanup: remove v1 Job/Segment/pipeline/api/web, make v2 default at /, merge v2→main — AFTER user accepts v2
 - [ ] **TR5b** Cleanup: remove v1 Job/Segment/pipeline/api/web, make v2 default at /, merge v2→main — AFTER user accepts v2
 
