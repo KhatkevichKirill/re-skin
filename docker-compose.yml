@@ -17,30 +17,63 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     container_name: re-skin-api
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --log-level info
     ports:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # Ensure relative paths in config.py resolve against WORKDIR /app
+      APP_BASE_DIR: /app
+      # Override DATA_DIR to the absolute mount point so api + worker agree
+      DATA_DIR: /app/data
+      PYTHONUNBUFFERED: "1"
     depends_on:
       redis:
         condition: service_healthy
     volumes:
+      # Shared persistent data: SQLite DB + per-job clips/results
       - ./data:/app/data
+      # Service-account JSON for Google Drive (read-only)
+      - ./secrets:/app/secrets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   worker:
     build:
       context: .
       dockerfile: backend/Dockerfile
     container_name: re-skin-worker
+    # python -m worker.worker — PYTHONPATH=/app means `from app.tasks import ...`
+    # resolves correctly because app/ and worker/ are both under /app.
     command: python -m worker.worker
     env_file:
       - .env
+    environment:
+      APP_BASE_DIR: /app
+      DATA_DIR: /app/data
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
     depends_on:
       redis:
         condition: service_healthy
     volumes:
+      # Same bind mount as api — required for shared SQLite DB and clip files
       - ./data:/app/data
+      # Service-account JSON for Google Drive (read-only)
+      - ./secrets:/app/secrets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   nginx:
     build:
@@ -55,3 +88,8 @@ services:
       - api
     volumes:
       - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
