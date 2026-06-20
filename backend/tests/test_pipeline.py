@@ -475,6 +475,45 @@ class TestProcessJob:
             job = s.get(Job, job_id)
             assert job.status == JobStatus.done
 
+    def test_retry_resets_failed_segment_and_completes(
+        self, db_engine, db_session, synthetic_video, patch_propose
+    ):
+        """
+        Regression: a swap segment left in `failed` by a prior run must be reset
+        to `pending` on retry, not crash with 'Invalid transition: failed -> uploading'.
+        """
+        from app.pipeline import process_job, analyze_job
+        from app.state_machine import transition as sm_transition
+
+        job_id = _create_job(db_session, synthetic_video)
+        analyze_job(job_id)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            job = s.get(Job, job_id)
+            swap_seg = next(sg for sg in job.segments if sg.action == "swap")
+            # Simulate a prior interrupted/failed run.
+            swap_seg.status = SegmentStatus.failed
+            swap_seg.error_message = "old failure"
+            swap_seg.seedance_task_id = "stale-task"
+            sm_transition(job, JobStatus.queued)
+            s.commit()
+
+        fake_kie = FakeKieClient(synthetic_video)
+        fake_gdrive = FakeGDriveClient()
+
+        # Must not raise InvalidTransition.
+        process_job(job_id, kie=fake_kie, gdrive=fake_gdrive)
+
+        with sessionmaker(bind=db_engine)() as s:
+            job = s.get(Job, job_id)
+            swap_seg = next(sg for sg in job.segments if sg.action == "swap")
+            assert swap_seg.status == SegmentStatus.completed
+            assert swap_seg.error_message is None
+            assert job.status == JobStatus.done
+        # The reset segment was actually reprocessed.
+        assert len(fake_kie.create_task_calls) == 1
+
     def test_segment_failure_drives_job_to_failed(
         self, db_engine, db_session, synthetic_video, patch_propose
     ):

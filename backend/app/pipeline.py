@@ -327,6 +327,21 @@ def process_job(
                     clip_paths.append(seg.local_result_path)
                     continue
 
+                # Retry-awareness: a swap segment left in any non-pending state by a
+                # previous interrupted/failed run (failed/uploading/submitted/generating)
+                # must be reset to pending so _process_swap_segment can restart cleanly
+                # (the state machine only allows forward moves out of `pending`).
+                if seg.status != SegmentStatus.pending:
+                    log.info(
+                        "Resetting segment %s from %s to pending for reprocessing",
+                        seg.id, seg.status,
+                    )
+                    seg.status = SegmentStatus.pending
+                    seg.error_message = None
+                    seg.seedance_task_id = None
+                    seg.seedance_result_url = None
+                    session.flush()
+
                 try:
                     _process_swap_segment(
                         seg=seg,
