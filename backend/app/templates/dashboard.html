@@ -38,7 +38,8 @@
         <!-- Prompt -->
         <div class="form-group">
           <label for="prompt">Prompt <span style="color:#dc3545">*</span></label>
-          <textarea id="prompt" name="prompt" required placeholder="Describe the character replacement…"></textarea>
+          <textarea id="prompt" name="prompt" required placeholder="Describe the character replacement…">Replace the main person in the reference video with the person shown in the reference image. Keep their face and identity consistent with the reference image throughout. Change only the character — keep everything else exactly the same: the phone or tablet screen and its contents, all on-screen text and captions, the background, lighting, framing, and the original motion and lip movements.</textarea>
+          <p class="hint">Refer to <strong>"the reference image"</strong> and <strong>"the reference video"</strong> in plain words. Do <strong>not</strong> use <code>@Image1</code> / <code>@video1</code> — those work only in the Seedance web UI, not via the API, and the swap will silently fail. Edit the example above to fit your video (e.g. name who to replace).</p>
         </div>
 
         <!-- Resolution -->
