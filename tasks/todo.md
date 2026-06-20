@@ -22,7 +22,7 @@ Checkpoints for user acceptance: after T1, after T7 (full run, no UI), after T9 
 - [x] **T4** Face module: timeline, small-face filter, grouping, grow-back start, ≤15s split, pre/post-roll (Sonnet) — **DONE** (merged 8df2734)
 - [x] **T5** kie.ai client: upload + Seedance create/poll/download + retries (Sonnet) — **DONE** (merged 8c27ae4)
 - [x] **T6** Google Drive client: download by link, upload by folder id (service account) (Sonnet) — **DONE** (merged 6781c1f)
-- [ ] **T7** Orchestrator/worker: pipeline over state machine, RQ queue, resumable, sequential (Sonnet) — **NEXT**
+- [x] **T7** Orchestrator/worker: pipeline over state machine, RQ queue, resumable, sequential (Sonnet) — **DONE** (merged bb6ee21). E2E verified on real Erewhon 480p: status=done, delivered to GDrive. Fixed Seedance <1.8s floor (min_segment_sec + pipeline pad).
 - [ ] **T8** REST API: create/proposal/edit/submit/status/result (Sonnet)
 - [ ] **T9** HTMX frontend: ingest, segment review+edit, status, result preview/download (Sonnet)
 - [ ] **T10** Deploy hardening: upload limits, long-job timeouts, logs, e2e on Erewhon (Haiku)
