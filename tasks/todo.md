@@ -39,8 +39,9 @@ Strategy: ADDITIVE — TR1 adds new models alongside v1's Job/Segment (kept gree
 - [x] **TR1** Data model: VideoProject, SegmentDef, Run, RunSegment + state machines + Alembic migration (additive) (Sonnet) — **DONE** (merged v2 c021d67, 269 tests)
 - [x] **TR2** Pipeline: analyze_project, process_run, storage layout, tasks enqueue (timeouts) (Sonnet) — **DONE** (merged v2 045d306, 280 tests). Agent hit account session limit before committing; orchestrator recovered the on-disk work, verified, committed & merged.
 - [x] **TR3** API: projects + runs endpoints (Sonnet) — **DONE** (merged v2 95be090, 319 tests, 13 routes, v1 untouched)
-- [ ] **TR4** Frontend: projects dashboard, project page (segment editor + runs panel), run view (Sonnet) — **IN PROGRESS**
-- [ ] **TR5** Deployed-stack e2e + remove v1 Job/Segment + README/docs (Sonnet)
+- [x] **TR4** Frontend: projects dashboard, project page (segment editor + runs panel), run view (Sonnet) — **DONE** (merged v2 fad1929, 349 tests, v1 untouched; v2 UI at /v2)
+- [ ] **TR5a** Real v2 e2e (orchestrator) + deploy v2 stack for user browser test — **IN PROGRESS**
+- [ ] **TR5b** Cleanup: remove v1 Job/Segment/pipeline/api/web, make v2 default at /, merge v2→main — AFTER user accepts v2
 
 ## Review log
 - **T1** (Haiku, adbcbf5) — APPROVED. Secrets untracked (only .env.example); scaffold matches spec; smoke 401(no auth)/200(auth) on :8847. Direct to main (empty repo).
