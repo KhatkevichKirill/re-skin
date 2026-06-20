@@ -40,7 +40,9 @@ Strategy: ADDITIVE — TR1 adds new models alongside v1's Job/Segment (kept gree
 - [x] **TR2** Pipeline: analyze_project, process_run, storage layout, tasks enqueue (timeouts) (Sonnet) — **DONE** (merged v2 045d306, 280 tests). Agent hit account session limit before committing; orchestrator recovered the on-disk work, verified, committed & merged.
 - [x] **TR3** API: projects + runs endpoints (Sonnet) — **DONE** (merged v2 95be090, 319 tests, 13 routes, v1 untouched)
 - [x] **TR4** Frontend: projects dashboard, project page (segment editor + runs panel), run view (Sonnet) — **DONE** (merged v2 fad1929, 349 tests, v1 untouched; v2 UI at /v2)
-- [ ] **TR5a** Real v2 e2e (orchestrator) + deploy v2 stack for user browser test — **IN PROGRESS**
+- [x] **TR5a** Real v2 e2e (orchestrator) — **DONE**. Parallel submit + concurrent poll verified on real Erewhon 480p: 3 swap segments submitted at once, all completed, stitched 1080p, swap confirmed (redhead). Drive delivery confirmed by uploading the produced final.mp4 (host-script BASE_DIR quirk fixed in e2e script; Docker delivery unaffected). PARALLEL/skip feature added to process_run.
+- [ ] **TR5a.2** Rebuild live stack from v2 so user can browser-test /v2 — NEXT
+- [ ] **TR5b** Cleanup: remove v1 Job/Segment/pipeline/api/web, make v2 default at /, merge v2→main — AFTER user accepts v2
 - [ ] **TR5b** Cleanup: remove v1 Job/Segment/pipeline/api/web, make v2 default at /, merge v2→main — AFTER user accepts v2
 
 ## Review log

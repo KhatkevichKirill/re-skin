@@ -5,7 +5,12 @@ Run from project root:  python3 scripts/e2e_v2_erewhon.py
 Uses real InsightFace + kie.ai/Seedance (spends credits) + Google Drive.
 """
 import sys, os, time
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+# Resolve relative ./secrets and ./data against the project root when run on the
+# host (in Docker APP_BASE_DIR=/app; here it must point at the repo root, else the
+# SA file / sqlite db resolve under backend/ and Drive delivery fails).
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+os.environ.setdefault("APP_BASE_DIR", _ROOT)
+sys.path.insert(0, os.path.join(_ROOT, "backend"))
 
 from app.db import engine, Base, SessionLocal
 from app import models
