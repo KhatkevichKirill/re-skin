@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import get_db
 from .models import Run, RunSegment, SegmentDef, VideoProject
+from sqlalchemy.orm import selectinload
 from .state_machine import ProjectStatus, RunStatus, SegmentStatus
 
 log = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ def _get_run_segments(run_id: str, db: Session) -> list[RunSegment]:
             select(RunSegment)
             .where(RunSegment.run_id == run_id)
             .order_by(RunSegment.index)
+            .options(selectinload(RunSegment.segment_def))
         )
         .scalars()
         .all()
@@ -215,6 +217,7 @@ def run_detail(
         {
             "request": request,
             "run": run,
+            "project_id": run.project_id,
             "status_val": status_val,
             "run_segments": run_segments,
             "gdrive_link": gdrive_link,
@@ -258,6 +261,7 @@ def run_status_fragment(
         {
             "request": request,
             "run": run,
+            "project_id": run.project_id,
             "status_val": status_val,
             "run_segments": run_segments,
             "gdrive_link": gdrive_link,

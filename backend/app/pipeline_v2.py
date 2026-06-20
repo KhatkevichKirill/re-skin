@@ -249,9 +249,11 @@ def process_run(
             r_dir = run_results_dir(run_id, run.project_id)
 
             # Resolve reference images ONCE for the whole run (same character).
-            ref_urls = resolve_reference_urls(
+            run_ref_urls = resolve_reference_urls(
                 list(run.reference_image_urls or []), kie, gdrive=gdrive
             )
+            # Cache per-segment override resolutions to avoid duplicate uploads.
+            _override_ref_cache: dict[str, list[str]] = {}
 
             # ---------------------------------------------------------------
             # Submit phase — fire every swap task to Seedance up front.
@@ -280,11 +282,22 @@ def process_run(
                     rs.seedance_result_url = None
                     session.flush()
 
+                # Resolve effective refs for this segment (override takes priority).
+                if rs.reference_image_urls_override:
+                    cache_key = rs.id
+                    if cache_key not in _override_ref_cache:
+                        _override_ref_cache[cache_key] = resolve_reference_urls(
+                            list(rs.reference_image_urls_override), kie, gdrive=gdrive
+                        )
+                    effective_ref_urls = _override_ref_cache[cache_key]
+                else:
+                    effective_ref_urls = run_ref_urls
+
                 clip_dst = os.path.join(c_dir, f"clip_{sd.index:04d}.mp4")
                 task_id = _submit_swap_segment(
                     rs=rs, sd=sd, run=run, project=project, source=source,
                     duration_sec=duration_sec, clip_dst=clip_dst,
-                    ref_urls=ref_urls, kie=kie, session=session,
+                    ref_urls=effective_ref_urls, kie=kie, session=session,
                 )
                 pending[task_id] = {
                     "rs_id": rs.id,
@@ -453,8 +466,9 @@ def _submit_swap_segment(
 
     aspect = _map_aspect(project.aspect_ratio)
     clip_duration = _clamp_duration(clip_start, clip_end)
+    effective_prompt = rs.prompt_override if rs.prompt_override else (run.prompt or "")
     task_id = kie.create_task(
-        prompt=run.prompt or "",
+        prompt=effective_prompt,
         reference_image_urls=ref_urls,
         reference_video_urls=[clip_url],
         resolution=run.resolution or settings.DEFAULT_RESOLUTION,

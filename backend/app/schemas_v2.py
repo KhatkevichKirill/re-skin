@@ -145,6 +145,8 @@ class RunSegmentResponse(BaseModel):
     segment_def_id: str
     index: int
     status: str
+    prompt_override: Optional[str] = None
+    reference_image_urls_override: Optional[list] = None
     kie_upload_url: Optional[str] = None
     seedance_task_id: Optional[str] = None
     seedance_result_url: Optional[str] = None

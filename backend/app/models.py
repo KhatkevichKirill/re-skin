@@ -411,6 +411,12 @@ class RunSegment(Base):
         default=SegmentStatus.pending,
     )
 
+    # Per-segment overrides (set by operator for individual re-runs)
+    prompt_override: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reference_image_urls_override: Mapped[Optional[list]] = mapped_column(
+        JSON, nullable=True
+    )
+
     # Seedance / kie.ai fields
     kie_upload_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     seedance_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -424,6 +430,7 @@ class RunSegment(Base):
 
     # Relationship back to Run
     run: Mapped["Run"] = relationship("Run", back_populates="run_segments")
+    segment_def: Mapped["SegmentDef"] = relationship("SegmentDef")
 
     def __repr__(self) -> str:
         return (

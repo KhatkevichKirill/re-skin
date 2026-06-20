@@ -525,6 +525,129 @@ def download_run_result(rid: str, db: Session = Depends(get_db)):
     )
 
 
+def _get_run_segment_or_404(rsid: str, run_id: str, db: Session) -> RunSegment:
+    rs = db.get(RunSegment, rsid)
+    if rs is None or rs.run_id != run_id:
+        raise HTTPException(
+            status_code=404, detail=f"RunSegment {rsid!r} not found in run {run_id!r}"
+        )
+    return rs
+
+
+@router.patch(
+    "/runs/{rid}/segments/{rsid}",
+    response_model=RunSegmentResponse,
+)
+def patch_run_segment(
+    rid: str,
+    rsid: str,
+    prompt: Optional[str] = Form(None),
+    reference_files: Optional[List[UploadFile]] = File(None),
+    reference_urls: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+) -> RunSegmentResponse:
+    """Override prompt and/or reference images for an individual RunSegment.
+
+    Only allowed when the run is in done or failed status. Empty prompt clears the
+    override (falls back to run-level prompt). Empty reference list clears the
+    override (falls back to run-level references).
+    """
+    run = _get_run_or_404(rid, db)
+    status_val = run.status.value if hasattr(run.status, "value") else str(run.status)
+    if status_val not in ("done", "failed"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot edit segment: run status is {run.status!r}; "
+                "expected 'done' or 'failed'"
+            ),
+        )
+
+    rs = _get_run_segment_or_404(rsid, rid, db)
+
+    # Validate total reference count
+    ref_files = reference_files or []
+    parsed_urls = [u.strip() for u in (reference_urls or "").split(",") if u.strip()]
+    total_refs = len(ref_files) + len(parsed_urls)
+    if total_refs > settings.MAX_REFERENCE_IMAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Too many reference images: got {total_refs}, "
+                f"max {settings.MAX_REFERENCE_IMAGES}"
+            ),
+        )
+
+    # Set prompt override (None/empty string clears it)
+    if prompt is not None:
+        rs.prompt_override = prompt.strip() or None
+    else:
+        rs.prompt_override = None
+
+    # Save reference files and update override
+    if total_refs == 0:
+        # Clear override → fall back to run-level refs
+        rs.reference_image_urls_override = None
+    else:
+        refs_dir = os.path.join(
+            project_dir(run.project_id), "runs", rid, "segment_refs", rsid
+        )
+        os.makedirs(refs_dir, exist_ok=True)
+        saved_paths: list[str] = []
+        for rf in ref_files:
+            dest = os.path.join(refs_dir, rf.filename or f"ref_{len(saved_paths)}.jpg")
+            _save_upload(rf, dest)
+            saved_paths.append(dest)
+        rs.reference_image_urls_override = saved_paths + parsed_urls
+
+    db.commit()
+    db.refresh(rs)
+    log.info("Patched RunSegment %s (run %s): prompt_override=%r refs_override=%r",
+             rsid, rid, rs.prompt_override, rs.reference_image_urls_override)
+    return RunSegmentResponse.model_validate(rs)
+
+
+@router.post("/runs/{rid}/segments/{rsid}/rerun", response_model=RunResponse)
+def rerun_segment(rid: str, rsid: str, db: Session = Depends(get_db)) -> RunResponse:
+    """Reset one RunSegment to pending and re-queue the run.
+
+    The run must be in done or failed status. All other completed RunSegments
+    will be skipped by process_run (resumability), so only this segment is
+    reprocessed and the final video is re-stitched.
+    """
+    run = _get_run_or_404(rid, db)
+    status_val = run.status.value if hasattr(run.status, "value") else str(run.status)
+    if status_val not in ("done", "failed"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot re-run segment: run status is {run.status!r}; "
+                "expected 'done' or 'failed'"
+            ),
+        )
+
+    rs = _get_run_segment_or_404(rsid, rid, db)
+
+    # Reset this RunSegment to pending
+    rs.status = SegmentStatus.pending
+    rs.error_message = None
+    rs.seedance_task_id = None
+    rs.seedance_result_url = None
+    rs.local_result_path = None
+
+    # Transition run → queued (done→queued or failed→queued both allowed now)
+    try:
+        transition(run, RunStatus.queued)
+    except InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    db.commit()
+    enqueue_process_run(rid)
+
+    log.info("Rerunning segment %s in run %s", rsid, rid)
+    return RunResponse.model_validate(run)
+
+
 @router.post("/runs/{rid}/retry", response_model=RunResponse)
 def retry_run(rid: str, db: Session = Depends(get_db)) -> RunResponse:
     """Re-enqueue a failed run."""
