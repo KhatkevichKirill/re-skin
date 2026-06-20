@@ -36,8 +36,8 @@ v1 COMPLETE (on main, deployed). Post-launch fixes also merged: RQ job_timeout, 
 Design: docs/v2-project-runs.md. Integration branch `v2` (task branches merge into v2; main/v1 deploy untouched until v2 verified, then v2→main).
 Strategy: ADDITIVE — TR1 adds new models alongside v1's Job/Segment (kept green); TR2–TR4 migrate pipeline/api/frontend to the new model; final cleanup removes Job/Segment. Carry over all v1 hardening.
 
-- [ ] **TR1** Data model: VideoProject, SegmentDef, Run, RunSegment + state machines + Alembic migration (additive) (Sonnet) — **IN PROGRESS**
-- [ ] **TR2** Pipeline: analyze_project, process_run, storage layout, tasks enqueue (timeouts) (Sonnet)
+- [x] **TR1** Data model: VideoProject, SegmentDef, Run, RunSegment + state machines + Alembic migration (additive) (Sonnet) — **DONE** (merged v2 c021d67, 269 tests)
+- [ ] **TR2** Pipeline: analyze_project, process_run, storage layout, tasks enqueue (timeouts) (Sonnet) — **IN PROGRESS**
 - [ ] **TR3** API: projects + runs endpoints (Sonnet)
 - [ ] **TR4** Frontend: projects dashboard, project page (segment editor + runs panel), run view (Sonnet)
 - [ ] **TR5** Deployed-stack e2e + remove v1 Job/Segment + README/docs (Sonnet)
