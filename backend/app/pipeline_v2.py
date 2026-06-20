@@ -387,9 +387,11 @@ def process_run(
             final_dst = os.path.join(r_dir, "final.mp4")
             log.info("Stitching %d clips → %s (%dx%d @ %.2ffps)",
                      len(clip_paths), final_dst, width, height, fps)
+            audio_mode = run.audio_mode if run.audio_mode else "original"
             media_mod.stitch(
                 clip_paths, audio_source=source, dst=final_dst,
                 width=width, height=height, fps=fps,
+                audio_mode=audio_mode,
             )
             run.result_local_path = final_dst
             session.flush()

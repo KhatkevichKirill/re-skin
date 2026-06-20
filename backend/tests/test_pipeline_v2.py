@@ -908,3 +908,95 @@ class TestSegmentOverride:
         with Session() as s:
             run = s.get(Run, run_id)
             assert run.status == RunStatus.done
+
+
+# ---------------------------------------------------------------------------
+# Tests: TR7 audio_mode forwarding
+# ---------------------------------------------------------------------------
+
+
+class TestAudioModeForwarding:
+    """
+    Verify that process_run passes run.audio_mode to media_mod.stitch.
+    Uses monkeypatch/spy on media_mod.stitch to capture kwargs without
+    actually running ffmpeg for the stitch step.
+    """
+
+    def _setup(self, db_session, db_engine, synthetic_video, patch_propose,
+               audio_mode: str):
+        from app.pipeline_v2 import analyze_project
+
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+
+        run = Run(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            name="Audio Mode Test",
+            prompt="Replace the character",
+            reference_image_urls=[],
+            resolution="480p",
+            audio_mode=audio_mode,
+            status=RunStatus.queued,
+        )
+        db_session.add(run)
+        db_session.commit()
+        return project_id, run.id
+
+    def test_audio_mode_seedance_forwarded_to_stitch(
+        self, db_engine, db_session, synthetic_video, patch_propose, monkeypatch
+    ):
+        """process_run passes audio_mode='seedance' to media_mod.stitch."""
+        from app.pipeline_v2 import process_run
+        import app.pipeline_v2 as pipeline_v2_mod
+
+        project_id, run_id = self._setup(
+            db_session, db_engine, synthetic_video, patch_propose, "seedance"
+        )
+
+        stitch_calls: list[dict] = []
+        real_stitch = pipeline_v2_mod.media_mod.stitch
+
+        def spy_stitch(*args, **kwargs):
+            stitch_calls.append({"args": args, "kwargs": kwargs})
+            return real_stitch(*args, **kwargs)
+
+        monkeypatch.setattr(pipeline_v2_mod.media_mod, "stitch", spy_stitch)
+
+        fake_kie = FakeKieClient(synthetic_video)
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert len(stitch_calls) == 1, "stitch should be called exactly once"
+        call = stitch_calls[0]
+        assert call["kwargs"].get("audio_mode") == "seedance", (
+            f"Expected audio_mode='seedance', got {call['kwargs'].get('audio_mode')!r}"
+        )
+
+    def test_audio_mode_original_forwarded_to_stitch(
+        self, db_engine, db_session, synthetic_video, patch_propose, monkeypatch
+    ):
+        """process_run passes audio_mode='original' to media_mod.stitch."""
+        from app.pipeline_v2 import process_run
+        import app.pipeline_v2 as pipeline_v2_mod
+
+        project_id, run_id = self._setup(
+            db_session, db_engine, synthetic_video, patch_propose, "original"
+        )
+
+        stitch_calls: list[dict] = []
+        real_stitch = pipeline_v2_mod.media_mod.stitch
+
+        def spy_stitch(*args, **kwargs):
+            stitch_calls.append({"args": args, "kwargs": kwargs})
+            return real_stitch(*args, **kwargs)
+
+        monkeypatch.setattr(pipeline_v2_mod.media_mod, "stitch", spy_stitch)
+
+        fake_kie = FakeKieClient(synthetic_video)
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert len(stitch_calls) == 1
+        call = stitch_calls[0]
+        assert call["kwargs"].get("audio_mode") == "original", (
+            f"Expected audio_mode='original', got {call['kwargs'].get('audio_mode')!r}"
+        )

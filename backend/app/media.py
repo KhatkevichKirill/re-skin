@@ -195,38 +195,144 @@ def stitch(
     width: int,
     height: int,
     fps: float,
+    audio_mode: str = "original",
 ) -> None:
     """
     Concatenate *clips* into *dst*, normalizing each to *width*×*height*@*fps*.
 
-    Steps
-    -----
-    1. For each clip build a filter chain:
-       ``scale=W:H:force_original_aspect_ratio=decrease,
-         pad=W:H:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=FPS``
-    2. Concat all video-only streams.
-    3. Mux the FULL audio track from *audio_source* (not from the clips).
-    4. Encode with libx264 / aac and ``-shortest``.
+    Parameters
+    ----------
+    clips:
+        Ordered list of clip paths to concatenate.
+    audio_source:
+        Path to the source video whose full audio track is used when
+        ``audio_mode="original"``.  Ignored when ``audio_mode="seedance"``.
+    dst:
+        Output path for the stitched video.
+    width, height, fps:
+        Target output dimensions / frame rate.
+    audio_mode:
+        ``"original"`` (default) — mux the full continuous audio track from
+        *audio_source* over the concatenated video (``-shortest``).  This is the
+        existing behaviour; Seedance clip audio is discarded.
+
+        ``"seedance"`` — take audio from each clip itself: swap-segment clips use
+        the Seedance result audio; keep-segment clips use the original cut audio.
+        Each clip's audio is resampled to 44 100 Hz stereo so the concat filter
+        has consistent stream parameters.  Clips that have no audio stream get a
+        silent audio track synthesised via ``aevalsrc=0`` so the concat never
+        fails on a missing stream.  *audio_source* is not used in this mode.
+
+    Raises
+    ------
+    MediaError
+        On any ffmpeg failure or if *clips* is empty.
+    ValueError
+        If *audio_mode* is not ``"original"`` or ``"seedance"``.
     """
+    if audio_mode not in ("original", "seedance"):
+        raise ValueError(
+            f"stitch: audio_mode must be 'original' or 'seedance', got {audio_mode!r}"
+        )
     if not clips:
         raise MediaError("stitch: clips list is empty")
 
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
 
-    # Build the ffmpeg command.
-    # -i 0 … -i N-1 are the clips; -i N is the audio source.
+    n = len(clips)
+
+    # ------------------------------------------------------------------
+    # audio_mode == "original" — EXACTLY the existing behaviour.
+    # ------------------------------------------------------------------
+    if audio_mode == "original":
+        cmd = [FFMPEG, "-y"]
+        for clip in clips:
+            cmd += ["-i", clip]
+        cmd += ["-i", audio_source]
+
+        audio_input_idx = n
+
+        filter_parts: List[str] = []
+        for i in range(n):
+            filter_parts.append(
+                f"[{i}:v]"
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+                f"setsar=1,"
+                f"fps={fps}"
+                f"[v{i}]"
+            )
+
+        concat_inputs = "".join(f"[v{i}]" for i in range(n))
+        filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[vout]")
+
+        filter_complex = ";".join(filter_parts)
+
+        cmd += [
+            "-filter_complex", filter_complex,
+            "-map", "[vout]",
+            "-map", f"{audio_input_idx}:a",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            dst,
+        ]
+
+        log.info(
+            "stitch[original]: %d clips -> %s  (%dx%d @ %.2ffps)  audio_source=%s",
+            n, dst, width, height, fps, audio_source,
+        )
+        _run(cmd)
+        return
+
+    # ------------------------------------------------------------------
+    # audio_mode == "seedance" — use each clip's own audio.
+    # Clips without an audio stream get synthesised silence.
+    # ------------------------------------------------------------------
+    # Probe each clip once to know which ones have audio.
+    clip_has_audio: List[bool] = []
+    for clip in clips:
+        try:
+            info = probe(clip)
+            clip_has_audio.append(info.has_audio)
+        except MediaError:
+            clip_has_audio.append(False)
+
+    # Count clips that need a silence source input.
+    # We will add one extra input per audio-less clip (anullsrc).
+    silence_input_indices: List[int] = []
     cmd = [FFMPEG, "-y"]
     for clip in clips:
         cmd += ["-i", clip]
-    cmd += ["-i", audio_source]
 
-    audio_input_idx = len(clips)
+    # Add anullsrc inputs for each clip that has no audio.
+    next_input_idx = n
+    extra_audio_map: List[int] = []  # index of the audio source for each clip
+    for has_a in clip_has_audio:
+        if has_a:
+            extra_audio_map.append(-1)  # will use [i:a] from the clip itself
+        else:
+            # Add a virtual anullsrc input.
+            cmd += [
+                "-f", "lavfi",
+                "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            ]
+            silence_input_indices.append(next_input_idx)
+            extra_audio_map.append(next_input_idx)
+            next_input_idx += 1
 
     # Build filter_complex.
-    n = len(clips)
-    filter_parts: List[str] = []
-    for i in range(n):
-        filter_parts.append(
+    # For each clip:
+    #   video: [i:v]scale/pad/setsar/fps[vi]
+    #   audio: [i:a]aresample...[ai]  OR  [silence_idx:a]atrim=duration=...[ai]
+    filter_parts_s: List[str] = []
+    silence_ptr = 0
+    for i, (clip, has_a) in enumerate(zip(clips, clip_has_audio)):
+        # Video normalisation (identical to original mode).
+        filter_parts_s.append(
             f"[{i}:v]"
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
@@ -234,28 +340,54 @@ def stitch(
             f"fps={fps}"
             f"[v{i}]"
         )
+        if has_a:
+            # Normalise real audio to consistent format.
+            filter_parts_s.append(
+                f"[{i}:a]aresample=async=1,"
+                f"aformat=sample_rates=44100:channel_layouts=stereo"
+                f"[a{i}]"
+            )
+        else:
+            # Silence: use anullsrc input, probe the clip duration to trim it
+            # so the audio matches the video length (avoids duration mismatch).
+            try:
+                info = probe(clip)
+                clip_dur = info.duration_sec
+            except MediaError:
+                clip_dur = 5.0  # safe fallback
 
-    concat_inputs = "".join(f"[v{i}]" for i in range(n))
-    filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[vout]")
+            silence_idx = silence_input_indices[silence_ptr]
+            silence_ptr += 1
+            filter_parts_s.append(
+                f"[{silence_idx}:a]"
+                f"atrim=duration={clip_dur},"
+                f"aformat=sample_rates=44100:channel_layouts=stereo"
+                f"[a{i}]"
+            )
 
-    filter_complex = ";".join(filter_parts)
+    # Concat: v=1 a=1 — interleaved [v0][a0][v1][a1]...
+    concat_inputs_s = "".join(f"[v{i}][a{i}]" for i in range(n))
+    filter_parts_s.append(
+        f"{concat_inputs_s}concat=n={n}:v=1:a=1[vout][aout]"
+    )
+
+    filter_complex_s = ";".join(filter_parts_s)
 
     cmd += [
-        "-filter_complex", filter_complex,
+        "-filter_complex", filter_complex_s,
         "-map", "[vout]",
-        "-map", f"{audio_input_idx}:a",
+        "-map", "[aout]",
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "18",
         "-c:a", "aac",
         "-b:a", "192k",
-        "-shortest",
         dst,
     ]
 
     log.info(
-        "stitch: %d clips -> %s  (%dx%d @ %.2ffps)  audio_source=%s",
-        n, dst, width, height, fps, audio_source,
+        "stitch[seedance]: %d clips -> %s  (%dx%d @ %.2ffps)",
+        n, dst, width, height, fps,
     )
     _run(cmd)
 

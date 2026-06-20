@@ -43,6 +43,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(tags=["v2"])
 
 _VALID_RESOLUTIONS = {"480p", "720p", "1080p"}
+_VALID_AUDIO_MODES = {"original", "seedance"}
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +370,7 @@ def create_run(
     prompt: str = Form(...),
     name: Optional[str] = Form(None),
     resolution: str = Form(settings.DEFAULT_RESOLUTION),
+    audio_mode: str = Form("original"),
     gdrive_folder_id: Optional[str] = Form(None),
     reference_files: Optional[List[UploadFile]] = File(None),
     reference_urls: Optional[str] = Form(None),
@@ -396,6 +398,13 @@ def create_run(
             detail=f"resolution must be one of {sorted(_VALID_RESOLUTIONS)}",
         )
 
+    # Validate audio_mode
+    if audio_mode not in _VALID_AUDIO_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"audio_mode must be one of {sorted(_VALID_AUDIO_MODES)}",
+        )
+
     # Validate reference image count
     ref_files = reference_files or []
     ref_urls = [u.strip() for u in (reference_urls or "").split(",") if u.strip()]
@@ -419,6 +428,7 @@ def create_run(
         name=name,
         prompt=prompt,
         resolution=resolution,
+        audio_mode=audio_mode,
         gdrive_folder_id=resolved_folder_id,
         status=RunStatus.created,
         reference_image_urls=[],

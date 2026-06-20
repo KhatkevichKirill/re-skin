@@ -143,6 +143,19 @@
           </select>
         </div>
 
+        <!-- Audio mode -->
+        <div class="form-group">
+          <label for="run-audio-mode">Audio</label>
+          <select id="run-audio-mode" name="audio_mode">
+            <option value="original" selected>Original — source soundtrack</option>
+            <option value="seedance">Seedance — audio from each generated clip</option>
+          </select>
+          <p class="hint">
+            Original = source soundtrack (best when timing matches).
+            Seedance = audio from each generated clip (use if the original drifts out of sync).
+          </p>
+        </div>
+
         <!-- Reference images -->
         <div class="form-group">
           <label>Reference images (max {{ max_refs }})</label>

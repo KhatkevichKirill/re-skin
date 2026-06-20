@@ -215,6 +215,39 @@ class TestRun:
         fetched = session.get(Run, run.id)
         assert fetched.status == RunStatus.created
 
+    def test_default_audio_mode_is_original(self, session):
+        """Run.audio_mode defaults to 'original' when not specified."""
+        proj = make_project(session)
+        run = Run(project_id=proj.id, prompt="test", reference_image_urls=[])
+        session.add(run)
+        session.commit()
+        fetched = session.get(Run, run.id)
+        audio_mode_val = (
+            fetched.audio_mode.value
+            if hasattr(fetched.audio_mode, "value")
+            else str(fetched.audio_mode)
+        )
+        assert audio_mode_val == "original"
+
+    def test_audio_mode_seedance_round_trip(self, session):
+        """Run.audio_mode can be set to 'seedance' and round-trips correctly."""
+        proj = make_project(session)
+        run = Run(
+            project_id=proj.id,
+            prompt="test",
+            reference_image_urls=[],
+            audio_mode="seedance",
+        )
+        session.add(run)
+        session.commit()
+        fetched = session.get(Run, run.id)
+        audio_mode_val = (
+            fetched.audio_mode.value
+            if hasattr(fetched.audio_mode, "value")
+            else str(fetched.audio_mode)
+        )
+        assert audio_mode_val == "seedance"
+
     def test_run_project_back_populates(self, session):
         proj = make_project(session)
         run = make_run(session, proj.id)

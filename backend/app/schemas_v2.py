@@ -114,6 +114,7 @@ class RunResponse(BaseModel):
     prompt: str
     reference_image_urls: list = []
     resolution: str
+    audio_mode: str = "original"
     gdrive_folder_id: Optional[str] = None
     status: str
     result_local_path: Optional[str] = None
