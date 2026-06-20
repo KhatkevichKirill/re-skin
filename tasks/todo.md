@@ -23,11 +23,11 @@ Checkpoints for user acceptance: after T1, after T7 (full run, no UI), after T9 
 - [x] **T5** kie.ai client: upload + Seedance create/poll/download + retries (Sonnet) — **DONE** (merged 8c27ae4)
 - [x] **T6** Google Drive client: download by link, upload by folder id (service account) (Sonnet) — **DONE** (merged 6781c1f)
 - [x] **T7** Orchestrator/worker: pipeline over state machine, RQ queue, resumable, sequential (Sonnet) — **DONE** (merged bb6ee21). E2E verified on real Erewhon 480p: status=done, delivered to GDrive. Fixed Seedance <1.8s floor (min_segment_sec + pipeline pad).
-- [ ] **T8** REST API: create/proposal/edit/submit/status/result (Sonnet)
-- [ ] **T9** HTMX frontend: ingest, segment review+edit, status, result preview/download (Sonnet)
-- [ ] **T10** Deploy hardening: upload limits, long-job timeouts, logs, e2e on Erewhon (Haiku)
+- [x] **T8** REST API: create/proposal/edit/submit/status/result (Sonnet) — **DONE** (merged 9e04696, 170 tests, 9 endpoints)
+- [x] **T9** HTMX frontend: ingest, segment review+edit, status, result preview/download (Sonnet) — **DONE** (merged b7178e1, 190 tests)
+- [x] **T10** Deploy hardening: upload limits, long-job timeouts, logs, deployed-stack e2e (Sonnet, upgraded from Haiku) — **DONE** (merged 66b70af). Full docker stack verified: nginx auth + api+worker+redis shared volume; worker ran analyze→review through real RQ. Fixed relative-path fragility via BASE_DIR.
 
-Full test suite on main: 138 passing.
+ALL TASKS COMPLETE. Full test suite on main: 190 passing. Backend e2e verified on real Erewhon (delivered to GDrive); deployed stack wiring verified without spending credits.
 
 ## Review log
 - **T1** (Haiku, adbcbf5) — APPROVED. Secrets untracked (only .env.example); scaffold matches spec; smoke 401(no auth)/200(auth) on :8847. Direct to main (empty repo).
