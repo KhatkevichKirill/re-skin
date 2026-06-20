@@ -37,8 +37,8 @@ Design: docs/v2-project-runs.md. Integration branch `v2` (task branches merge in
 Strategy: ADDITIVE — TR1 adds new models alongside v1's Job/Segment (kept green); TR2–TR4 migrate pipeline/api/frontend to the new model; final cleanup removes Job/Segment. Carry over all v1 hardening.
 
 - [x] **TR1** Data model: VideoProject, SegmentDef, Run, RunSegment + state machines + Alembic migration (additive) (Sonnet) — **DONE** (merged v2 c021d67, 269 tests)
-- [ ] **TR2** Pipeline: analyze_project, process_run, storage layout, tasks enqueue (timeouts) (Sonnet) — **IN PROGRESS**
-- [ ] **TR3** API: projects + runs endpoints (Sonnet)
+- [x] **TR2** Pipeline: analyze_project, process_run, storage layout, tasks enqueue (timeouts) (Sonnet) — **DONE** (merged v2 045d306, 280 tests). Agent hit account session limit before committing; orchestrator recovered the on-disk work, verified, committed & merged.
+- [ ] **TR3** API: projects + runs endpoints (Sonnet) — **IN PROGRESS**
 - [ ] **TR4** Frontend: projects dashboard, project page (segment editor + runs panel), run view (Sonnet)
 - [ ] **TR5** Deployed-stack e2e + remove v1 Job/Segment + README/docs (Sonnet)
 
