@@ -1,4 +1,5 @@
 fastapi==0.104.1
+python-multipart==0.0.9
 uvicorn[standard]==0.24.0
 rq==1.15.1
 redis==5.0.1
