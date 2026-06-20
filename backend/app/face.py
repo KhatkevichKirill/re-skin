@@ -284,17 +284,41 @@ def split_max_duration(
     max_sec: float = 15.0,
 ) -> list[tuple[float, float]]:
     """
-    Split any interval longer than *max_sec* into consecutive chunks each of
-    at most *max_sec* duration, covering the same range exactly.
+    Split any interval longer than *max_sec* into consecutive chunks, covering
+    the same range exactly. Splitting is *even*: an interval is divided into the
+    fewest equal chunks that all fit within *max_sec*, which avoids leaving a
+    tiny trailing chunk (e.g. 16s -> 8s+8s, not 15s+1s).
     """
+    import math
+
     result: list[tuple[float, float]] = []
     for start, end in intervals:
-        chunk_start = start
-        while chunk_start < end:
-            chunk_end = min(chunk_start + max_sec, end)
+        dur = end - start
+        if dur <= max_sec:
+            result.append((start, end))
+            continue
+        n = math.ceil(dur / max_sec)
+        step = dur / n
+        for i in range(n):
+            chunk_start = start + i * step
+            chunk_end = end if i == n - 1 else start + (i + 1) * step
             result.append((chunk_start, chunk_end))
-            chunk_start = chunk_end
     return result
+
+
+def drop_short_intervals(
+    intervals: list[tuple[float, float]],
+    min_sec: float,
+) -> list[tuple[float, float]]:
+    """
+    Remove intervals shorter than *min_sec*.
+
+    Used to discard spurious face blips (e.g. a face detected on a single
+    sampled frame) and to satisfy the downstream AI model's minimum reference
+    video duration. Dropped ranges simply become part of the surrounding
+    untouched ("keep") gaps in the final partition.
+    """
+    return [(s, e) for (s, e) in intervals if (e - s) >= min_sec]
 
 
 def apply_rolls(
@@ -336,6 +360,7 @@ def propose_segments(
     lead_in_sec: float = 0.5,
     bridge_gaps: int = 1,
     max_segment_sec: float = 15.0,
+    min_segment_sec: float = 2.0,
     detector: object | None = None,
 ) -> list[ProposedSegment]:
     """
@@ -348,8 +373,9 @@ def propose_segments(
     3. presence_timeline        — per-frame boolean.
     4. group_intervals          — merge True runs (with gap bridging).
     5. apply_lead_in            — extend starts backward.
-    6. split_max_duration       — enforce ≤max_segment_sec per chunk.
-    7. Interleave face intervals with keep gaps → full partition.
+    6. drop_short_intervals     — discard blips < min_segment_sec.
+    7. split_max_duration       — enforce ≤max_segment_sec per chunk (even split).
+    8. Interleave face intervals with keep gaps → full partition.
 
     Returns
     -------
@@ -361,6 +387,9 @@ def propose_segments(
     timeline = presence_timeline(filtered)
     face_intervals = group_intervals(timeline, bridge_gaps=bridge_gaps)
     face_intervals = apply_lead_in(face_intervals, lead_in_sec=lead_in_sec, lower_bound=0.0)
+    # Drop spurious short blips (and satisfy the AI model's min reference duration)
+    # before splitting, so even-splitting never produces sub-minimum chunks.
+    face_intervals = drop_short_intervals(face_intervals, min_sec=min_segment_sec)
     face_intervals = split_max_duration(face_intervals, max_sec=max_segment_sec)
 
     # Build the full partition of [0, duration_sec].

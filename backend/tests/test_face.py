@@ -23,6 +23,7 @@ from app.face import (
     apply_lead_in,
     apply_rolls,
     detect_timeline,
+    drop_short_intervals,
     filter_small_faces,
     group_intervals,
     presence_timeline,
@@ -241,15 +242,18 @@ class TestApplyLeadIn:
 
 
 class TestSplitMaxDuration:
-    def test_40s_splits_into_three_chunks_of_15_or_less(self):
+    def test_40s_splits_into_three_even_chunks_of_15_or_less(self):
+        # Even split: ceil(40/15)=3 chunks of ~13.33s (no tiny tail).
         result = split_max_duration([(0.0, 40.0)], max_sec=15.0)
         assert len(result) == 3
-        assert result[0] == (0.0, 15.0)
-        assert result[1] == (15.0, 30.0)
-        assert result[2] == (30.0, 40.0)
-        # All ≤ 15s
+        assert result[0][0] == pytest.approx(0.0)
+        assert result[-1][1] == pytest.approx(40.0)
+        # Contiguous and all ≤ 15s, roughly equal.
+        for (s, e), (ns, _) in zip(result, result[1:]):
+            assert e == pytest.approx(ns)
         for start, end in result:
             assert end - start <= 15.0 + 1e-9
+            assert end - start == pytest.approx(40.0 / 3, abs=0.1)
 
     def test_exact_multiple(self):
         result = split_max_duration([(0.0, 30.0)], max_sec=15.0)
@@ -486,3 +490,70 @@ def test_detect_timeline_integration(tmp_path):
     for fd in frames:
         assert fd.t_sec >= 0.0
         assert isinstance(fd.faces, list)
+
+
+# ---------------------------------------------------------------------------
+# drop_short_intervals + even split + min_segment_sec in propose_segments
+# ---------------------------------------------------------------------------
+
+class TestDropShortIntervals:
+    def test_drops_below_min(self):
+        ivs = [(0.0, 0.5), (2.0, 6.0), (10.0, 10.4)]
+        assert drop_short_intervals(ivs, min_sec=2.0) == [(2.0, 6.0)]
+
+    def test_keeps_at_min(self):
+        assert drop_short_intervals([(0.0, 2.0)], min_sec=2.0) == [(0.0, 2.0)]
+
+    def test_empty(self):
+        assert drop_short_intervals([], min_sec=2.0) == []
+
+
+class TestEvenSplit:
+    def test_no_tiny_tail(self):
+        # 16s with max 15 -> two ~8s chunks, NOT 15 + 1
+        chunks = split_max_duration([(0.0, 16.0)], max_sec=15.0)
+        assert len(chunks) == 2
+        for s, e in chunks:
+            assert e - s <= 15.0
+            assert e - s >= 7.0  # even split, no tiny tail
+        assert chunks[0][0] == 0.0 and abs(chunks[-1][1] - 16.0) < 1e-6
+
+    def test_short_interval_untouched(self):
+        assert split_max_duration([(0.0, 5.0)], max_sec=15.0) == [(0.0, 5.0)]
+
+
+class TestProposeMinSegment:
+    def test_short_swap_blips_dropped(self):
+        # 30s video; faces present briefly 10.0-10.4 (blip) and solidly 15-25.
+        frames = []
+        t = 0.0
+        while t < 30.0:
+            faces = []
+            if 10.0 <= t < 10.4 or 15.0 <= t < 25.0:
+                faces = [FaceBox(0, 0, 200, 200, 0.9)]
+            frames.append(FrameDetection(t_sec=t, faces=faces))
+            t += 0.5
+
+        class _FakeDetector:
+            pass
+
+        import app.face as face_mod
+        orig = face_mod.detect_timeline
+        face_mod.detect_timeline = lambda *a, **k: frames
+        try:
+            segs = propose_segments(
+                "x.mp4", duration_sec=30.0, min_segment_sec=2.0, lead_in_sec=0.0
+            )
+        finally:
+            face_mod.detect_timeline = orig
+
+        swaps = [s for s in segs if s.action == "swap"]
+        # The 0.4s blip is dropped; only the 15-25 appearance remains.
+        assert len(swaps) == 1
+        assert swaps[0].start_sec == pytest.approx(15.0, abs=0.6)
+        assert swaps[0].end_sec == pytest.approx(25.0, abs=0.6)
+        # Partition still covers [0, 30] contiguously.
+        assert segs[0].start_sec == 0.0
+        assert segs[-1].end_sec == pytest.approx(30.0)
+        for a, b in zip(segs, segs[1:]):
+            assert a.end_sec == pytest.approx(b.start_sec)
