@@ -1,15 +1,25 @@
 """
 tasks.py — RQ job enqueue helpers and worker-callable functions.
 
-Enqueue helpers
----------------
+Enqueue helpers (v1)
+--------------------
 enqueue_analyze(job_id)   Push analyze_job onto the "default" RQ queue.
 enqueue_process(job_id)   Push process_job onto the "default" RQ queue.
 
-RQ-callable targets (importable as ``app.tasks.run_analyze`` / ``app.tasks.run_process``)
-------------------------------------------------------------------------------------------
+RQ-callable targets (v1, importable as ``app.tasks.run_analyze`` / ``app.tasks.run_process``)
+----------------------------------------------------------------------------------------------
 run_analyze(job_id)   Instantiate real clients and call pipeline.analyze_job.
 run_process(job_id)   Instantiate real clients and call pipeline.process_job.
+
+Enqueue helpers (v2)
+--------------------
+enqueue_analyze_project(project_id)   Push run_analyze_project onto the "default" RQ queue.
+enqueue_process_run(run_id)           Push run_process_run onto the "default" RQ queue.
+
+RQ-callable targets (v2)
+------------------------
+run_analyze_project(project_id)   Call pipeline_v2.analyze_project with real clients.
+run_process_run(run_id)           Call pipeline_v2.process_run with real clients.
 """
 
 from __future__ import annotations
@@ -105,3 +115,75 @@ def enqueue_process(job_id: str) -> None:
     q = _get_queue()
     job = q.enqueue("app.tasks.run_process", job_id, job_timeout=PROCESS_JOB_TIMEOUT)
     log.info("Enqueued process for job_id=%s → rq_job=%s", job_id, job.id)
+
+
+# ---------------------------------------------------------------------------
+# v2 RQ-callable targets
+# ---------------------------------------------------------------------------
+
+
+def run_analyze_project(project_id: str) -> None:
+    """
+    RQ-callable wrapper for :func:`pipeline_v2.analyze_project`.
+
+    Imports pipeline_v2 lazily so the worker process doesn't need GPU/insightface
+    at import time (only at execution time).
+    """
+    from .pipeline_v2 import analyze_project
+
+    log.info("run_analyze_project: project_id=%s", project_id)
+    analyze_project(project_id)
+
+
+def run_process_run(run_id: str) -> None:
+    """
+    RQ-callable wrapper for :func:`pipeline_v2.process_run`.
+
+    Creates real :class:`KieClient` and :class:`GDriveClient` instances using
+    the configured API keys / service-account file.
+    """
+    from .kie_client import KieClient
+    from .gdrive_client import GDriveClient
+    from .pipeline_v2 import process_run
+
+    log.info("run_process_run: run_id=%s", run_id)
+    process_run(run_id, kie=KieClient(), gdrive=GDriveClient())
+
+
+# ---------------------------------------------------------------------------
+# v2 Enqueue helpers
+# ---------------------------------------------------------------------------
+
+
+def enqueue_analyze_project(project_id: str) -> None:
+    """
+    Push :func:`run_analyze_project` onto the RQ default queue.
+
+    Parameters
+    ----------
+    project_id:
+        The UUID of the VideoProject to analyse.
+    """
+    q = _get_queue()
+    job = q.enqueue(
+        "app.tasks.run_analyze_project", project_id, job_timeout=ANALYZE_JOB_TIMEOUT
+    )
+    log.info(
+        "Enqueued analyze_project for project_id=%s → rq_job=%s", project_id, job.id
+    )
+
+
+def enqueue_process_run(run_id: str) -> None:
+    """
+    Push :func:`run_process_run` onto the RQ default queue.
+
+    Parameters
+    ----------
+    run_id:
+        The UUID of the Run to process.
+    """
+    q = _get_queue()
+    job = q.enqueue(
+        "app.tasks.run_process_run", run_id, job_timeout=PROCESS_JOB_TIMEOUT
+    )
+    log.info("Enqueued process_run for run_id=%s → rq_job=%s", run_id, job.id)
