@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Jobs — re-skin{% endblock %}
+
+{% block content %}
+
+<!-- ── New Job Form ── -->
+<div class="card">
+  <details id="new-job-details">
+    <summary>New Job</summary>
+    <div class="card-body">
+      <form
+        id="new-job-form"
+        hx-post="/api/jobs"
+        hx-encoding="multipart/form-data"
+        hx-target="#new-job-result"
+        hx-swap="innerHTML"
+        hx-on::after-request="handleJobCreated(event)"
+        enctype="multipart/form-data"
+      >
+
+        <!-- Source -->
+        <div class="form-group">
+          <label>Video source <span style="color:#dc3545">*</span></label>
+          <p class="hint">Fill exactly one: upload a file <strong>or</strong> paste a Google Drive link.</p>
+          <div class="source-or">
+            <div style="flex:1">
+              <label style="font-weight:400">Upload file</label>
+              <input type="file" name="video_file" accept="video/*" />
+            </div>
+            <span class="or-divider">— or —</span>
+            <div style="flex:1">
+              <label style="font-weight:400">Google Drive link</label>
+              <input type="text" name="gdrive_link" placeholder="https://drive.google.com/file/d/…" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Prompt -->
+        <div class="form-group">
+          <label for="prompt">Prompt <span style="color:#dc3545">*</span></label>
+          <textarea id="prompt" name="prompt" required placeholder="Describe the character replacement…"></textarea>
+        </div>
+
+        <!-- Resolution -->
+        <div class="form-group">
+          <label for="resolution">Resolution</label>
+          <select id="resolution" name="resolution">
+            <option value="480p" {% if default_resolution == "480p" %}selected{% endif %}>480p</option>
+            <option value="720p" {% if default_resolution == "720p" %}selected{% endif %}>720p</option>
+            <option value="1080p" {% if default_resolution == "1080p" %}selected{% endif %}>1080p</option>
+          </select>
+          <p class="hint">480p = cheapest, use for tests &nbsp;|&nbsp; 720p = balanced &nbsp;|&nbsp; 1080p = production quality</p>
+        </div>
+
+        <!-- Reference images -->
+        <div class="form-group">
+          <label>Reference images (max {{ max_refs }})</label>
+          <p class="hint">Upload up to {{ max_refs }} image files and/or paste comma-separated URLs below. Combined total must not exceed {{ max_refs }}.</p>
+          <input type="file" name="reference_files" accept="image/*" multiple style="margin-bottom:8px" />
+          <input type="text" name="reference_urls" placeholder="https://example.com/ref1.jpg, https://example.com/ref2.jpg" />
+        </div>
+
+        <!-- GDrive folder -->
+        <div class="form-group">
+          <label for="gdrive_folder_id">Google Drive output folder ID</label>
+          <input type="text" id="gdrive_folder_id" name="gdrive_folder_id" value="{{ gdrive_folder_id }}" placeholder="GDrive folder ID for delivery" />
+          <p class="hint">Leave blank to use the server default.</p>
+        </div>
+
+        <div class="action-row">
+          <button type="submit" class="btn btn-primary">
+            <span class="htmx-indicator spinner"></span>
+            Create Job
+          </button>
+        </div>
+      </form>
+      <div id="new-job-result" style="margin-top:12px"></div>
+    </div>
+  </details>
+</div>
+
+<script>
+function handleJobCreated(event) {
+  if (event.detail.successful) {
+    try {
+      const data = JSON.parse(event.detail.xhr.responseText);
+      if (data.job_id) {
+        window.location.href = '/jobs/' + data.job_id;
+        return;
+      }
+    } catch(e) {}
+  }
+}
+</script>
+
+<!-- ── Jobs List ── -->
+<div class="card">
+  <div class="card-header">
+    <h2>All Jobs</h2>
+  </div>
+  {% if jobs %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Source</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td><code style="font-size:11px">{{ job.id[:8] }}…</code></td>
+        <td style="max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="{{ job.source_ref }}">
+          {{ job.source_ref }}
+        </td>
+        <td><span class="badge badge-{{ job.status }}">{{ job.status }}</span></td>
+        <td class="text-muted" style="white-space:nowrap">{{ job.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        <td class="text-right"><a class="btn btn-sm btn-secondary" href="/jobs/{{ job.id }}">View</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="card-body text-muted">No jobs yet. Create one above.</div>
+  {% endif %}
+</div>
+
+{% endblock %}
