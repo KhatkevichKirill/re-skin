@@ -339,6 +339,11 @@ class Run(Base):
         nullable=False,
         default="480p",
     )
+    audio_mode: Mapped[str] = mapped_column(
+        Enum("original", "seedance", name="run_audio_mode_enum"),
+        nullable=False,
+        default="original",
+    )
     gdrive_folder_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     # State

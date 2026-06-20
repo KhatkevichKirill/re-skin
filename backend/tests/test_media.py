@@ -249,6 +249,101 @@ class TestStitch:
             stitch([], audio_source=video_with_audio, dst=str(tmp_path / "x.mp4"),
                    width=320, height=240, fps=30.0)
 
+    def test_stitch_invalid_audio_mode_raises(self, video_with_audio, tmp_path):
+        clip = str(tmp_path / "c.mp4")
+        cut_clip(video_with_audio, start_sec=0.0, end_sec=1.0, dst=clip)
+        with pytest.raises(ValueError, match="audio_mode"):
+            stitch([clip], audio_source=video_with_audio, dst=str(tmp_path / "x.mp4"),
+                   width=320, height=240, fps=30.0, audio_mode="invalid")
+
+
+class TestStitchSeedanceMode:
+    """Tests for stitch() with audio_mode='seedance'."""
+
+    @pytest.fixture(scope="class")
+    def clip_a_with_audio(self, tmp_path_factory, video_with_audio):
+        """1-second clip cut from the 2-second source — has audio."""
+        p = tmp_path_factory.mktemp("seedance_a") / "clip_a.mp4"
+        cut_clip(video_with_audio, 0.0, 1.0, str(p))
+        return str(p)
+
+    @pytest.fixture(scope="class")
+    def clip_b_diff_res_with_audio(self, tmp_path_factory):
+        """1-second 256x144@24fps clip WITH audio (simulating Seedance result)."""
+        p = tmp_path_factory.mktemp("seedance_b") / "clip_b.mp4"
+        _make_video(str(p), duration=1.0, width=256, height=144, fps=24, with_audio=True)
+        return str(p)
+
+    @pytest.fixture(scope="class")
+    def clip_c_no_audio(self, tmp_path_factory):
+        """1-second 320x240@30fps clip WITHOUT audio (edge-case: clip has no audio stream)."""
+        p = tmp_path_factory.mktemp("seedance_c") / "clip_c.mp4"
+        _make_video(str(p), duration=1.0, width=320, height=240, fps=30, with_audio=False)
+        return str(p)
+
+    def test_seedance_mode_duration_and_has_audio(
+        self, clip_a_with_audio, clip_b_diff_res_with_audio, tmp_path
+    ):
+        """
+        stitch(..., audio_mode='seedance') with two clips (each WITH audio, different
+        res/fps) produces an output whose duration approximates the sum of clip
+        durations and that has an audio stream.
+        """
+        dst = str(tmp_path / "seedance_out.mp4")
+        stitch(
+            clips=[clip_a_with_audio, clip_b_diff_res_with_audio],
+            audio_source=clip_a_with_audio,  # ignored in seedance mode
+            dst=dst,
+            width=320,
+            height=240,
+            fps=30.0,
+            audio_mode="seedance",
+        )
+        out = probe(dst)
+        # Both clips ≈ 1s each → total ≈ 2s (±0.4s tolerance for encoding)
+        assert abs(out.duration_sec - 2.0) <= 0.4, f"duration={out.duration_sec}"
+        assert out.has_audio, "Output should have an audio stream in seedance mode"
+        assert out.width == 320
+        assert out.height == 240
+
+    def test_seedance_mode_clip_without_audio_produces_valid_output(
+        self, clip_a_with_audio, clip_c_no_audio, tmp_path
+    ):
+        """
+        When one clip has no audio stream, stitch should synthesise silence for it
+        and produce a valid output file that still has audio (from the other clip
+        or from synthesised silence).
+        """
+        dst = str(tmp_path / "seedance_silence.mp4")
+        stitch(
+            clips=[clip_a_with_audio, clip_c_no_audio],
+            audio_source=clip_a_with_audio,  # ignored in seedance mode
+            dst=dst,
+            width=320,
+            height=240,
+            fps=30.0,
+            audio_mode="seedance",
+        )
+        out = probe(dst)
+        assert os.path.exists(dst) and os.path.getsize(dst) > 0
+        assert out.has_audio, "Output should have audio even when one clip had none"
+        assert abs(out.duration_sec - 2.0) <= 0.4, f"duration={out.duration_sec}"
+
+    def test_seedance_mode_file_created(self, clip_a_with_audio, tmp_path):
+        """Single clip in seedance mode produces a non-empty output file."""
+        dst = str(tmp_path / "single_seedance.mp4")
+        stitch(
+            clips=[clip_a_with_audio],
+            audio_source=clip_a_with_audio,
+            dst=dst,
+            width=320,
+            height=240,
+            fps=30.0,
+            audio_mode="seedance",
+        )
+        assert os.path.exists(dst)
+        assert os.path.getsize(dst) > 0
+
 
 # ---------------------------------------------------------------------------
 # get_default_target() tests

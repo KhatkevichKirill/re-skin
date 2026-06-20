@@ -523,6 +523,85 @@ class TestCreateRun:
 
 
 # ---------------------------------------------------------------------------
+# TR7: audio_mode field on Run creation and RunResponse
+# ---------------------------------------------------------------------------
+
+
+class TestAudioMode:
+    """Tests for TR7: per-run audio_mode field."""
+
+    def test_create_run_with_audio_mode_seedance_persists(
+        self, spy_client, SessionFactory
+    ):
+        """Creating a run with audio_mode=seedance persists that value and shows in RunResponse."""
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        session.close()
+
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap", "audio_mode": "seedance"},
+        )
+        assert response.status_code == 201
+        run_id = response.json()["run_id"]
+
+        # Verify persisted in DB.
+        session = SessionFactory()
+        run = session.get(Run, run_id)
+        session.close()
+        assert run is not None
+        audio_mode_val = run.audio_mode.value if hasattr(run.audio_mode, "value") else str(run.audio_mode)
+        assert audio_mode_val == "seedance"
+
+        # Verify visible in GET /api/v2/runs/{rid}
+        get_resp = client.get(f"/api/v2/runs/{run_id}")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["audio_mode"] == "seedance"
+
+    def test_create_run_default_audio_mode_is_original(
+        self, spy_client, SessionFactory
+    ):
+        """When audio_mode is not provided, it defaults to 'original'."""
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        session.close()
+
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap"},
+        )
+        assert response.status_code == 201
+        run_id = response.json()["run_id"]
+
+        get_resp = client.get(f"/api/v2/runs/{run_id}")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["audio_mode"] == "original"
+
+    def test_create_run_invalid_audio_mode_is_400(self, client, db_session):
+        """Passing an unrecognised audio_mode value returns HTTP 400."""
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap", "audio_mode": "dolby"},
+        )
+        assert response.status_code == 400
+        assert "audio_mode" in response.json()["detail"].lower()
+
+    def test_run_response_includes_audio_mode_field(self, client, db_session):
+        """GET /api/v2/runs/{rid} returns audio_mode in the response body."""
+        project = _make_project(db_session)
+        run = _make_run(db_session, project.id, audio_mode="original")
+
+        response = client.get(f"/api/v2/runs/{run.id}")
+        assert response.status_code == 200
+        body = response.json()
+        assert "audio_mode" in body
+        assert body["audio_mode"] in ("original", "seedance")
+
+
+# ---------------------------------------------------------------------------
 # GET /api/v2/runs/{rid}  and  GET /api/v2/projects/{pid}/runs
 # ---------------------------------------------------------------------------
 
