@@ -43,6 +43,7 @@ Strategy: ADDITIVE — TR1 adds new models alongside v1's Job/Segment (kept gree
 - [x] **TR5a** Real v2 e2e (orchestrator) — **DONE**. Parallel submit + concurrent poll verified on real Erewhon 480p: 3 swap segments submitted at once, all completed, stitched 1080p, swap confirmed (redhead). Drive delivery confirmed by uploading the produced final.mp4 (host-script BASE_DIR quirk fixed in e2e script; Docker delivery unaffected). PARALLEL/skip feature added to process_run.
 - [x] **TR5a.2** Live stack rebuilt from v2; /v2 UI + /api/v2 + v2 worker live (v1 still at /). Fixed en route: added .dockerignore (build was shipping data/ → disk full), created v2 tables in deployed DB via create_all (deploy doesn't run alembic on startup — TR5b should), pruned docker/data to free disk.
 - [ ] **TR6** Per-segment override (prompt + reference) on RunSegment + single-segment re-run (Sonnet) — **IN PROGRESS**. User req: some segments didn't swap; tune prompt/ref per swap segment and re-run just that one (cheap). Reverses earlier "drop per-segment override" for runs.
+- [ ] **TR7** Audio mode option per run: `original` (mux full source audio, current) vs `seedance` (per-clip audio: swap=Seedance clip audio, keep=original cut audio — avoids drift when clip durations shift) (Sonnet) — **IN PROGRESS**. User: original sometimes desyncs due to clip-length drift; kie audio confirmed fine.
 - [ ] **TR5b** Cleanup: remove v1 (Job/Segment/pipeline/api/web), make v2 default at /, startup alembic + orphaned-run reconciliation, merge v2→main — AFTER user accepts v2
 
 ## Review log
