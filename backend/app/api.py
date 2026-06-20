@@ -11,8 +11,8 @@ import uuid
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -338,6 +338,69 @@ def download_result(job_id: str, db: Session = Depends(get_db)):
             "X-GDrive-File-Id": job.result_gdrive_file_id or "",
         },
     )
+
+
+@router.get("/jobs/{job_id}/frame")
+def get_frame(
+    job_id: str,
+    t: float = Query(0.0, description="Timestamp in seconds"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Extract a single JPEG frame from the job's source video at time *t* seconds.
+
+    Cached as ``frames/frame_<t_ms>.jpg`` inside the job directory.
+    Returns 404 if the job or its source video file is not found on disk.
+    """
+    import subprocess
+    import tempfile
+
+    job = _get_job_or_404(job_id, db)
+
+    src = job.source_local_path
+    if not src or not os.path.exists(src):
+        raise HTTPException(status_code=404, detail="Source video not available on disk")
+
+    # Build cache path
+    jdir = job_dir(job_id)
+    frames_dir = os.path.join(jdir, "frames")
+    os.makedirs(frames_dir, exist_ok=True)
+    t_ms = int(t * 1000)
+    cache_path = os.path.join(frames_dir, f"frame_{t_ms}.jpg")
+
+    if not os.path.exists(cache_path):
+        # Extract frame with ffmpeg into a temp file then rename (atomic)
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".jpg", dir=frames_dir)
+        os.close(tmp_fd)
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-ss", str(t),
+                    "-i", src,
+                    "-frames:v", "1",
+                    "-q:v", "5",
+                    "-f", "image2",
+                    tmp_path,
+                ],
+                capture_output=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                os.unlink(tmp_path)
+                raise HTTPException(
+                    status_code=500,
+                    detail="ffmpeg failed to extract frame",
+                )
+            os.rename(tmp_path, cache_path)
+        except subprocess.TimeoutExpired:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise HTTPException(status_code=500, detail="ffmpeg timed out")
+
+    with open(cache_path, "rb") as fh:
+        data = fh.read()
+
+    return Response(content=data, media_type="image/jpeg")
 
 
 @router.post("/jobs/{job_id}/retry", response_model=JobResponse)

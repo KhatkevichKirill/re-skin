@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job.id[:8] }} — re-skin{% endblock %}
+
+{% block content %}
+
+<!-- ── Header ── -->
+<div style="display:flex; align-items:center; gap:12px; margin-bottom:20px">
+  <a href="/" class="btn btn-sm btn-secondary">&larr; All Jobs</a>
+  <h2 style="margin:0; font-size:17px">
+    Job <code style="font-size:14px">{{ job.id[:8] }}</code>
+    <span class="badge badge-{{ job.status }}" id="status-badge">{{ job.status }}</span>
+  </h2>
+</div>
+
+<!-- ── Probe metadata ── -->
+<div class="card">
+  <div class="card-header"><h2>Details</h2></div>
+  <div class="card-body">
+    <div class="meta-grid">
+      <div class="meta-item">
+        <label>Source type</label>
+        <div class="val">{{ job.source_type }}</div>
+      </div>
+      <div class="meta-item">
+        <label>Source ref</label>
+        <div class="val" style="word-break:break-all;font-size:12px">{{ job.source_ref }}</div>
+      </div>
+      <div class="meta-item">
+        <label>Resolution</label>
+        <div class="val">{{ job.resolution }}</div>
+      </div>
+      {% if job.duration_sec %}
+      <div class="meta-item">
+        <label>Duration</label>
+        <div class="val">{{ "%.1f"|format(job.duration_sec) }}s</div>
+      </div>
+      {% endif %}
+      {% if job.width and job.height %}
+      <div class="meta-item">
+        <label>Dimensions</label>
+        <div class="val">{{ job.width }}×{{ job.height }}</div>
+      </div>
+      {% endif %}
+      {% if job.fps %}
+      <div class="meta-item">
+        <label>FPS</label>
+        <div class="val">{{ "%.2f"|format(job.fps) }}</div>
+      </div>
+      {% endif %}
+      <div class="meta-item">
+        <label>Created</label>
+        <div class="val">{{ job.created_at.strftime("%Y-%m-%d %H:%M:%S") }}</div>
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label>Default prompt</label>
+      <div style="padding:8px 10px; background:#f8f9fa; border-radius:4px; font-size:13px; white-space:pre-wrap">{{ job.default_prompt }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Status-driven content (polling target) ── -->
+<div id="status-content">
+  {% include "partials/job_status_content.html" %}
+</div>
+
+{% endblock %}

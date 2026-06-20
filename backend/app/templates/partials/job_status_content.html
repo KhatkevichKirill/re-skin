@@ -1,0 +1,355 @@
+{% set s = job.status %}
+
+{% if s in ("created", "analyzing") %}
+<!-- ── Analyzing: polling ── -->
+<div class="card">
+  <div class="card-body">
+    <div
+      class="polling-section"
+      hx-get="/jobs/{{ job.id }}/status-fragment"
+      hx-trigger="every 2s"
+      hx-target="#status-content"
+      hx-swap="innerHTML"
+    >
+      <span class="spinner"></span>
+      <span>Analyzing video&hellip; this may take a minute.</span>
+    </div>
+  </div>
+</div>
+
+{% elif s == "review" %}
+<!-- ── Review: segment editor ── -->
+<div class="card">
+  <div class="card-header">
+    <h2>Segment Editor</h2>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">{{ segments|length }} segment(s)</span>
+  </div>
+  <div class="card-body" style="padding:0">
+    <form id="seg-form">
+      <div style="overflow-x:auto">
+        <table class="seg-table" id="segments-table">
+          <thead>
+            <tr>
+              <th style="width:90px">Thumb</th>
+              <th style="width:30px">#</th>
+              <th style="width:80px">Start (s)</th>
+              <th style="width:80px">End (s)</th>
+              <th style="width:70px">Action</th>
+              <th style="width:60px">Pre-roll</th>
+              <th style="width:60px">Post-roll</th>
+              <th>Prompt override</th>
+              <th style="width:50px"></th>
+            </tr>
+          </thead>
+          <tbody id="seg-tbody">
+            {% for seg in segments %}
+            <tr data-seg-id="{{ seg.id }}" class="seg-row">
+              <td>
+                {% if seg.action == "swap" %}
+                <img
+                  class="seg-thumb"
+                  src="/api/jobs/{{ job.id }}/frame?t={{ seg.start_sec|int }}"
+                  alt="frame at {{ seg.start_sec }}s"
+                  loading="lazy"
+                  onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'"
+                />
+                <div class="seg-thumb-placeholder" style="display:none">no preview</div>
+                {% else %}
+                <div class="seg-thumb-placeholder">keep</div>
+                {% endif %}
+              </td>
+              <td>{{ seg.index }}</td>
+              <td><input type="number" step="0.1" value="{{ seg.start_sec }}" name="start_sec" class="seg-start" /></td>
+              <td><input type="number" step="0.1" value="{{ seg.end_sec }}" name="end_sec" class="seg-end" /></td>
+              <td>
+                <select name="action" class="seg-action">
+                  <option value="swap" {% if seg.action == "swap" %}selected{% endif %}>swap</option>
+                  <option value="keep" {% if seg.action == "keep" %}selected{% endif %}>keep</option>
+                </select>
+              </td>
+              <td><input type="number" step="0.1" value="{{ seg.pre_roll_sec }}" name="pre_roll_sec" class="seg-pre" /></td>
+              <td><input type="number" step="0.1" value="{{ seg.post_roll_sec }}" name="post_roll_sec" class="seg-post" /></td>
+              <td><input type="text" value="{{ seg.prompt_override or '' }}" name="prompt_override" placeholder="(use job default)" /></td>
+              <td>
+                <button type="button" class="btn btn-sm btn-danger" onclick="deleteRow(this)">X</button>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="action-row" style="padding:16px">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="addRow()">+ Add segment</button>
+        <div style="margin-left:auto; display:flex; gap:8px">
+          <button
+            type="button"
+            class="btn btn-warning"
+            id="save-btn"
+            onclick="saveSegments('{{ job.id }}')"
+          >Save edits</button>
+          <button
+            type="button"
+            class="btn btn-success"
+            id="submit-btn"
+            onclick="submitJob('{{ job.id }}')"
+          >Submit for processing</button>
+        </div>
+      </div>
+    </form>
+    <div id="seg-messages" style="padding:0 16px 8px"></div>
+  </div>
+</div>
+
+<script>
+// ── Segment editor helpers ──
+
+var _newRowCount = 0;
+
+function deleteRow(btn) {
+  btn.closest('tr').remove();
+}
+
+function addRow() {
+  _newRowCount++;
+  var tbody = document.getElementById('seg-tbody');
+  var tr = document.createElement('tr');
+  tr.dataset.segId = 'new-' + _newRowCount;
+  tr.className = 'seg-row new-seg';
+
+  var td0 = document.createElement('td');
+  var ph = document.createElement('div');
+  ph.className = 'seg-thumb-placeholder';
+  ph.textContent = 'new';
+  td0.appendChild(ph);
+
+  var td1 = document.createElement('td');
+  td1.textContent = '-';
+
+  function numInput(val, cls) {
+    var inp = document.createElement('input');
+    inp.type = 'number';
+    inp.step = '0.1';
+    inp.value = val;
+    inp.name = cls.replace('seg-','');
+    inp.className = cls;
+    return inp;
+  }
+
+  var td2 = document.createElement('td'); td2.appendChild(numInput(0,'seg-start'));
+  var td3 = document.createElement('td'); td3.appendChild(numInput(5,'seg-end'));
+
+  var td4 = document.createElement('td');
+  var sel = document.createElement('select');
+  sel.name = 'action';
+  sel.className = 'seg-action';
+  ['swap','keep'].forEach(function(v) {
+    var opt = document.createElement('option');
+    opt.value = v; opt.textContent = v;
+    if (v === 'keep') opt.selected = true;
+    sel.appendChild(opt);
+  });
+  td4.appendChild(sel);
+
+  var td5 = document.createElement('td'); td5.appendChild(numInput(0,'seg-pre'));
+  var td6 = document.createElement('td'); td6.appendChild(numInput(0,'seg-post'));
+
+  var td7 = document.createElement('td');
+  var pInp = document.createElement('input');
+  pInp.type = 'text'; pInp.name = 'prompt_override';
+  pInp.placeholder = '(use job default)';
+  td7.appendChild(pInp);
+
+  var td8 = document.createElement('td');
+  var delBtn = document.createElement('button');
+  delBtn.type = 'button'; delBtn.className = 'btn btn-sm btn-danger';
+  delBtn.textContent = 'X';
+  delBtn.onclick = function() { deleteRow(delBtn); };
+  td8.appendChild(delBtn);
+
+  [td0,td1,td2,td3,td4,td5,td6,td7,td8].forEach(function(td){ tr.appendChild(td); });
+  tbody.appendChild(tr);
+}
+
+function collectEdits() {
+  var rows = document.querySelectorAll('#seg-tbody tr.seg-row');
+  var originalRows = document.querySelectorAll('#seg-tbody tr.seg-row:not(.new-seg)');
+  var originalIds = new Set([].slice.call(originalRows).map(function(r){ return r.dataset.segId; }));
+
+  var updates = [];
+  var creates = [];
+  var currentIds = new Set();
+
+  [].slice.call(rows).forEach(function(row) {
+    var segId = row.dataset.segId;
+    var isNew = row.classList.contains('new-seg');
+    var data = {
+      start_sec: parseFloat(row.querySelector('.seg-start').value),
+      end_sec:   parseFloat(row.querySelector('.seg-end').value),
+      action:    row.querySelector('.seg-action').value,
+      pre_roll_sec:  parseFloat(row.querySelector('.seg-pre').value),
+      post_roll_sec: parseFloat(row.querySelector('.seg-post').value),
+      prompt_override: (row.querySelector('input[name="prompt_override"]').value.trim()) || null,
+    };
+
+    if (isNew) {
+      creates.push(Object.assign({}, data, { has_face: data.action === 'swap' }));
+    } else {
+      currentIds.add(segId);
+      updates.push(Object.assign({ id: segId }, data));
+    }
+  });
+
+  var deletes = [].slice.call(originalIds).filter(function(id){ return !currentIds.has(id); });
+
+  return { updates: updates, deletes: deletes, creates: creates };
+}
+
+async function saveSegments(jobId) {
+  var btn = document.getElementById('save-btn');
+  var msg = document.getElementById('seg-messages');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  try {
+    var body = collectEdits();
+    var res = await fetch('/api/jobs/' + jobId + '/segments', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      var err = await res.json().catch(function(){ return { detail: res.statusText }; });
+      var alertDiv = document.createElement('div');
+      alertDiv.className = 'alert alert-danger';
+      alertDiv.textContent = 'Save failed: ' + (err.detail || res.statusText);
+      msg.textContent = '';
+      msg.appendChild(alertDiv);
+    } else {
+      var okDiv = document.createElement('div');
+      okDiv.className = 'alert alert-info';
+      okDiv.textContent = 'Segments saved.';
+      msg.textContent = '';
+      msg.appendChild(okDiv);
+      setTimeout(function() { msg.textContent = ''; }, 3000);
+    }
+  } catch(e) {
+    var errDiv = document.createElement('div');
+    errDiv.className = 'alert alert-danger';
+    errDiv.textContent = 'Network error: ' + e.message;
+    msg.textContent = '';
+    msg.appendChild(errDiv);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save edits';
+  }
+}
+
+async function submitJob(jobId) {
+  var btn = document.getElementById('submit-btn');
+  var msg = document.getElementById('seg-messages');
+  btn.disabled = true;
+  btn.textContent = 'Submitting...';
+  try {
+    var patchBody = collectEdits();
+    var patchRes = await fetch('/api/jobs/' + jobId + '/segments', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patchBody),
+    });
+    if (!patchRes.ok) {
+      var err = await patchRes.json().catch(function(){ return { detail: patchRes.statusText }; });
+      var alertDiv = document.createElement('div');
+      alertDiv.className = 'alert alert-danger';
+      alertDiv.textContent = 'Save failed before submit: ' + (err.detail || patchRes.statusText);
+      msg.textContent = '';
+      msg.appendChild(alertDiv);
+      btn.disabled = false;
+      btn.textContent = 'Submit for processing';
+      return;
+    }
+    var res = await fetch('/api/jobs/' + jobId + '/submit', { method: 'POST' });
+    if (!res.ok) {
+      var err2 = await res.json().catch(function(){ return { detail: res.statusText }; });
+      var alertDiv2 = document.createElement('div');
+      alertDiv2.className = 'alert alert-danger';
+      alertDiv2.textContent = 'Submit failed: ' + (err2.detail || res.statusText);
+      msg.textContent = '';
+      msg.appendChild(alertDiv2);
+      btn.disabled = false;
+      btn.textContent = 'Submit for processing';
+      return;
+    }
+    window.location.reload();
+  } catch(e) {
+    var errDiv = document.createElement('div');
+    errDiv.className = 'alert alert-danger';
+    errDiv.textContent = 'Network error: ' + e.message;
+    msg.textContent = '';
+    msg.appendChild(errDiv);
+    btn.disabled = false;
+    btn.textContent = 'Submit for processing';
+  }
+}
+</script>
+
+{% elif s in ("queued", "processing", "stitching", "delivering") %}
+<!-- ── Processing: polling ── -->
+<div class="card">
+  <div class="card-body">
+    <div
+      class="polling-section"
+      hx-get="/jobs/{{ job.id }}/status-fragment"
+      hx-trigger="every 2s"
+      hx-target="#status-content"
+      hx-swap="innerHTML"
+    >
+      <span class="spinner"></span>
+      <span>
+        Status: <strong>{{ s }}</strong>
+        {% if segments %}
+          &mdash;
+          {{ segments|selectattr("status", "equalto", "completed")|list|length }}
+          /
+          {{ segments|selectattr("action", "equalto", "swap")|list|length }}
+          swap segments completed
+        {% endif %}
+      </span>
+    </div>
+  </div>
+</div>
+
+{% elif s == "done" %}
+<!-- ── Done: preview + download ── -->
+<div class="card">
+  <div class="card-header"><h2>Result</h2></div>
+  <div class="card-body">
+    <video class="video-preview" controls>
+      <source src="/api/jobs/{{ job.id }}/result" type="video/mp4" />
+      Your browser does not support HTML5 video.
+    </video>
+    <div class="action-row">
+      <a class="btn btn-success" href="/api/jobs/{{ job.id }}/result" download>Download MP4</a>
+      {% if gdrive_link %}
+      <a class="btn btn-secondary" href="{{ gdrive_link }}" target="_blank" rel="noopener">Open in Google Drive</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% elif s == "failed" %}
+<!-- ── Failed: error + retry ── -->
+<div class="card">
+  <div class="card-header"><h2>Job Failed</h2></div>
+  <div class="card-body">
+    {% if job.error_message %}
+    <div class="alert alert-danger">
+      <strong>Error:</strong> {{ job.error_message }}
+    </div>
+    {% endif %}
+    <form method="post" action="/jobs/{{ job.id }}/retry">
+      <button type="submit" class="btn btn-warning">Retry Job</button>
+    </form>
+  </div>
+</div>
+
+{% endif %}
