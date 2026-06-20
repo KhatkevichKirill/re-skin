@@ -5,15 +5,28 @@ All job files live under  <DATA_DIR>/jobs/<job_id>/
   clips/    — raw cuts from the source video (keep segments + swap source clips)
   results/  — downloaded AI outputs + final stitched video
   source.*  — the local copy of the source video
+
+DATA_DIR is resolved against BASE_DIR (see config.py) so the same absolute path
+is used whether the process CWD is / or /app or anywhere else.
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
-# Base data directory.  Overridable via DATA_DIR env var so tests can
-# redirect to a tempdir without touching anything else.
-_BASE = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "..", "data"))
+# Resolve the data directory against BASE_DIR (same logic as config.py) so both
+# api and worker containers (WORKDIR /app, volume ./data:/app/data) agree on the
+# same absolute path regardless of CWD.
+_BASE_DIR = Path(
+    os.environ.get("APP_BASE_DIR", str(Path(__file__).parent.parent))
+).resolve()
+
+_raw = os.environ.get("DATA_DIR", "./data")
+if os.path.isabs(_raw):
+    _BASE = _raw
+else:
+    _BASE = str(_BASE_DIR / _raw)
 
 
 def _ensure(path: str) -> str:
