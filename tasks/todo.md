@@ -44,6 +44,7 @@ Strategy: ADDITIVE — TR1 adds new models alongside v1's Job/Segment (kept gree
 - [x] **TR5a.2** Live stack rebuilt from v2; /v2 UI + /api/v2 + v2 worker live (v1 still at /). Fixed en route: added .dockerignore (build was shipping data/ → disk full), created v2 tables in deployed DB via create_all (deploy doesn't run alembic on startup — TR5b should), pruned docker/data to free disk.
 - [ ] **TR6** Per-segment override (prompt + reference) on RunSegment + single-segment re-run (Sonnet) — **IN PROGRESS**. User req: some segments didn't swap; tune prompt/ref per swap segment and re-run just that one (cheap). Reverses earlier "drop per-segment override" for runs.
 - [ ] **TR7** Audio mode option per run: `original` (mux full source audio, current) vs `seedance` (per-clip audio: swap=Seedance clip audio, keep=original cut audio — avoids drift when clip durations shift) (Sonnet) — **IN PROGRESS**. User: original sometimes desyncs due to clip-length drift; kie audio confirmed fine.
+- [ ] **TR8** Segment editor: linked/contiguous boundaries — editing a segment's end moves the next segment's start by the same delta so total video timing is locked (no drift/overlap/gap). Backend normalizes to a contiguous partition of [0,duration]; first.start=0, last.end=duration fixed. (Sonnet) — **IN PROGRESS**
 - [ ] **TR5b** Cleanup: remove v1 (Job/Segment/pipeline/api/web), make v2 default at /, startup alembic + orphaned-run reconciliation, merge v2→main — AFTER user accepts v2
 
 ## Review log
