@@ -74,11 +74,63 @@ def _save_upload(upload: UploadFile, dest: str) -> None:
         fh.write(upload.file.read())
 
 
-def _renumber_segment_defs(segments: list) -> None:
-    """Re-assign index values sorted by start_sec (in-place)."""
+def _normalize_partition(segments: list, duration: float) -> None:
+    """Normalize *segments* (in-place) into a contiguous partition of [0, duration].
+
+    Algorithm
+    ---------
+    1. Sort by start_sec (end_sec is the authoritative boundary between neighbours).
+    2. Force segment[0].start_sec = 0.0 and segment[-1].end_sec = duration.
+    3. For each i >= 1: segment[i].start_sec = segment[i-1].end_sec  (derive starts
+       from edited ends so that only the one changed boundary moves).
+    4. Re-assign index 0..n-1.
+    5. Validate every segment has a strictly positive duration and every end is within
+       (0, duration].  Raise HTTPException(400) on any violation with a clear message.
+    """
+    if not segments:
+        return
+
     ordered = sorted(segments, key=lambda s: s.start_sec)
+
+    # Pin the outer boundaries
+    ordered[0].start_sec = 0.0
+    ordered[-1].end_sec = duration
+
+    # Derive internal starts from the preceding segment's end
+    for i in range(1, len(ordered)):
+        ordered[i].start_sec = ordered[i - 1].end_sec
+
+    # Re-index
     for i, seg in enumerate(ordered):
         seg.index = i
+
+    # Validate
+    for seg in ordered:
+        if seg.end_sec <= seg.start_sec:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Segment index {seg.index} (id={seg.id!r}) has "
+                    f"end_sec={seg.end_sec} <= start_sec={seg.start_sec}; "
+                    "every segment must have a positive duration."
+                ),
+            )
+        if seg.end_sec > duration + 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Segment index {seg.index} (id={seg.id!r}) has "
+                    f"end_sec={seg.end_sec} which exceeds project duration {duration}."
+                ),
+            )
+        if seg.end_sec <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Segment index {seg.index} (id={seg.id!r}) has "
+                    f"end_sec={seg.end_sec} which is not positive."
+                ),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +294,16 @@ def update_project_segments(
         db.flush()
         segments[seg.id] = seg
 
-    # Re-number by start_sec
+    # Normalize to a contiguous partition [0, duration]
     remaining = list(segments.values())
-    _renumber_segment_defs(remaining)
+    duration = project.duration_sec
+    if duration is None:
+        # Fallback: just renumber without partition enforcement
+        ordered = sorted(remaining, key=lambda s: s.start_sec)
+        for i, seg in enumerate(ordered):
+            seg.index = i
+    else:
+        _normalize_partition(remaining, duration)
 
     db.commit()
 
