@@ -27,6 +27,9 @@
     <span class="text-muted" style="font-size:12px; margin-left:auto">{{ segments|length }} segment(s)</span>
   </div>
   <div class="card-body" style="padding:0">
+    <p class="hint" style="padding:8px 16px 0; margin:0; font-size:12px; color:var(--color-muted)">
+      Boundaries are linked — changing a segment's end shifts the next segment's start by the same amount, so the total length stays fixed.
+    </p>
     <form id="seg-form">
       <div style="overflow-x:auto">
         <table class="seg-table" id="segments-table">
@@ -44,6 +47,7 @@
           </thead>
           <tbody id="seg-tbody">
             {% for seg in segments %}
+            {% set is_last = loop.last %}
             <tr data-seg-id="{{ seg.id }}" class="seg-row">
               <td>
                 {% if seg.action == "swap" %}
@@ -59,9 +63,32 @@
                 <div class="seg-thumb-placeholder">keep</div>
                 {% endif %}
               </td>
-              <td>{{ seg.index }}</td>
-              <td><input type="number" step="0.1" value="{{ seg.start_sec }}" name="start_sec" class="seg-start" /></td>
-              <td><input type="number" step="0.1" value="{{ seg.end_sec }}" name="end_sec" class="seg-end" /></td>
+              <td class="seg-index-cell">{{ seg.index }}</td>
+              <td>
+                <input
+                  type="number" step="0.1" value="{{ seg.start_sec }}"
+                  name="start_sec" class="seg-start"
+                  readonly tabindex="-1"
+                  style="background:var(--color-surface,#f5f5f5); color:var(--color-muted,#888); cursor:default"
+                />
+              </td>
+              <td>
+                {% if is_last %}
+                <input
+                  type="number" step="0.1" value="{{ seg.end_sec }}"
+                  name="end_sec" class="seg-end"
+                  readonly tabindex="-1"
+                  style="background:var(--color-surface,#f5f5f5); color:var(--color-muted,#888); cursor:default"
+                  title="Last segment end is fixed at video duration"
+                />
+                {% else %}
+                <input
+                  type="number" step="0.1" value="{{ seg.end_sec }}"
+                  name="end_sec" class="seg-end"
+                  data-end="{{ seg.end_sec }}"
+                />
+                {% endif %}
+              </td>
               <td>
                 <select name="action" class="seg-action">
                   <option value="swap" {% if seg.action == "swap" %}selected{% endif %}>swap</option>
@@ -234,13 +261,87 @@ function handleRunCreated(event) {
 
 var _newRowCount = 0;
 
+// Called when operator changes a segment's end input.
+// - Clamps the typed value to the open interval (myStart, nextEnd).
+// - Updates the next row's start display to the new value.
+function onEndChange(inp) {
+  var tbody = document.getElementById('seg-tbody');
+  var rows = tbody.querySelectorAll('tr.seg-row');
+  var rowArr = [].slice.call(rows);
+  var tr = inp.closest('tr');
+  var idx = rowArr.indexOf(tr);
+
+  var myStart = parseFloat(tr.querySelector('.seg-start').value);
+  var newEnd = parseFloat(inp.value);
+
+  // Determine ceiling: the end of the next row (or last row's fixed end)
+  var ceiling;
+  if (idx + 1 < rowArr.length) {
+    // The next row's end is the ceiling for this boundary
+    var nextEndInp = rowArr[idx + 1].querySelector('.seg-end');
+    ceiling = parseFloat(nextEndInp.value);
+  } else {
+    // This is the last row — its end is fixed; should not be editable, but guard anyway
+    ceiling = newEnd;
+  }
+
+  // Clamp to open interval (myStart, ceiling)
+  var EPS = 0.05;
+  if (newEnd <= myStart + EPS) {
+    newEnd = myStart + EPS;
+    inp.value = parseFloat(newEnd.toFixed(3));
+  }
+  if (newEnd >= ceiling - EPS) {
+    newEnd = ceiling - EPS;
+    inp.value = parseFloat(newEnd.toFixed(3));
+  }
+
+  // Propagate: update the next row's start display
+  if (idx + 1 < rowArr.length) {
+    var nextStartInp = rowArr[idx + 1].querySelector('.seg-start');
+    nextStartInp.value = parseFloat(newEnd.toFixed(3));
+  }
+}
+
+// Re-apply linked-boundary listeners to all editable end inputs.
+function rebindEndListeners() {
+  var tbody = document.getElementById('seg-tbody');
+  var rows = tbody.querySelectorAll('tr.seg-row');
+  var rowArr = [].slice.call(rows);
+  rowArr.forEach(function(tr, idx) {
+    var endInp = tr.querySelector('.seg-end');
+    if (!endInp || endInp.readOnly) return;
+    // Clone to remove stale listeners, then re-add
+    var fresh = endInp.cloneNode(true);
+    endInp.parentNode.replaceChild(fresh, endInp);
+    fresh.addEventListener('input', function() { onEndChange(fresh); });
+    fresh.addEventListener('change', function() { onEndChange(fresh); });
+  });
+}
+
+// Run on initial page load so server-rendered rows are wired up.
+document.addEventListener('DOMContentLoaded', function() { rebindEndListeners(); });
+
 function deleteRow(btn) {
   btn.closest('tr').remove();
+  rebindEndListeners();
 }
 
 function addSegRow() {
   _newRowCount++;
   var tbody = document.getElementById('seg-tbody');
+  var rows = tbody.querySelectorAll('tr.seg-row');
+  var lastRow = rows[rows.length - 1];
+
+  // Default new segment: starts where the current last segment starts,
+  // ends 5s later (backend normalization will reconcile actual boundaries).
+  var defaultStart = 0;
+  var defaultEnd = 5;
+  if (lastRow) {
+    defaultStart = parseFloat(lastRow.querySelector('.seg-start').value) || 0;
+    defaultEnd = defaultStart + 5;
+  }
+
   var tr = document.createElement('tr');
   tr.dataset.segId = 'new-' + _newRowCount;
   tr.className = 'seg-row new-seg';
@@ -252,17 +353,23 @@ function addSegRow() {
   td0.appendChild(ph);
 
   var td1 = document.createElement('td');
+  td1.className = 'seg-index-cell';
   td1.textContent = '-';
 
-  function numInput(val, cls) {
+  function numInput(val, cls, readOnly) {
     var inp = document.createElement('input');
     inp.type = 'number'; inp.step = '0.1'; inp.value = val;
     inp.name = cls.replace('seg-',''); inp.className = cls;
+    if (readOnly) {
+      inp.readOnly = true;
+      inp.tabIndex = -1;
+      inp.style.cssText = 'background:var(--color-surface,#f5f5f5);color:var(--color-muted,#888);cursor:default';
+    }
     return inp;
   }
 
-  var td2 = document.createElement('td'); td2.appendChild(numInput(0,'seg-start'));
-  var td3 = document.createElement('td'); td3.appendChild(numInput(5,'seg-end'));
+  var td2 = document.createElement('td'); td2.appendChild(numInput(defaultStart, 'seg-start', true));
+  var td3 = document.createElement('td'); td3.appendChild(numInput(defaultEnd, 'seg-end', false));
 
   var td4 = document.createElement('td');
   var sel = document.createElement('select');
@@ -275,8 +382,8 @@ function addSegRow() {
   });
   td4.appendChild(sel);
 
-  var td5 = document.createElement('td'); td5.appendChild(numInput(0,'seg-pre'));
-  var td6 = document.createElement('td'); td6.appendChild(numInput(0,'seg-post'));
+  var td5 = document.createElement('td'); td5.appendChild(numInput(0,'seg-pre', false));
+  var td6 = document.createElement('td'); td6.appendChild(numInput(0,'seg-post', false));
 
   var td7 = document.createElement('td');
   var delBtn = document.createElement('button');
@@ -286,7 +393,16 @@ function addSegRow() {
   td7.appendChild(delBtn);
 
   [td0,td1,td2,td3,td4,td5,td6,td7].forEach(function(td){ tr.appendChild(td); });
-  tbody.appendChild(tr);
+
+  // Insert before the last row so the new segment slots in before the final
+  // (fixed-end) row.  If there is no last row, just append.
+  if (lastRow) {
+    tbody.insertBefore(tr, lastRow);
+  } else {
+    tbody.appendChild(tr);
+  }
+
+  rebindEndListeners();
 }
 
 function collectSegEdits() {
@@ -327,7 +443,7 @@ async function saveSegments(projectId) {
   btn.textContent = 'Saving...';
   try {
     var body = collectSegEdits();
-    var res = await fetch('/api/v2/projects/' + projectId + '/segments', {
+    var res = await fetch('/api/v2/projects/' + encodeURIComponent(projectId) + '/segments', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
