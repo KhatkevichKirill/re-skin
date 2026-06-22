@@ -71,6 +71,9 @@ services:
     # mem_swap == mem_limit → no swap for this container, so a runaway job is
     # killed promptly rather than thrashing swap and hanging SSH.
     memswap_limit: 2560m
+    # Leave ~0.5 of the 2 host cores free so a full-CPU x264 stitch/encode can't
+    # starve SSH / the api. Applied live via `docker update` on running jobs.
+    cpus: 1.5
     # python -m worker.worker — PYTHONPATH=/app means `from app.tasks import ...`
     # resolves correctly because app/ and worker/ are both under /app.
     command: python -m worker.worker
