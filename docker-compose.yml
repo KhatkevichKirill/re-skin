@@ -2,6 +2,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: re-skin-redis
+    restart: unless-stopped
     # No host port: Redis is reachable only on the internal docker network
     # (worker/api connect by service name). Exposing 6379 publicly is a known
     # RCE/abuse vector — keep it internal.
@@ -22,6 +23,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     container_name: re-skin-api
+    restart: unless-stopped
     command: >
       uvicorn app.main:app
       --host 0.0.0.0
@@ -60,6 +62,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     container_name: re-skin-worker
+    restart: unless-stopped
     # python -m worker.worker — PYTHONPATH=/app means `from app.tasks import ...`
     # resolves correctly because app/ and worker/ are both under /app.
     command: python -m worker.worker
@@ -91,6 +94,7 @@ services:
       context: ./deploy/nginx
       dockerfile: Dockerfile
     container_name: re-skin-nginx
+    restart: unless-stopped
     ports:
       - "${APP_EXTERNAL_PORT:-8847}:8847"
     env_file:
