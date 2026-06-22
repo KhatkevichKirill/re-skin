@@ -783,6 +783,93 @@ class TestCreateRun:
 
 
 # ---------------------------------------------------------------------------
+# Model selection (Seedance vs Gemini Omni) on Run creation
+# ---------------------------------------------------------------------------
+
+
+class TestModelSelection:
+    """Tests for the per-run model field and its model-specific resolution rules."""
+
+    def test_create_run_with_gemini_model_persists(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        session.close()
+
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap", "model": "gemini-omni", "resolution": "1080p"},
+        )
+        assert response.status_code == 201
+        run_id = response.json()["run_id"]
+
+        session = SessionFactory()
+        run = session.get(Run, run_id)
+        session.close()
+        assert run.model == "gemini-omni"
+        assert run.resolution == "1080p"
+
+        # Visible in GET /api/v2/runs/{rid}
+        get_resp = client.get(f"/api/v2/runs/{run_id}")
+        assert get_resp.json()["model"] == "gemini-omni"
+
+    def test_create_run_default_model_is_seedance(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        session.close()
+
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap", "resolution": "720p"},
+        )
+        assert response.status_code == 201
+        run_id = response.json()["run_id"]
+
+        get_resp = client.get(f"/api/v2/runs/{run_id}")
+        assert get_resp.json()["model"] == "seedance"
+
+    def test_invalid_model_is_400(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap", "model": "midjourney"},
+        )
+        assert response.status_code == 400
+        assert "model" in response.json()["detail"].lower()
+
+    def test_gemini_allows_4k(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        session.close()
+
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap", "model": "gemini-omni", "resolution": "4k"},
+        )
+        assert response.status_code == 201
+
+    def test_gemini_rejects_480p(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap", "model": "gemini-omni", "resolution": "480p"},
+        )
+        assert response.status_code == 400
+        assert "resolution" in response.json()["detail"].lower()
+
+    def test_seedance_rejects_4k(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap", "model": "seedance", "resolution": "4k"},
+        )
+        assert response.status_code == 400
+        assert "resolution" in response.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
 # TR7: audio_mode field on Run creation and RunResponse
 # ---------------------------------------------------------------------------
 

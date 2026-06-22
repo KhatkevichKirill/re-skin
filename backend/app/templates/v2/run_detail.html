@@ -25,6 +25,10 @@
       </div>
       {% endif %}
       <div class="meta-item">
+        <label>Model</label>
+        <div class="val">{% if run.model == "gemini-omni" %}Gemini Omni{% else %}Seedance{% endif %}</div>
+      </div>
+      <div class="meta-item">
         <label>Resolution</label>
         <div class="val">{{ run.resolution }}</div>
       </div>

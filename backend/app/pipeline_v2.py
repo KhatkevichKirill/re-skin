@@ -39,6 +39,9 @@ from .pipeline import (
     MIN_SWAP_VIDEO_SEC,
     _clamp_duration,
     _map_aspect,
+    _map_omni_aspect,
+    _omni_resolution,
+    _snap_omni_duration,
     resolve_reference_urls,
 )
 from .state_machine import ProjectStatus, RunStatus, SegmentStatus, transition
@@ -473,17 +476,35 @@ def _submit_swap_segment(
     transition(rs, SegmentStatus.submitted)
     session.commit()
 
-    aspect = _map_aspect(project.aspect_ratio)
-    clip_duration = _clamp_duration(clip_start, clip_end)
     effective_prompt = rs.prompt_override if rs.prompt_override else (run.prompt or "")
-    task_id = kie.create_task(
-        prompt=effective_prompt,
-        reference_image_urls=ref_urls,
-        reference_video_urls=[clip_url],
-        resolution=run.resolution or settings.DEFAULT_RESOLUTION,
-        aspect_ratio=aspect,
-        duration=clip_duration,
-    )
+
+    if run.model == "gemini-omni":
+        # Gemini takes the clip via video_list (trim <= 10s) and a fixed-set
+        # output duration; segments longer than 10s are truncated to 10s.
+        trim_end = round(min(clip_end - clip_start, 10.0), 2)
+        task_id = kie.create_omni_task(
+            prompt=effective_prompt,
+            image_urls=ref_urls,
+            video_url=clip_url,
+            video_start=0,
+            video_end=trim_end,
+            resolution=_omni_resolution(run.resolution),
+            aspect_ratio=_map_omni_aspect(
+                project.aspect_ratio, project.width, project.height
+            ),
+            duration=_snap_omni_duration(clip_start, clip_end),
+        )
+    else:
+        aspect = _map_aspect(project.aspect_ratio)
+        clip_duration = _clamp_duration(clip_start, clip_end)
+        task_id = kie.create_task(
+            prompt=effective_prompt,
+            reference_image_urls=ref_urls,
+            reference_video_urls=[clip_url],
+            resolution=run.resolution or settings.DEFAULT_RESOLUTION,
+            aspect_ratio=aspect,
+            duration=clip_duration,
+        )
     rs.seedance_task_id = task_id
     transition(rs, SegmentStatus.generating)
     session.commit()

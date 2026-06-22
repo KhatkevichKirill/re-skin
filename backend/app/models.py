@@ -334,8 +334,13 @@ class Run(Base):
     )
 
     # Processing options
+    model: Mapped[str] = mapped_column(
+        Enum("seedance", "gemini-omni", name="run_model_enum"),
+        nullable=False,
+        default="seedance",
+    )
     resolution: Mapped[str] = mapped_column(
-        Enum("480p", "720p", "1080p", name="run_resolution_enum"),
+        Enum("480p", "720p", "1080p", "4k", name="run_resolution_enum"),
         nullable=False,
         default="480p",
     )

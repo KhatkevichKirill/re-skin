@@ -66,6 +66,41 @@ def _clamp_duration(start: float, end: float) -> int:
     return max(4, min(15, dur))
 
 
+# ---------------------------------------------------------------------------
+# Gemini Omni Video helpers
+# ---------------------------------------------------------------------------
+
+# Gemini Omni accepts only these output durations (seconds) and resolutions,
+# and only landscape/portrait aspect ratios.
+_OMNI_DURATIONS = (4, 6, 8, 10)
+_OMNI_RESOLUTIONS = {"720p", "1080p", "4k"}
+
+
+def _snap_omni_duration(start: float, end: float) -> int:
+    """Snap a clip's length to the nearest allowed Gemini Omni duration."""
+    raw = end - start
+    return min(_OMNI_DURATIONS, key=lambda d: abs(d - raw))
+
+
+def _map_omni_aspect(
+    raw: Optional[str], width: Optional[int], height: Optional[int]
+) -> str:
+    """
+    Return a Gemini-compatible aspect ratio (``16:9`` or ``9:16``).
+
+    Passes through ``raw`` if it's already one of the two; otherwise picks by
+    orientation (portrait → ``9:16``, else ``16:9``).
+    """
+    if raw in ("16:9", "9:16"):
+        return raw
+    return "9:16" if (height or 0) >= (width or 0) else "16:9"
+
+
+def _omni_resolution(res: Optional[str]) -> str:
+    """Return a Gemini-compatible resolution, defaulting a stray value to 720p."""
+    return res if res in _OMNI_RESOLUTIONS else "720p"
+
+
 def _default_kie() -> KieClient:
     return KieClient()
 

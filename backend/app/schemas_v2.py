@@ -113,6 +113,7 @@ class RunResponse(BaseModel):
     name: Optional[str] = None
     prompt: str
     reference_image_urls: list = []
+    model: str = "seedance"
     resolution: str
     audio_mode: str = "original"
     gdrive_folder_id: Optional[str] = None
