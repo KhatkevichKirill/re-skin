@@ -209,11 +209,12 @@
           <label for="run-audio-mode">Audio</label>
           <select id="run-audio-mode" name="audio_mode">
             <option value="original" selected>Original — source soundtrack</option>
-            <option value="seedance">Seedance — audio from each generated clip</option>
+            <option value="seedance">Generated clip audio — from each generated clip</option>
           </select>
           <p class="hint">
-            Original = source soundtrack (best when timing matches).
-            Seedance = audio from each generated clip (use if the original drifts out of sync).
+            Original = source soundtrack (best when timing matches, recommended).
+            Generated clip audio = audio from each generated clip (use if the original drifts out of sync;
+            silent segments fall back to silence).
           </p>
         </div>
 

@@ -235,13 +235,34 @@ class TestCreateOmniTask:
         inp = body["input"]
         assert inp["prompt"] == "replace the person"
         assert inp["image_urls"] == ["https://img.test/face.jpg"]
+        # video trim sent as ints; duration sent as a STRING enum.
         assert inp["video_list"] == [
-            {"url": "https://vid.test/seg.mp4", "start": 0, "ends": 8.0}
+            {"url": "https://vid.test/seg.mp4", "start": 0, "ends": 8}
         ]
         assert inp["resolution"] == "1080p"
         assert inp["aspect_ratio"] == "9:16"
-        assert inp["duration"] == 8
+        assert inp["duration"] == "8"
         assert "seed" not in inp  # omitted when not provided
+
+    @respx.mock
+    def test_null_data_200_raises_with_msg(self):
+        """A 200 response with data=null surfaces the API msg, not an AttributeError."""
+        respx.post(f"{JOBS_BASE}/api/v1/jobs/createTask").mock(
+            return_value=httpx.Response(
+                200,
+                json={"code": 422, "msg": "invalid duration", "data": None},
+            )
+        )
+        client = _make_client()
+        with pytest.raises(KieTaskError, match="invalid duration"):
+            client.create_omni_task(
+                prompt="x",
+                image_urls=[],
+                video_url="https://vid.test/seg.mp4",
+                video_start=0,
+                video_end=4.0,
+                duration=4,
+            )
 
     @respx.mock
     def test_seed_included_when_provided(self):

@@ -63,6 +63,33 @@ class KieTaskFailed(KieTaskError):
 
 
 # ---------------------------------------------------------------------------
+# createTask response helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_task_id(data) -> str | None:
+    """Safely pull ``data.data.taskId`` from a createTask response.
+
+    The jobs API can return HTTP 200 with ``"data": null`` and a non-200 body
+    ``code``/``msg`` when it rejects a task; guard against that null so we raise
+    a useful error instead of an AttributeError.
+    """
+    if not isinstance(data, dict):
+        return None
+    inner = data.get("data")
+    if not isinstance(inner, dict):
+        return None
+    return inner.get("taskId")
+
+
+def _no_task_id_msg(data) -> str:
+    """Build an informative error message including the API's code/msg."""
+    code = data.get("code") if isinstance(data, dict) else None
+    msg = data.get("msg") if isinstance(data, dict) else None
+    return f"createTask returned no taskId (code={code}, msg={msg!r}): {data}"
+
+
+# ---------------------------------------------------------------------------
 # Retry helpers
 # ---------------------------------------------------------------------------
 
@@ -220,11 +247,9 @@ class KieClient:
         except Exception as exc:
             raise KieTaskError(f"create_task failed: {exc}") from exc
 
-        task_id: str | None = (
-            data.get("data", {}).get("taskId") if isinstance(data, dict) else None
-        )
+        task_id = _extract_task_id(data)
         if not task_id:
-            raise KieTaskError(f"createTask response missing taskId: {data}")
+            raise KieTaskError(_no_task_id_msg(data))
 
         logger.info("Task created: taskId=%s", task_id)
         return task_id
@@ -279,11 +304,16 @@ class KieClient:
                 "prompt": prompt,
                 "image_urls": image_urls,
                 "video_list": [
-                    {"url": video_url, "start": video_start, "ends": video_end}
+                    {
+                        "url": video_url,
+                        "start": int(video_start),
+                        "ends": int(round(video_end)),
+                    }
                 ],
                 "resolution": resolution,
                 "aspect_ratio": aspect_ratio,
-                "duration": duration,
+                # The API expects duration as a string enum ("4"/"6"/"8"/"10").
+                "duration": str(duration),
             },
         }
         if seed is not None:
@@ -300,11 +330,9 @@ class KieClient:
         except Exception as exc:
             raise KieTaskError(f"create_omni_task failed: {exc}") from exc
 
-        task_id: str | None = (
-            data.get("data", {}).get("taskId") if isinstance(data, dict) else None
-        )
+        task_id = _extract_task_id(data)
         if not task_id:
-            raise KieTaskError(f"createTask response missing taskId: {data}")
+            raise KieTaskError(_no_task_id_msg(data))
 
         logger.info("Omni task created: taskId=%s", task_id)
         return task_id
