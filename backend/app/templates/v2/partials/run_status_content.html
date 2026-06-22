@@ -155,13 +155,43 @@
     if (el) { el.textContent = msg; }
   }
 
+  // Build FormData WITHOUT an empty file input. A blank <input type=file>
+  // serializes to an empty file part that FastAPI rejects as List[UploadFile]
+  // (422). Only append reference_files when a file is actually selected.
+  function segFormData(form) {
+    var fd = new FormData();
+    var pa = form.querySelector('textarea[name="prompt"]');
+    fd.append("prompt", pa ? pa.value : "");
+    var urls = form.querySelector('input[name="reference_urls"]');
+    if (urls && urls.value.trim()) fd.append("reference_urls", urls.value.trim());
+    var files = form.querySelector('input[type="file"][name="reference_files"]');
+    if (files && files.files && files.files.length) {
+      for (var i = 0; i < files.files.length; i++) {
+        fd.append("reference_files", files.files[i]);
+      }
+    }
+    return fd;
+  }
+
+  // Render a server error (string detail, or a 422 validation list) readably.
+  function fmtErr(body, fallback) {
+    var d = body && body.detail;
+    if (Array.isArray(d)) {
+      return d.map(function (e) {
+        var loc = e.loc ? e.loc.join(".") + ": " : "";
+        return loc + (e.msg || "invalid");
+      }).join("; ");
+    }
+    return d || fallback || "error";
+  }
+
   // Persist the segment's current prompt/reference overrides. Returns the fetch promise.
   function saveOverride(form) {
     var runId = form.dataset.runId;
     var rsId  = form.dataset.rsId;
     return fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId), {
       method: "PATCH",
-      body: new FormData(form),
+      body: segFormData(form),
     });
   }
 
@@ -176,7 +206,7 @@
         setTimeout(function () { showStatus(form, ""); }, 3000);
       } else {
         return resp.json().then(function (body) {
-          showStatus(form, "Error: " + (body.detail || resp.status));
+          showStatus(form, "Error: " + fmtErr(body, resp.status));
         });
       }
     })
@@ -196,7 +226,7 @@
     // before reprocessing (no separate save needed).
     fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId) + "/rerun", {
       method: "POST",
-      body: new FormData(form),
+      body: segFormData(form),
     })
     .then(function (resp) {
       if (resp.ok) {
@@ -226,7 +256,7 @@
         }
       } else {
         return resp.json().then(function (body) {
-          alert("Error: " + (body.detail || resp.status));
+          alert("Error: " + fmtErr(body, resp.status));
         });
       }
     })
