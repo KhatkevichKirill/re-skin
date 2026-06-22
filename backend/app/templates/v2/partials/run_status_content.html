@@ -191,23 +191,15 @@
     var runId = form.dataset.runId;
     var rsId  = form.dataset.rsId;
     if (!confirm("Re-run this segment? The run will be re-queued and the final video re-stitched.")) return;
-    // Save the current prompt/reference FIRST so the re-run uses what's on screen.
-    showStatus(form, "Saving prompt…");
-    saveOverride(form)
-    .then(function (saveResp) {
-      if (!saveResp.ok) {
-        return saveResp.json().then(function (body) {
-          alert("Could not save the prompt before re-running: " + (body.detail || saveResp.status));
-        });
-      }
-      showStatus(form, "Re-queuing…");
-      return fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId) + "/rerun", {
-        method: "POST",
-      })
+    showStatus(form, "Re-queuing…");
+    // Atomic: send the current prompt/reference WITH the rerun so it's applied
+    // before reprocessing (no separate save needed).
+    fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId) + "/rerun", {
+      method: "POST",
+      body: new FormData(form),
+    })
     .then(function (resp) {
-      if (resp === undefined) return;  // save failed, already handled
       if (resp.ok) {
-        // Let HTMX take over polling — reload the fragment once.
         if (window.htmx) {
           var target = document.getElementById("run-status-content");
           if (target) {
@@ -223,7 +215,6 @@
             txt.textContent = " Re-queued — processing…";
             poller.appendChild(spinner);
             poller.appendChild(txt);
-            // Clear the target and append the polling node.
             while (target.firstChild) { target.removeChild(target.firstChild); }
             target.appendChild(poller);
             htmx.process(target);
@@ -238,10 +229,6 @@
           alert("Error: " + (body.detail || resp.status));
         });
       }
-      })
-      .catch(function (err) {
-        alert("Network error: " + err);
-      });
     })
     .catch(function (err) {
       alert("Network error: " + err);

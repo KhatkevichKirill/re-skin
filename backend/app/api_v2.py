@@ -600,6 +600,41 @@ def _get_run_segment_or_404(rsid: str, run_id: str, db: Session) -> RunSegment:
     return rs
 
 
+def _apply_segment_override(rs, run, rid, rsid, prompt, reference_files, reference_urls):
+    """Set a RunSegment's prompt/reference overrides (shared by PATCH and rerun).
+
+    Empty prompt clears the prompt override; empty reference set clears the ref
+    override (both fall back to run-level values).
+    """
+    ref_files = reference_files or []
+    parsed_urls = [u.strip() for u in (reference_urls or "").split(",") if u.strip()]
+    total_refs = len(ref_files) + len(parsed_urls)
+    if total_refs > settings.MAX_REFERENCE_IMAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Too many reference images: got {total_refs}, "
+                f"max {settings.MAX_REFERENCE_IMAGES}"
+            ),
+        )
+
+    rs.prompt_override = (prompt.strip() or None) if prompt is not None else None
+
+    if total_refs == 0:
+        rs.reference_image_urls_override = None
+    else:
+        refs_dir = os.path.join(
+            project_dir(run.project_id), "runs", rid, "segment_refs", rsid
+        )
+        os.makedirs(refs_dir, exist_ok=True)
+        saved_paths: list[str] = []
+        for rf in ref_files:
+            dest = os.path.join(refs_dir, rf.filename or f"ref_{len(saved_paths)}.jpg")
+            _save_upload(rf, dest)
+            saved_paths.append(dest)
+        rs.reference_image_urls_override = saved_paths + parsed_urls
+
+
 @router.patch(
     "/runs/{rid}/segments/{rsid}",
     response_model=RunSegmentResponse,
@@ -631,40 +666,7 @@ def patch_run_segment(
 
     rs = _get_run_segment_or_404(rsid, rid, db)
 
-    # Validate total reference count
-    ref_files = reference_files or []
-    parsed_urls = [u.strip() for u in (reference_urls or "").split(",") if u.strip()]
-    total_refs = len(ref_files) + len(parsed_urls)
-    if total_refs > settings.MAX_REFERENCE_IMAGES:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Too many reference images: got {total_refs}, "
-                f"max {settings.MAX_REFERENCE_IMAGES}"
-            ),
-        )
-
-    # Set prompt override (None/empty string clears it)
-    if prompt is not None:
-        rs.prompt_override = prompt.strip() or None
-    else:
-        rs.prompt_override = None
-
-    # Save reference files and update override
-    if total_refs == 0:
-        # Clear override → fall back to run-level refs
-        rs.reference_image_urls_override = None
-    else:
-        refs_dir = os.path.join(
-            project_dir(run.project_id), "runs", rid, "segment_refs", rsid
-        )
-        os.makedirs(refs_dir, exist_ok=True)
-        saved_paths: list[str] = []
-        for rf in ref_files:
-            dest = os.path.join(refs_dir, rf.filename or f"ref_{len(saved_paths)}.jpg")
-            _save_upload(rf, dest)
-            saved_paths.append(dest)
-        rs.reference_image_urls_override = saved_paths + parsed_urls
+    _apply_segment_override(rs, run, rid, rsid, prompt, reference_files, reference_urls)
 
     db.commit()
     db.refresh(rs)
@@ -674,12 +676,22 @@ def patch_run_segment(
 
 
 @router.post("/runs/{rid}/segments/{rsid}/rerun", response_model=RunResponse)
-def rerun_segment(rid: str, rsid: str, db: Session = Depends(get_db)) -> RunResponse:
-    """Reset one RunSegment to pending and re-queue the run.
+def rerun_segment(
+    rid: str,
+    rsid: str,
+    prompt: Optional[str] = Form(None),
+    reference_files: Optional[List[UploadFile]] = File(None),
+    reference_urls: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+) -> RunResponse:
+    """Apply the (optional) prompt/reference override, reset one RunSegment to
+    pending, and re-queue the run — atomically, so the re-run always uses the
+    prompt sent with THIS request (no separate save needed).
 
-    The run must be in done or failed status. All other completed RunSegments
-    will be skipped by process_run (resumability), so only this segment is
-    reprocessed and the final video is re-stitched.
+    The run must be in done or failed status. Other completed RunSegments are
+    skipped by process_run (resumability); only this segment is reprocessed and
+    the final video is re-stitched. If no prompt field is sent at all, the
+    existing override is left untouched.
     """
     run = _get_run_or_404(rid, db)
     status_val = run.status.value if hasattr(run.status, "value") else str(run.status)
@@ -693,6 +705,12 @@ def rerun_segment(rid: str, rsid: str, db: Session = Depends(get_db)) -> RunResp
         )
 
     rs = _get_run_segment_or_404(rsid, rid, db)
+
+    # Apply the prompt/reference sent with this request so the re-run uses
+    # exactly what's on screen. Only when a prompt field is present (a form was
+    # sent) — otherwise leave any previously-saved override untouched.
+    if prompt is not None or reference_files or reference_urls:
+        _apply_segment_override(rs, run, rid, rsid, prompt, reference_files, reference_urls)
 
     # Reset this RunSegment to pending
     rs.status = SegmentStatus.pending

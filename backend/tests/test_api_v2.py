@@ -1212,6 +1212,33 @@ class TestRerunSegment:
         assert rs_fetched.status == SegmentStatus.pending
         assert rs_fetched.seedance_task_id is None
 
+    def test_rerun_with_prompt_applies_override(self, spy_client, SessionFactory):
+        """Re-run carrying a prompt persists it as the segment override atomically."""
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        sd = _make_segment_def(session, project.id, 0)
+        run = _make_run(session, project.id, status=RunStatus.done)
+        rs = _make_run_segment(
+            session, run.id, sd.id, status=SegmentStatus.completed,
+        )
+        rs_id = rs.id
+        session.close()
+
+        response = client.post(
+            f"/api/v2/runs/{run.id}/segments/{rs_id}/rerun",
+            data={"prompt": "make the character a red panda"},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "queued"
+        assert spy["process_run"] == [run.id]
+
+        session2 = SessionFactory()
+        rs_fetched = session2.get(RunSegment, rs_id)
+        session2.close()
+        assert rs_fetched.prompt_override == "make the character a red panda"
+        assert rs_fetched.status == SegmentStatus.pending
+
     def test_rerun_on_failed_run_also_works(self, spy_client, SessionFactory):
         client, spy = spy_client
         session = SessionFactory()
