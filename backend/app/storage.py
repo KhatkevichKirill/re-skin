@@ -65,3 +65,39 @@ def source_path(job_id: str, ext: str = "mp4") -> str:
     job_dir(job_id)
     ext = ext.lstrip(".")
     return os.path.join(_BASE, "jobs", job_id, f"source.{ext}")
+
+
+# ---------------------------------------------------------------------------
+# v2 — VideoProject / Run storage helpers
+# ---------------------------------------------------------------------------
+
+
+def project_dir(project_id: str) -> str:
+    """Root working directory for a single VideoProject."""
+    return _ensure(os.path.join(_BASE, "projects", project_id))
+
+
+def project_source_path(project_id: str, ext: str = "mp4") -> str:
+    """
+    Local path for the downloaded/copied source video of a VideoProject.
+
+    Parameters
+    ----------
+    project_id:
+        The project's UUID.
+    ext:
+        File extension (without the leading dot), e.g. ``"mp4"`` or ``"mov"``.
+    """
+    project_dir(project_id)
+    ext = ext.lstrip(".")
+    return os.path.join(_BASE, "projects", project_id, f"source.{ext}")
+
+
+def run_clips_dir(run_id: str, project_id: str) -> str:
+    """Directory that holds raw clips cut from the project source for a Run."""
+    return _ensure(os.path.join(_BASE, "projects", project_id, "runs", run_id, "clips"))
+
+
+def run_results_dir(run_id: str, project_id: str) -> str:
+    """Directory that holds AI result clips and the final stitched video for a Run."""
+    return _ensure(os.path.join(_BASE, "projects", project_id, "runs", run_id, "results"))

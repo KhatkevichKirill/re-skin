@@ -1,6 +1,8 @@
 """
 State machine for Job and Segment status transitions.
 Defines valid status enums and enforces allowed transition paths.
+
+v2 additions: ProjectStatus, RunStatus (added alongside v1 enums — no v1 changes).
 """
 
 from __future__ import annotations
@@ -32,6 +34,25 @@ class SegmentStatus(str, enum.Enum):
     skipped = "skipped"
 
 
+# --- v2 enums ---
+
+class ProjectStatus(str, enum.Enum):
+    created = "created"
+    analyzing = "analyzing"
+    ready = "ready"
+    failed = "failed"
+
+
+class RunStatus(str, enum.Enum):
+    created = "created"
+    queued = "queued"
+    processing = "processing"
+    stitching = "stitching"
+    delivering = "delivering"
+    done = "done"
+    failed = "failed"
+
+
 # Allowed transitions: {current_status -> set of valid next statuses}
 JOB_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     JobStatus.created:    {JobStatus.analyzing},
@@ -55,6 +76,24 @@ SEGMENT_TRANSITIONS: dict[SegmentStatus, set[SegmentStatus]] = {
     SegmentStatus.skipped:    set(),
 }
 
+# v2 transition tables
+PROJECT_TRANSITIONS: dict[ProjectStatus, set[ProjectStatus]] = {
+    ProjectStatus.created:   {ProjectStatus.analyzing},
+    ProjectStatus.analyzing: {ProjectStatus.ready, ProjectStatus.failed},
+    ProjectStatus.ready:     {ProjectStatus.analyzing},
+    ProjectStatus.failed:    {ProjectStatus.analyzing},
+}
+
+RUN_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
+    RunStatus.created:    {RunStatus.queued},
+    RunStatus.queued:     {RunStatus.processing},
+    RunStatus.processing: {RunStatus.stitching, RunStatus.failed},
+    RunStatus.stitching:  {RunStatus.delivering, RunStatus.failed},
+    RunStatus.delivering: {RunStatus.done, RunStatus.failed},
+    RunStatus.done:       {RunStatus.queued},  # allowed for per-segment re-run
+    RunStatus.failed:     {RunStatus.queued},
+}
+
 
 class InvalidTransition(Exception):
     """Raised when a state transition is not permitted."""
@@ -68,20 +107,27 @@ class InvalidTransition(Exception):
 
 
 def can_transition(
-    current: Union[JobStatus, SegmentStatus],
-    target: Union[JobStatus, SegmentStatus],
+    current: Union[JobStatus, SegmentStatus, ProjectStatus, RunStatus],
+    target: Union[JobStatus, SegmentStatus, ProjectStatus, RunStatus],
 ) -> bool:
     """Return True if transitioning from current to target is permitted."""
     if isinstance(current, JobStatus):
         return target in JOB_TRANSITIONS.get(current, set())
     if isinstance(current, SegmentStatus):
         return target in SEGMENT_TRANSITIONS.get(current, set())
+    if isinstance(current, ProjectStatus):
+        return target in PROJECT_TRANSITIONS.get(current, set())
+    if isinstance(current, RunStatus):
+        return target in RUN_TRANSITIONS.get(current, set())
     raise TypeError(f"Unsupported status type: {type(current)}")
 
 
-def transition(entity: object, target: Union[JobStatus, SegmentStatus]) -> None:
+def transition(
+    entity: object,
+    target: Union[JobStatus, SegmentStatus, ProjectStatus, RunStatus],
+) -> None:
     """
-    Apply a status transition to a Job or Segment ORM instance.
+    Apply a status transition to a Job, Segment, VideoProject, or Run ORM instance.
 
     Updates entity.status and entity.updated_at.
     Raises InvalidTransition if the move is not allowed.

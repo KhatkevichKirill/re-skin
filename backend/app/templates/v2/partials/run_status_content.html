@@ -1,0 +1,242 @@
+{% set sv = status_val %}
+
+{% if sv in ("created", "queued", "processing", "stitching", "delivering") %}
+<!-- __ In-progress: polling __ -->
+<div class="card">
+  <div class="card-body">
+    <div
+      class="polling-section"
+      hx-get="/v2/runs/{{ run.id }}/status-fragment"
+      hx-trigger="every 2s"
+      hx-target="#run-status-content"
+      hx-swap="innerHTML"
+    >
+      <span class="spinner"></span>
+      <span>
+        Status: <strong>{{ sv }}</strong>
+        {% if total_swap %}
+          &mdash; {{ completed }} / {{ total_swap }} swap segments completed
+          {% if generating_seg %}
+            &mdash; generating segment {{ generating_seg.index }}
+          {% endif %}
+        {% endif %}
+      </span>
+    </div>
+  </div>
+</div>
+
+{% elif sv in ("done", "failed") %}
+<!-- __ Done/Failed: preview + download + per-segment overrides __ -->
+
+{% if sv == "done" %}
+<div class="card">
+  <div class="card-header"><h2>Result</h2></div>
+  <div class="card-body">
+    <video class="video-preview" controls>
+      <source src="/api/v2/runs/{{ run.id }}/result" type="video/mp4" />
+      Your browser does not support HTML5 video.
+    </video>
+    <div class="action-row">
+      <a class="btn btn-success" href="/api/v2/runs/{{ run.id }}/result" download>Download MP4</a>
+      {% if gdrive_link %}
+      <a class="btn btn-secondary" href="{{ gdrive_link }}" target="_blank" rel="noopener">Open in Google Drive</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <div class="card-header"><h2>Run Failed</h2></div>
+  <div class="card-body">
+    {% if run.error_message %}
+    <div class="alert alert-danger">
+      <strong>Error:</strong> {{ run.error_message }}
+    </div>
+    {% endif %}
+    <form method="post" action="/api/v2/runs/{{ run.id }}/retry">
+      <button type="submit" class="btn btn-warning">Retry Run</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% if run_segments %}
+<!-- __ Per-segment override panel __ -->
+<div class="card" style="margin-top:16px">
+  <div class="card-header">
+    <h2>Per-Segment Overrides</h2>
+    <p style="font-size:12px;color:var(--color-muted);margin:4px 0 0">
+      Override the prompt or reference images for an individual swap segment, then re-run just that one.
+      Other completed segments are skipped; the video is re-stitched.
+    </p>
+  </div>
+  <div class="card-body" style="padding:0">
+    {% for rs in run_segments %}
+    {% set rs_status = rs.status.value if rs.status and rs.status.__class__.__name__ != 'str' else rs.status|string %}
+    <div class="segment-override-panel" id="seg-panel-{{ rs.id }}" style="border-bottom:1px solid #e0e0e0;padding:16px">
+      <!-- Segment header -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        {% if rs.segment_def %}
+        <img
+          src="/api/v2/projects/{{ project_id }}/frame?t={{ rs.segment_def.start_sec }}"
+          alt="Segment {{ rs.index }} thumbnail"
+          style="width:80px;height:45px;object-fit:cover;border-radius:4px;border:1px solid #ccc;flex-shrink:0"
+          onerror="this.style.display='none'"
+        />
+        {% endif %}
+        <div>
+          <strong>Segment {{ rs.index }}</strong>
+          <span class="badge badge-{{ rs_status }}" style="margin-left:6px">{{ rs_status }}</span>
+          {% if rs.segment_def %}
+          <span style="font-size:11px;color:var(--color-muted);margin-left:6px">
+            {{ "%.1f"|format(rs.segment_def.start_sec) }}s &ndash; {{ "%.1f"|format(rs.segment_def.end_sec) }}s
+          </span>
+          {% endif %}
+          {% if rs_status == "failed" and rs.error_message %}
+          <div style="font-size:11px;color:#c00;margin-top:2px">
+            {{ rs.error_message[:80] }}{% if rs.error_message|length > 80 %}&hellip;{% endif %}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Override form — uses data attrs for IDs; no JS template interpolation into innerHTML -->
+      <form
+        class="seg-override-form"
+        data-run-id="{{ run.id }}"
+        data-rs-id="{{ rs.id }}"
+        style="display:grid;gap:8px"
+      >
+        <div class="form-group" style="margin-bottom:0">
+          <label style="font-size:12px;font-weight:600">Prompt override
+            <span style="font-weight:400;color:var(--color-muted)">(leave blank to use run prompt)</span>
+          </label>
+          <textarea
+            name="prompt"
+            rows="2"
+            placeholder="{{ run.prompt }}"
+            style="width:100%;font-size:12px;resize:vertical"
+          >{{ rs.prompt_override or "" }}</textarea>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label style="font-size:12px;font-weight:600">Reference images override
+            <span style="font-weight:400;color:var(--color-muted)">(leave empty to use run-level refs)</span>
+          </label>
+          <input type="file" name="reference_files" accept="image/*" multiple style="font-size:12px" />
+          <input type="text" name="reference_urls" placeholder="URL1, URL2 (comma-separated)"
+                 style="width:100%;font-size:12px;margin-top:4px"
+                 value="{{ (rs.reference_image_urls_override or [])|join(', ') }}" />
+        </div>
+        <div class="action-row" style="gap:8px;margin-top:4px">
+          <button type="submit" class="btn btn-primary" style="font-size:12px;padding:5px 12px">
+            Save override
+          </button>
+          <button
+            type="button"
+            class="btn btn-warning seg-rerun-btn"
+            style="font-size:12px;padding:5px 12px"
+          >
+            Re-run this segment
+          </button>
+          <span class="seg-save-status" style="font-size:12px;color:var(--color-muted)"></span>
+        </div>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  function showStatus(form, msg) {
+    var el = form.querySelector(".seg-save-status");
+    if (el) { el.textContent = msg; }
+  }
+
+  function handleSave(event) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    var runId = form.dataset.runId;
+    var rsId  = form.dataset.rsId;
+    var fd = new FormData(form);
+    showStatus(form, "Saving…");
+    fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId), {
+      method: "PATCH",
+      body: fd,
+    })
+    .then(function (resp) {
+      if (resp.ok) {
+        showStatus(form, "Saved.");
+        setTimeout(function () { showStatus(form, ""); }, 3000);
+      } else {
+        return resp.json().then(function (body) {
+          showStatus(form, "Error: " + (body.detail || resp.status));
+        });
+      }
+    })
+    .catch(function (err) {
+      showStatus(form, "Network error: " + err);
+    });
+  }
+
+  function handleRerun(event) {
+    var btn  = event.currentTarget;
+    var form = btn.closest("form.seg-override-form");
+    var runId = form.dataset.runId;
+    var rsId  = form.dataset.rsId;
+    if (!confirm("Re-run this segment? The run will be re-queued and the final video re-stitched.")) return;
+    fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId) + "/rerun", {
+      method: "POST",
+    })
+    .then(function (resp) {
+      if (resp.ok) {
+        // Let HTMX take over polling — reload the fragment once.
+        if (window.htmx) {
+          var target = document.getElementById("run-status-content");
+          if (target) {
+            var poller = document.createElement("div");
+            poller.className = "polling-section";
+            poller.setAttribute("hx-get", "/v2/runs/" + encodeURIComponent(runId) + "/status-fragment");
+            poller.setAttribute("hx-trigger", "every 2s");
+            poller.setAttribute("hx-target", "#run-status-content");
+            poller.setAttribute("hx-swap", "innerHTML");
+            var spinner = document.createElement("span");
+            spinner.className = "spinner";
+            var txt = document.createElement("span");
+            txt.textContent = " Re-queued — processing…";
+            poller.appendChild(spinner);
+            poller.appendChild(txt);
+            // Clear the target and append the polling node.
+            while (target.firstChild) { target.removeChild(target.firstChild); }
+            target.appendChild(poller);
+            htmx.process(target);
+          } else {
+            location.reload();
+          }
+        } else {
+          location.reload();
+        }
+      } else {
+        return resp.json().then(function (body) {
+          alert("Error: " + (body.detail || resp.status));
+        });
+      }
+    })
+    .catch(function (err) {
+      alert("Network error: " + err);
+    });
+  }
+
+  document.querySelectorAll("form.seg-override-form").forEach(function (form) {
+    form.addEventListener("submit", handleSave);
+    var rerunBtn = form.querySelector(".seg-rerun-btn");
+    if (rerunBtn) { rerunBtn.addEventListener("click", handleRerun); }
+  });
+})();
+</script>
+
+{% endif %}
+
+{% endif %}

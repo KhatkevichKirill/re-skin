@@ -1,0 +1,505 @@
+{% set sv = status_val %}
+
+{% if sv in ("created", "analyzing") %}
+<!-- __ Analyzing: polling __ -->
+<div class="card">
+  <div class="card-body">
+    <div
+      class="polling-section"
+      hx-get="/v2/projects/{{ project.id }}/status-fragment"
+      hx-trigger="every 2s"
+      hx-target="#status-content"
+      hx-swap="innerHTML"
+    >
+      <span class="spinner"></span>
+      <span>Analyzing video&hellip; this may take a minute.</span>
+    </div>
+  </div>
+</div>
+
+{% elif sv == "ready" %}
+<!-- __ Ready: segment editor + runs panel __ -->
+
+<!-- Segment Editor -->
+<div class="card">
+  <div class="card-header">
+    <h2>Segment Editor</h2>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">{{ segments|length }} segment(s)</span>
+  </div>
+  <div class="card-body" style="padding:0">
+    <p class="hint" style="padding:8px 16px 0; margin:0; font-size:12px; color:var(--color-muted)">
+      Boundaries are linked — changing a segment's end shifts the next segment's start by the same amount, so the total length stays fixed.
+    </p>
+    <form id="seg-form">
+      <div style="overflow-x:auto">
+        <table class="seg-table" id="segments-table">
+          <thead>
+            <tr>
+              <th style="width:90px">Thumb</th>
+              <th style="width:30px">#</th>
+              <th style="width:80px">Start (s)</th>
+              <th style="width:80px">End (s)</th>
+              <th style="width:70px">Action</th>
+              <th style="width:60px">Pre-roll</th>
+              <th style="width:60px">Post-roll</th>
+              <th style="width:50px"></th>
+            </tr>
+          </thead>
+          <tbody id="seg-tbody">
+            {% for seg in segments %}
+            {% set is_last = loop.last %}
+            <tr data-seg-id="{{ seg.id }}" class="seg-row">
+              <td>
+                {% if seg.action == "swap" %}
+                <img
+                  class="seg-thumb"
+                  src="/api/v2/projects/{{ project.id }}/frame?t={{ seg.start_sec|int }}"
+                  alt="frame at {{ seg.start_sec }}s"
+                  loading="lazy"
+                  onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'"
+                />
+                <div class="seg-thumb-placeholder" style="display:none">no preview</div>
+                {% else %}
+                <div class="seg-thumb-placeholder">keep</div>
+                {% endif %}
+              </td>
+              <td class="seg-index-cell">{{ seg.index }}</td>
+              <td>
+                <input
+                  type="number" step="0.1" value="{{ seg.start_sec }}"
+                  name="start_sec" class="seg-start"
+                  readonly tabindex="-1"
+                  style="background:var(--color-surface,#f5f5f5); color:var(--color-muted,#888); cursor:default"
+                />
+              </td>
+              <td>
+                {% if is_last %}
+                <input
+                  type="number" step="0.1" value="{{ seg.end_sec }}"
+                  name="end_sec" class="seg-end"
+                  readonly tabindex="-1"
+                  style="background:var(--color-surface,#f5f5f5); color:var(--color-muted,#888); cursor:default"
+                  title="Last segment end is fixed at video duration"
+                />
+                {% else %}
+                <input
+                  type="number" step="0.1" value="{{ seg.end_sec }}"
+                  name="end_sec" class="seg-end"
+                  data-end="{{ seg.end_sec }}"
+                />
+                {% endif %}
+              </td>
+              <td>
+                <select name="action" class="seg-action">
+                  <option value="swap" {% if seg.action == "swap" %}selected{% endif %}>swap</option>
+                  <option value="keep" {% if seg.action == "keep" %}selected{% endif %}>keep</option>
+                </select>
+              </td>
+              <td><input type="number" step="0.1" value="{{ seg.pre_roll_sec }}" name="pre_roll_sec" class="seg-pre" /></td>
+              <td><input type="number" step="0.1" value="{{ seg.post_roll_sec }}" name="post_roll_sec" class="seg-post" /></td>
+              <td>
+                <button type="button" class="btn btn-sm btn-danger" onclick="deleteRow(this)">X</button>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="action-row" style="padding:16px">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="addSegRow()">+ Add segment</button>
+        <div style="margin-left:auto; display:flex; gap:8px">
+          <button
+            type="button"
+            class="btn btn-warning"
+            id="save-seg-btn"
+            onclick="saveSegments('{{ project.id }}')"
+          >Save segments</button>
+        </div>
+      </div>
+    </form>
+    <div id="seg-messages" style="padding:0 16px 8px"></div>
+  </div>
+</div>
+
+<!-- Runs Panel -->
+<div class="card">
+  <div class="card-header">
+    <h2>Runs (Characters)</h2>
+  </div>
+  <div class="card-body">
+
+    <!-- New Run Form -->
+    <details id="new-run-details" open>
+      <summary style="cursor:pointer;font-weight:600;margin-bottom:14px">New run (character)</summary>
+      <form
+        id="new-run-form"
+        hx-post="/api/v2/projects/{{ project.id }}/runs"
+        hx-encoding="multipart/form-data"
+        hx-target="#new-run-result"
+        hx-swap="innerHTML"
+        hx-on::after-request="handleRunCreated(event)"
+        enctype="multipart/form-data"
+        style="margin-top:12px"
+      >
+        <!-- Name -->
+        <div class="form-group">
+          <label for="run-name">Character name (optional)</label>
+          <input type="text" id="run-name" name="name" placeholder="e.g. Redhead woman" />
+          <p class="hint">A short label to distinguish this run in the list.</p>
+        </div>
+
+        <!-- Prompt -->
+        <div class="form-group">
+          <label for="run-prompt">Prompt <span style="color:#dc3545">*</span></label>
+          <textarea id="run-prompt" name="prompt" required>{{ default_prompt }}</textarea>
+          <p class="hint">
+            Refer to <strong>"the reference image"</strong> and <strong>"the reference video"</strong> in plain words.
+            Do <strong>not</strong> use <code>@Image1</code> / <code>@video1</code> — those work only in the Seedance web UI, not via the API, and the swap will silently fail.
+            Edit the example above to fit your video (e.g. name who to replace).
+          </p>
+        </div>
+
+        <!-- Resolution -->
+        <div class="form-group">
+          <label for="run-resolution">Resolution</label>
+          <select id="run-resolution" name="resolution">
+            <option value="480p" {% if default_resolution == "480p" %}selected{% endif %}>480p — cheapest, use for tests</option>
+            <option value="720p" {% if default_resolution == "720p" %}selected{% endif %}>720p — balanced</option>
+            <option value="1080p" {% if default_resolution == "1080p" %}selected{% endif %}>1080p — production quality</option>
+          </select>
+        </div>
+
+        <!-- Audio mode -->
+        <div class="form-group">
+          <label for="run-audio-mode">Audio</label>
+          <select id="run-audio-mode" name="audio_mode">
+            <option value="original" selected>Original — source soundtrack</option>
+            <option value="seedance">Seedance — audio from each generated clip</option>
+          </select>
+          <p class="hint">
+            Original = source soundtrack (best when timing matches).
+            Seedance = audio from each generated clip (use if the original drifts out of sync).
+          </p>
+        </div>
+
+        <!-- Reference images -->
+        <div class="form-group">
+          <label>Reference images (max {{ max_refs }})</label>
+          <p class="hint">Upload up to {{ max_refs }} image files and/or paste comma-separated URLs below. Combined total must not exceed {{ max_refs }}.</p>
+          <input type="file" name="reference_files" accept="image/*" multiple style="margin-bottom:8px" />
+          <input type="text" name="reference_urls" placeholder="https://example.com/ref1.jpg, https://example.com/ref2.jpg" />
+        </div>
+
+        <!-- GDrive folder -->
+        <div class="form-group">
+          <label for="run-gdrive">Google Drive output folder ID</label>
+          <input type="text" id="run-gdrive" name="gdrive_folder_id" value="{{ gdrive_folder_id }}" placeholder="GDrive folder ID for delivery" />
+          <p class="hint">Leave blank to use the server default.</p>
+        </div>
+
+        <div class="action-row">
+          <button type="submit" class="btn btn-primary">
+            <span class="htmx-indicator spinner"></span>
+            Start Run
+          </button>
+        </div>
+      </form>
+      <div id="new-run-result" style="margin-top:12px"></div>
+    </details>
+
+    <!-- Existing Runs List -->
+    {% if runs %}
+    <div style="margin-top:24px">
+      <h3 style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--color-muted);text-transform:uppercase;letter-spacing:.4px">Existing runs</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for run in runs %}
+          {% set rsv = run.status.value if run.status.value is defined else run.status|string %}
+          <tr>
+            <td>{% if run.name %}{{ run.name }}{% else %}<em class="text-muted">unnamed</em>{% endif %}</td>
+            <td><span class="badge badge-{{ rsv }}">{{ rsv }}</span></td>
+            <td class="text-muted" style="white-space:nowrap">{{ run.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+            <td class="text-right">
+              <a class="btn btn-sm btn-secondary" href="/v2/runs/{{ run.id }}">View</a>
+              {% if rsv == "done" and run.result_local_path %}
+              <a class="btn btn-sm btn-success" href="/api/v2/runs/{{ run.id }}/result" download style="margin-left:4px">Download</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+
+<script>
+function handleRunCreated(event) {
+  if (event.detail.successful) {
+    try {
+      var data = JSON.parse(event.detail.xhr.responseText);
+      if (data.run_id) {
+        window.location.href = '/v2/runs/' + data.run_id;
+        return;
+      }
+    } catch(e) {}
+  }
+}
+
+// __ Segment editor helpers __
+
+var _newRowCount = 0;
+
+// Called when operator changes a segment's end input.
+// - Clamps the typed value to the open interval (myStart, nextEnd).
+// - Updates the next row's start display to the new value.
+function onEndChange(inp) {
+  var tbody = document.getElementById('seg-tbody');
+  var rows = tbody.querySelectorAll('tr.seg-row');
+  var rowArr = [].slice.call(rows);
+  var tr = inp.closest('tr');
+  var idx = rowArr.indexOf(tr);
+
+  var myStart = parseFloat(tr.querySelector('.seg-start').value);
+  var newEnd = parseFloat(inp.value);
+
+  // Determine ceiling: the end of the next row (or last row's fixed end)
+  var ceiling;
+  if (idx + 1 < rowArr.length) {
+    // The next row's end is the ceiling for this boundary
+    var nextEndInp = rowArr[idx + 1].querySelector('.seg-end');
+    ceiling = parseFloat(nextEndInp.value);
+  } else {
+    // This is the last row — its end is fixed; should not be editable, but guard anyway
+    ceiling = newEnd;
+  }
+
+  // Clamp to open interval (myStart, ceiling)
+  var EPS = 0.05;
+  if (newEnd <= myStart + EPS) {
+    newEnd = myStart + EPS;
+    inp.value = parseFloat(newEnd.toFixed(3));
+  }
+  if (newEnd >= ceiling - EPS) {
+    newEnd = ceiling - EPS;
+    inp.value = parseFloat(newEnd.toFixed(3));
+  }
+
+  // Re-derive every start from the (new) ends so the whole partition stays
+  // contiguous and visible (start[i] = end[i-1], start[0] = 0).
+  recomputeStarts();
+}
+
+// Re-derive each segment's START display from the previous segment's END,
+// keeping the partition contiguous (start[0]=0). Called after any edit, add,
+// or delete so the merged/linked result is shown before saving.
+function recomputeStarts() {
+  var rows = document.querySelectorAll('#seg-tbody tr.seg-row');
+  var prevEnd = 0;
+  [].slice.call(rows).forEach(function(tr, idx) {
+    var startInp = tr.querySelector('.seg-start');
+    var endInp = tr.querySelector('.seg-end');
+    if (startInp) startInp.value = (idx === 0) ? 0 : parseFloat(prevEnd.toFixed(3));
+    if (endInp) prevEnd = parseFloat(endInp.value);
+  });
+}
+
+// Re-apply linked-boundary listeners to all editable end inputs.
+function rebindEndListeners() {
+  var tbody = document.getElementById('seg-tbody');
+  var rows = tbody.querySelectorAll('tr.seg-row');
+  var rowArr = [].slice.call(rows);
+  rowArr.forEach(function(tr, idx) {
+    var endInp = tr.querySelector('.seg-end');
+    if (!endInp || endInp.readOnly) return;
+    // Clone to remove stale listeners, then re-add
+    var fresh = endInp.cloneNode(true);
+    endInp.parentNode.replaceChild(fresh, endInp);
+    fresh.addEventListener('input', function() { onEndChange(fresh); });
+    fresh.addEventListener('change', function() { onEndChange(fresh); });
+  });
+}
+
+// Run on initial page load so server-rendered rows are wired up.
+document.addEventListener('DOMContentLoaded', function() { rebindEndListeners(); });
+
+function deleteRow(btn) {
+  btn.closest('tr').remove();
+  rebindEndListeners();
+  // Re-link: the segment after the removed one absorbs the gap (its start moves
+  // back to the previous segment's end), so two swaps become adjacent.
+  recomputeStarts();
+}
+
+function addSegRow() {
+  _newRowCount++;
+  var tbody = document.getElementById('seg-tbody');
+  var rows = tbody.querySelectorAll('tr.seg-row');
+  var lastRow = rows[rows.length - 1];
+
+  // Default new segment: starts where the current last segment starts,
+  // ends 5s later (backend normalization will reconcile actual boundaries).
+  var defaultStart = 0;
+  var defaultEnd = 5;
+  if (lastRow) {
+    defaultStart = parseFloat(lastRow.querySelector('.seg-start').value) || 0;
+    defaultEnd = defaultStart + 5;
+  }
+
+  var tr = document.createElement('tr');
+  tr.dataset.segId = 'new-' + _newRowCount;
+  tr.className = 'seg-row new-seg';
+
+  var td0 = document.createElement('td');
+  var ph = document.createElement('div');
+  ph.className = 'seg-thumb-placeholder';
+  ph.textContent = 'new';
+  td0.appendChild(ph);
+
+  var td1 = document.createElement('td');
+  td1.className = 'seg-index-cell';
+  td1.textContent = '-';
+
+  function numInput(val, cls, readOnly) {
+    var inp = document.createElement('input');
+    inp.type = 'number'; inp.step = '0.1'; inp.value = val;
+    inp.name = cls.replace('seg-',''); inp.className = cls;
+    if (readOnly) {
+      inp.readOnly = true;
+      inp.tabIndex = -1;
+      inp.style.cssText = 'background:var(--color-surface,#f5f5f5);color:var(--color-muted,#888);cursor:default';
+    }
+    return inp;
+  }
+
+  var td2 = document.createElement('td'); td2.appendChild(numInput(defaultStart, 'seg-start', true));
+  var td3 = document.createElement('td'); td3.appendChild(numInput(defaultEnd, 'seg-end', false));
+
+  var td4 = document.createElement('td');
+  var sel = document.createElement('select');
+  sel.name = 'action'; sel.className = 'seg-action';
+  ['swap','keep'].forEach(function(v) {
+    var opt = document.createElement('option');
+    opt.value = v; opt.textContent = v;
+    if (v === 'keep') opt.selected = true;
+    sel.appendChild(opt);
+  });
+  td4.appendChild(sel);
+
+  var td5 = document.createElement('td'); td5.appendChild(numInput(0,'seg-pre', false));
+  var td6 = document.createElement('td'); td6.appendChild(numInput(0,'seg-post', false));
+
+  var td7 = document.createElement('td');
+  var delBtn = document.createElement('button');
+  delBtn.type = 'button'; delBtn.className = 'btn btn-sm btn-danger';
+  delBtn.textContent = 'X';
+  delBtn.onclick = function() { deleteRow(delBtn); };
+  td7.appendChild(delBtn);
+
+  [td0,td1,td2,td3,td4,td5,td6,td7].forEach(function(td){ tr.appendChild(td); });
+
+  // Insert before the last row so the new segment slots in before the final
+  // (fixed-end) row.  If there is no last row, just append.
+  if (lastRow) {
+    tbody.insertBefore(tr, lastRow);
+  } else {
+    tbody.appendChild(tr);
+  }
+
+  rebindEndListeners();
+  recomputeStarts();
+}
+
+function collectSegEdits() {
+  var rows = document.querySelectorAll('#seg-tbody tr.seg-row');
+  var originalRows = document.querySelectorAll('#seg-tbody tr.seg-row:not(.new-seg)');
+  var originalIds = new Set([].slice.call(originalRows).map(function(r){ return r.dataset.segId; }));
+
+  var updates = [];
+  var creates = [];
+  var currentIds = new Set();
+
+  [].slice.call(rows).forEach(function(row) {
+    var segId = row.dataset.segId;
+    var isNew = row.classList.contains('new-seg');
+    var data = {
+      start_sec: parseFloat(row.querySelector('.seg-start').value),
+      end_sec:   parseFloat(row.querySelector('.seg-end').value),
+      action:    row.querySelector('.seg-action').value,
+      pre_roll_sec:  parseFloat(row.querySelector('.seg-pre').value),
+      post_roll_sec: parseFloat(row.querySelector('.seg-post').value),
+    };
+    if (isNew) {
+      creates.push(Object.assign({}, data, { has_face: data.action === 'swap' }));
+    } else {
+      currentIds.add(segId);
+      updates.push(Object.assign({ id: segId }, data));
+    }
+  });
+
+  var deletes = [].slice.call(originalIds).filter(function(id){ return !currentIds.has(id); });
+  return { updates: updates, deletes: deletes, creates: creates };
+}
+
+async function saveSegments(projectId) {
+  var btn = document.getElementById('save-seg-btn');
+  var msgEl = document.getElementById('seg-messages');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  try {
+    var body = collectSegEdits();
+    var res = await fetch('/api/v2/projects/' + encodeURIComponent(projectId) + '/segments', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    var msgDiv = document.createElement('div');
+    if (!res.ok) {
+      var errData = await res.json().catch(function(){ return { detail: res.statusText }; });
+      msgDiv.className = 'alert alert-danger';
+      msgDiv.textContent = 'Save failed: ' + (errData.detail || res.statusText);
+    } else {
+      msgDiv.className = 'alert alert-info';
+      msgDiv.textContent = 'Segments saved.';
+      setTimeout(function() { msgEl.textContent = ''; }, 3000);
+    }
+    msgEl.textContent = '';
+    msgEl.appendChild(msgDiv);
+  } catch(e) {
+    var errDiv = document.createElement('div');
+    errDiv.className = 'alert alert-danger';
+    errDiv.textContent = 'Network error: ' + e.message;
+    msgEl.textContent = '';
+    msgEl.appendChild(errDiv);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save segments';
+  }
+}
+</script>
+
+{% elif sv == "failed" %}
+<!-- __ Failed __ -->
+<div class="card">
+  <div class="card-header"><h2>Project Failed</h2></div>
+  <div class="card-body">
+    {% if project.error_message %}
+    <div class="alert alert-danger">
+      <strong>Error:</strong> {{ project.error_message }}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endif %}
