@@ -124,6 +124,13 @@ def analyze_project(project_id: str, *, detector=None) -> None:
             )
             log.info("propose_segments returned %d segments", len(proposed))
 
+            # Idempotent re-analyze: clear any existing SegmentDefs first so a
+            # re-run replaces the segmentation instead of duplicating it.
+            # (Cascades to RunSegments via FK — re-analysis invalidates prior runs.)
+            for old in list(project.segments):
+                session.delete(old)
+            session.flush()
+
             for idx, ps in enumerate(proposed):
                 session.add(
                     SegmentDef(

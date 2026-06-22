@@ -7,8 +7,12 @@ services:
     # RCE/abuse vector — keep it internal.
     expose:
       - "6379"
+    # Require a password (defense-in-depth; the port is already internal-only).
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -43,6 +47,8 @@ services:
       - ./data:/app/data
       # Service-account JSON for Google Drive (read-only)
       - ./secrets:/app/secrets:ro
+      # Persist the downloaded InsightFace model (~280MB) across recreates
+      - insightface-models:/root/.insightface
     logging:
       driver: json-file
       options:
@@ -72,6 +78,8 @@ services:
       - ./data:/app/data
       # Service-account JSON for Google Drive (read-only)
       - ./secrets:/app/secrets:ro
+      # Persist the downloaded InsightFace model (~280MB) across recreates
+      - insightface-models:/root/.insightface
     logging:
       driver: json-file
       options:
@@ -96,3 +104,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  insightface-models:

@@ -296,11 +296,23 @@ function onEndChange(inp) {
     inp.value = parseFloat(newEnd.toFixed(3));
   }
 
-  // Propagate: update the next row's start display
-  if (idx + 1 < rowArr.length) {
-    var nextStartInp = rowArr[idx + 1].querySelector('.seg-start');
-    nextStartInp.value = parseFloat(newEnd.toFixed(3));
-  }
+  // Re-derive every start from the (new) ends so the whole partition stays
+  // contiguous and visible (start[i] = end[i-1], start[0] = 0).
+  recomputeStarts();
+}
+
+// Re-derive each segment's START display from the previous segment's END,
+// keeping the partition contiguous (start[0]=0). Called after any edit, add,
+// or delete so the merged/linked result is shown before saving.
+function recomputeStarts() {
+  var rows = document.querySelectorAll('#seg-tbody tr.seg-row');
+  var prevEnd = 0;
+  [].slice.call(rows).forEach(function(tr, idx) {
+    var startInp = tr.querySelector('.seg-start');
+    var endInp = tr.querySelector('.seg-end');
+    if (startInp) startInp.value = (idx === 0) ? 0 : parseFloat(prevEnd.toFixed(3));
+    if (endInp) prevEnd = parseFloat(endInp.value);
+  });
 }
 
 // Re-apply linked-boundary listeners to all editable end inputs.
@@ -325,6 +337,9 @@ document.addEventListener('DOMContentLoaded', function() { rebindEndListeners();
 function deleteRow(btn) {
   btn.closest('tr').remove();
   rebindEndListeners();
+  // Re-link: the segment after the removed one absorbs the gap (its start moves
+  // back to the previous segment's end), so two swaps become adjacent.
+  recomputeStarts();
 }
 
 function addSegRow() {
@@ -403,6 +418,7 @@ function addSegRow() {
   }
 
   rebindEndListeners();
+  recomputeStarts();
 }
 
 function collectSegEdits() {
