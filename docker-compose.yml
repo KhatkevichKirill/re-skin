@@ -24,6 +24,8 @@ services:
       dockerfile: backend/Dockerfile
     container_name: re-skin-api
     restart: unless-stopped
+    # Cap RAM so a runaway request can't drag the host into swap-thrash.
+    mem_limit: 1g
     command: >
       uvicorn app.main:app
       --host 0.0.0.0
@@ -63,6 +65,12 @@ services:
       dockerfile: backend/Dockerfile
     container_name: re-skin-worker
     restart: unless-stopped
+    # Hard RAM cap: InsightFace + ffmpeg can spike; if a job exceeds this the
+    # container is OOM-killed (and restarted) instead of freezing the whole host.
+    mem_limit: 2560m
+    # mem_swap == mem_limit → no swap for this container, so a runaway job is
+    # killed promptly rather than thrashing swap and hanging SSH.
+    memswap_limit: 2560m
     # python -m worker.worker — PYTHONPATH=/app means `from app.tasks import ...`
     # resolves correctly because app/ and worker/ are both under /app.
     command: python -m worker.worker
