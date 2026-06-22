@@ -2,8 +2,11 @@ services:
   redis:
     image: redis:7-alpine
     container_name: re-skin-redis
-    ports:
-      - "6379:6379"
+    # No host port: Redis is reachable only on the internal docker network
+    # (worker/api connect by service name). Exposing 6379 publicly is a known
+    # RCE/abuse vector — keep it internal.
+    expose:
+      - "6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -20,8 +23,10 @@ services:
       --host 0.0.0.0
       --port 8000
       --log-level info
-    ports:
-      - "8000:8000"
+    # No host port: the API has NO auth of its own (basic auth lives in nginx).
+    # Only nginx (:8847) is public; nginx reaches the API on the docker network.
+    expose:
+      - "8000"
     env_file:
       - .env
     environment:
