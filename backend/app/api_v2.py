@@ -365,6 +365,20 @@ def get_project_frame(
     return Response(content=data, media_type="image/jpeg")
 
 
+@router.get("/projects/{pid}/source")
+def get_project_source(pid: str, db: Session = Depends(get_db)):
+    """Stream the project's original source video (for in-page review/seeking).
+
+    FileResponse handles HTTP Range requests, so the <video> element can scrub.
+    404 if the project or its source file is not on disk.
+    """
+    project = _get_project_or_404(pid, db)
+    src = project.source_local_path
+    if not src or not os.path.exists(src):
+        raise HTTPException(status_code=404, detail="Source video not available on disk")
+    return FileResponse(src, media_type="video/mp4", filename="source.mp4")
+
+
 @router.get("/projects/{pid}/runs", response_model=list[RunListItem])
 def list_project_runs(pid: str, db: Session = Depends(get_db)) -> list:
     """Return all runs for a project."""

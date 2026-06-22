@@ -20,6 +20,25 @@
 {% elif sv == "ready" %}
 <!-- __ Ready: segment editor + runs panel __ -->
 
+<!-- Source video preview -->
+<div class="card">
+  <div class="card-header">
+    <h2>Original video</h2>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">click a segment thumbnail to jump here</span>
+  </div>
+  <div class="card-body">
+    <video
+      id="source-video"
+      controls
+      preload="metadata"
+      style="width:100%; max-width:480px; border-radius:6px; background:#000; display:block; margin:0 auto"
+      src="/api/v2/projects/{{ project.id }}/source"
+    >
+      Your browser can't play this video.
+    </video>
+  </div>
+</div>
+
 <!-- Segment Editor -->
 <div class="card">
   <div class="card-header">
@@ -56,11 +75,14 @@
                   src="/api/v2/projects/{{ project.id }}/frame?t={{ seg.start_sec|int }}"
                   alt="frame at {{ seg.start_sec }}s"
                   loading="lazy"
+                  style="cursor:pointer"
+                  title="Jump to this segment in the video"
+                  onclick="seekSeg(this)"
                   onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'"
                 />
                 <div class="seg-thumb-placeholder" style="display:none">no preview</div>
                 {% else %}
-                <div class="seg-thumb-placeholder">keep</div>
+                <div class="seg-thumb-placeholder" style="cursor:pointer" title="Jump to this segment in the video" onclick="seekSeg(this)">keep</div>
                 {% endif %}
               </td>
               <td class="seg-index-cell">{{ seg.index }}</td>
@@ -333,6 +355,19 @@ function rebindEndListeners() {
 
 // Run on initial page load so server-rendered rows are wired up.
 document.addEventListener('DOMContentLoaded', function() { rebindEndListeners(); });
+
+// Seek the source-video player to a segment's start (click a thumbnail).
+function seekSeg(el) {
+  var tr = el.closest('tr');
+  if (!tr) return;
+  var startInp = tr.querySelector('.seg-start');
+  var t = startInp ? parseFloat(startInp.value) : NaN;
+  var v = document.getElementById('source-video');
+  if (v && !isNaN(t)) {
+    try { v.currentTime = t; v.play().catch(function(){}); } catch (e) {}
+    v.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
 
 function deleteRow(btn) {
   btn.closest('tr').remove();

@@ -998,6 +998,26 @@ class TestProjectFrame:
         response = client.get(f"/api/v2/projects/{project.id}/frame?t=0")
         assert response.status_code == 404
 
+    def test_source_endpoint_returns_video(self, client, db_session, tmp_path):
+        """The source endpoint streams the original video file."""
+        video_path = str(tmp_path / "source.mp4")
+        _make_ffmpeg_video(video_path)
+        project = _make_project(
+            db_session, source_local_path=video_path, status=ProjectStatus.ready
+        )
+        response = client.get(f"/api/v2/projects/{project.id}/source")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "video/mp4"
+        assert len(response.content) > 100
+
+    def test_source_endpoint_404_missing(self, client, db_session):
+        """No source file on disk → 404."""
+        project = _make_project(
+            db_session, source_local_path="/tmp/nope_xyz.mp4", status=ProjectStatus.ready
+        )
+        response = client.get(f"/api/v2/projects/{project.id}/source")
+        assert response.status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # GET /api/v2/runs/{rid}/segments
