@@ -74,63 +74,46 @@ def _save_upload(upload: UploadFile, dest: str) -> None:
         fh.write(upload.file.read())
 
 
-def _normalize_partition(segments: list, duration: float) -> None:
-    """Normalize *segments* (in-place) into a contiguous partition of [0, duration].
+def _normalize_partition(segments: list, duration: float, db: Session) -> None:
+    """Normalize *segments* into a contiguous partition of [0, duration].
 
-    Algorithm
-    ---------
-    1. Sort by start_sec (end_sec is the authoritative boundary between neighbours).
-    2. Force segment[0].start_sec = 0.0 and segment[-1].end_sec = duration.
-    3. For each i >= 1: segment[i].start_sec = segment[i-1].end_sec  (derive starts
-       from edited ends so that only the one changed boundary moves).
-    4. Re-assign index 0..n-1.
-    5. Validate every segment has a strictly positive duration and every end is within
-       (0, duration].  Raise HTTPException(400) on any violation with a clear message.
+    Forgiving cursor-walk: ends are the authoritative boundaries; starts are
+    derived from the running cursor. A segment whose duration collapses to <= 0
+    (e.g. its neighbour was extended over it) is DROPPED (deleted) rather than
+    rejected — so "shrink a segment to zero" behaves like deleting it, and the
+    partition stays contiguous. The first kept segment starts at 0 and the last
+    is extended to *duration* for full coverage. Indices are reassigned.
+
+    Raises HTTPException(400) only if every segment would be dropped.
     """
     if not segments:
         return
 
     ordered = sorted(segments, key=lambda s: s.start_sec)
-
-    # Pin the outer boundaries
-    ordered[0].start_sec = 0.0
-    ordered[-1].end_sec = duration
-
-    # Derive internal starts from the preceding segment's end
-    for i in range(1, len(ordered)):
-        ordered[i].start_sec = ordered[i - 1].end_sec
-
-    # Re-index
-    for i, seg in enumerate(ordered):
-        seg.index = i
-
-    # Validate
+    EPS = 1e-6
+    cursor = 0.0
+    kept: list = []
     for seg in ordered:
-        if seg.end_sec <= seg.start_sec:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Segment index {seg.index} (id={seg.id!r}) has "
-                    f"end_sec={seg.end_sec} <= start_sec={seg.start_sec}; "
-                    "every segment must have a positive duration."
-                ),
-            )
-        if seg.end_sec > duration + 1e-9:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Segment index {seg.index} (id={seg.id!r}) has "
-                    f"end_sec={seg.end_sec} which exceeds project duration {duration}."
-                ),
-            )
-        if seg.end_sec <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Segment index {seg.index} (id={seg.id!r}) has "
-                    f"end_sec={seg.end_sec} which is not positive."
-                ),
-            )
+        seg.start_sec = cursor
+        end = min(seg.end_sec, duration)
+        if end - cursor > EPS:
+            seg.end_sec = end
+            kept.append(seg)
+            cursor = end
+        else:
+            # Collapsed (zero/negative duration) → drop it.
+            db.delete(seg)
+
+    if not kept:
+        raise HTTPException(
+            status_code=400,
+            detail="No segments with positive duration remain after edits.",
+        )
+
+    # Ensure full coverage of [0, duration].
+    kept[-1].end_sec = duration
+    for i, seg in enumerate(kept):
+        seg.index = i
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +286,7 @@ def update_project_segments(
         for i, seg in enumerate(ordered):
             seg.index = i
     else:
-        _normalize_partition(remaining, duration)
+        _normalize_partition(remaining, duration, db)
 
     db.commit()
 

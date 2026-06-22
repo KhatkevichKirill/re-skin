@@ -486,32 +486,41 @@ class TestLinkedBoundaries:
             assert result[i]["end_sec"] == pytest.approx(result[i + 1]["start_sec"]), \
                 f"Contiguity broken between index {i} and {i+1}"
 
-    def test_invalid_boundary_end_le_start_is_400(self, client, db_session):
-        """An end_sec <= the computed start_sec for that segment → 400."""
+    def test_collapsing_a_segment_drops_it(self, client, db_session):
+        """Collapsing a segment (end <= start) DROPS it (200), leaving a
+        contiguous partition — this is how the editor 'deletes' a keep."""
         project, segs = self._make_contiguous_project(db_session, duration=30.0, n=3)
         s0, s1, s2 = segs
 
-        # Set s0.end to 0 — this makes s0 have zero/negative duration
+        # Collapse s0 (end=0). It should be dropped, not rejected.
         response = client.patch(
             f"/api/v2/projects/{project.id}/segments",
             json={"updates": [{"id": s0.id, "end_sec": 0.0}]},
         )
-        assert response.status_code == 400
-        assert "positive duration" in response.json()["detail"].lower() or \
-               "end_sec" in response.json()["detail"].lower()
+        assert response.status_code == 200
+        result = response.json()
+        assert len(result) == 2  # s0 dropped
+        # Contiguous coverage of [0, 30]
+        assert result[0]["start_sec"] == pytest.approx(0.0)
+        assert result[-1]["end_sec"] == pytest.approx(30.0)
+        for a, b in zip(result, result[1:]):
+            assert a["end_sec"] == pytest.approx(b["start_sec"])
 
-    def test_invalid_boundary_exceeds_duration_is_400(self, client, db_session):
-        """An end_sec beyond project duration → 400."""
+    def test_end_beyond_duration_is_clamped(self, client, db_session):
+        """An end_sec beyond project duration is clamped to duration (200);
+        segments pushed past the end collapse and are dropped."""
         project, segs = self._make_contiguous_project(db_session, duration=30.0, n=3)
         s0, s1, s2 = segs
 
-        # Set s1.end beyond total duration — normalization will pin s2 to 30,
-        # but s1.end=35 > 30 triggers the validation error.
         response = client.patch(
             f"/api/v2/projects/{project.id}/segments",
             json={"updates": [{"id": s1.id, "end_sec": 35.0}]},
         )
-        assert response.status_code == 400
+        assert response.status_code == 200
+        result = response.json()
+        assert result[-1]["end_sec"] == pytest.approx(30.0)
+        for a, b in zip(result, result[1:]):
+            assert a["end_sec"] == pytest.approx(b["start_sec"])
 
     def test_patch_still_409_when_not_ready(self, client, db_session):
         """PATCH on a non-ready project is still 409."""
@@ -539,9 +548,16 @@ class TestNormalizePartition:
 
     def setup_method(self):
         """Import the helper fresh each test."""
-        import importlib
         import app.api_v2 as m
         self.normalize = m._normalize_partition
+
+        class FakeDB:
+            def __init__(self):
+                self.deleted = []
+            def delete(self, x):
+                self.deleted.append(x)
+
+        self.db = FakeDB()
 
     def _fake_seg(self, idx, start, end, seg_id=None):
         """Minimal object with the fields _normalize_partition reads/writes."""
@@ -560,7 +576,8 @@ class TestNormalizePartition:
             self._fake_seg(1, 10, 20),
             self._fake_seg(2, 20, 30),
         ]
-        self.normalize(segs, 30.0)
+        self.normalize(segs, 30.0, self.db)
+        assert self.db.deleted == []
         assert segs[0].start_sec == pytest.approx(0.0)
         assert segs[0].end_sec == pytest.approx(10.0)
         assert segs[1].start_sec == pytest.approx(10.0)
@@ -569,22 +586,16 @@ class TestNormalizePartition:
         assert segs[2].end_sec == pytest.approx(30.0)
 
     def test_derives_starts_from_ends(self):
-        """Stale start_sec values are corrected: only ends are the source of truth.
-
-        Two segments: s0(start=0, end=10), s1(stale start=9999, end=20).
-        After normalize: pin s0.start=0, pin s1.end=duration=30.
-        Derive: s1.start = s0.end = 10.
-        Result: s0=[0..10], s1=[10..30].
-        """
+        """Starts are derived from the running cursor; only ends matter."""
         segs = [
             self._fake_seg(0, 0, 10),
             self._fake_seg(1, 9999, 20),  # stale start_sec; end=20 is the boundary
         ]
-        self.normalize(segs, 30.0)
+        self.normalize(segs, 30.0, self.db)
         assert segs[0].start_sec == pytest.approx(0.0)
         assert segs[0].end_sec == pytest.approx(10.0)
         assert segs[1].start_sec == pytest.approx(10.0)
-        assert segs[1].end_sec == pytest.approx(30.0)
+        assert segs[1].end_sec == pytest.approx(30.0)  # last extended to duration
 
     def test_indices_reassigned_zero_based(self):
         segs = [
@@ -592,44 +603,57 @@ class TestNormalizePartition:
             self._fake_seg(7, 10, 20),
             self._fake_seg(3, 20, 30),
         ]
-        self.normalize(segs, 30.0)
+        self.normalize(segs, 30.0, self.db)
         indices = sorted(s.index for s in segs)
         assert indices == [0, 1, 2]
 
     def test_empty_list_is_noop(self):
-        self.normalize([], 30.0)  # should not raise
+        self.normalize([], 30.0, self.db)  # should not raise
 
-    def test_zero_duration_segment_raises_400(self):
+    def test_collapsed_segment_is_dropped_not_rejected(self):
+        """A zero-duration segment is DROPPED (deleted), not a 400 — and the
+        remaining segments stay contiguous. This is the 'delete the keep by
+        collapsing it' behaviour the editor relies on."""
+        zero = self._fake_seg(1, 6.0, 6.0, seg_id="keep")   # collapsed
+        s0 = self._fake_seg(0, 0, 6.0, seg_id="a")
+        s2 = self._fake_seg(2, 6.0, 30.0, seg_id="b")
+        segs = [s0, zero, s2]
+        self.normalize(segs, 30.0, self.db)
+        assert self.db.deleted == [zero]            # the collapsed one dropped
+        assert s0.start_sec == pytest.approx(0.0) and s0.end_sec == pytest.approx(6.0)
+        assert s2.start_sec == pytest.approx(6.0) and s2.end_sec == pytest.approx(30.0)
+        assert s0.index == 0 and s2.index == 1      # reindexed over the gap
+
+    def test_negative_duration_segment_dropped(self):
+        """A neighbour extended over a segment (start>end) drops that segment."""
+        s0 = self._fake_seg(0, 0, 6.5, seg_id="a")
+        bad = self._fake_seg(1, 6.5, 6.0, seg_id="keep")  # end<start after edit
+        s2 = self._fake_seg(2, 6.0, 30.0, seg_id="b")
+        segs = [s0, bad, s2]
+        self.normalize(segs, 30.0, self.db)
+        assert bad in self.db.deleted
+        assert s0.end_sec == pytest.approx(6.5)
+        assert s2.start_sec == pytest.approx(6.5) and s2.end_sec == pytest.approx(30.0)
+
+    def test_end_beyond_duration_is_clamped(self):
+        """An end beyond duration is clamped; segments past it are dropped."""
+        s0 = self._fake_seg(0, 0, 50, seg_id="a")   # end > duration 30
+        s1 = self._fake_seg(1, 60, 80, seg_id="b")
+        segs = [s0, s1]
+        self.normalize(segs, 30.0, self.db)
+        assert s0.start_sec == pytest.approx(0.0) and s0.end_sec == pytest.approx(30.0)
+        assert s1 in self.db.deleted
+
+    def test_all_collapsed_raises_400(self):
         from fastapi import HTTPException
-        segs = [
-            self._fake_seg(0, 0, 0),   # zero duration; end=0 → end <= start → error
-            self._fake_seg(1, 0, 30),
-        ]
+        segs = [self._fake_seg(0, 0, 0)]
         with pytest.raises(HTTPException) as exc_info:
-            self.normalize(segs, 30.0)
-        assert exc_info.value.status_code == 400
-
-    def test_end_beyond_duration_raises_400(self):
-        """An internal boundary end_sec that exceeds duration triggers 400.
-
-        Two segments where s0.end=50 > duration=30.  After normalization:
-        - sorted: s0(0..50), s1(60..80)
-        - pin s0.start=0; pin s1.end=30
-        - derive s1.start = s0.end = 50
-        - validate s0: end=50 > duration=30 -> 400
-        """
-        from fastapi import HTTPException
-        segs = [
-            self._fake_seg(0, 0, 50),   # end=50 > duration=30
-            self._fake_seg(1, 60, 80),
-        ]
-        with pytest.raises(HTTPException) as exc_info:
-            self.normalize(segs, 30.0)
+            self.normalize(segs, 30.0, self.db)
         assert exc_info.value.status_code == 400
 
     def test_single_segment_spans_full_duration(self):
         segs = [self._fake_seg(0, 5, 25)]  # start/end arbitrary; will be pinned
-        self.normalize(segs, 30.0)
+        self.normalize(segs, 30.0, self.db)
         assert segs[0].start_sec == pytest.approx(0.0)
         assert segs[0].end_sec == pytest.approx(30.0)
 
