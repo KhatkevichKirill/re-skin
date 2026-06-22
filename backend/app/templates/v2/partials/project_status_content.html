@@ -419,8 +419,18 @@ function seekSeg(el) {
   }
 }
 
+// Track ids of EXISTING (server-rendered) segments the user deleted, so the
+// save can tell the backend to remove them. (collectSegEdits reads the live
+// DOM, where a deleted row is already gone — it must not be inferred there.)
+var _deletedSegIds = [];
+
 function deleteRow(btn) {
-  btn.closest('tr').remove();
+  var tr = btn.closest('tr');
+  var segId = tr.dataset.segId;
+  if (segId && segId.indexOf('new-') !== 0) {
+    _deletedSegIds.push(segId);
+  }
+  tr.remove();
   rebindEndListeners();
   // Re-link: the segment after the removed one absorbs the gap (its start moves
   // back to the previous segment's end), so two swaps become adjacent.
@@ -508,12 +518,9 @@ function addSegRow() {
 
 function collectSegEdits() {
   var rows = document.querySelectorAll('#seg-tbody tr.seg-row');
-  var originalRows = document.querySelectorAll('#seg-tbody tr.seg-row:not(.new-seg)');
-  var originalIds = new Set([].slice.call(originalRows).map(function(r){ return r.dataset.segId; }));
 
   var updates = [];
   var creates = [];
-  var currentIds = new Set();
 
   [].slice.call(rows).forEach(function(row) {
     var segId = row.dataset.segId;
@@ -528,13 +535,12 @@ function collectSegEdits() {
     if (isNew) {
       creates.push(Object.assign({}, data, { has_face: data.action === 'swap' }));
     } else {
-      currentIds.add(segId);
       updates.push(Object.assign({ id: segId }, data));
     }
   });
 
-  var deletes = [].slice.call(originalIds).filter(function(id){ return !currentIds.has(id); });
-  return { updates: updates, deletes: deletes, creates: creates };
+  // Deletes come from explicit tracking (deleted rows are no longer in the DOM).
+  return { updates: updates, deletes: _deletedSegIds.slice(), creates: creates };
 }
 
 async function saveSegments(projectId) {
@@ -557,6 +563,7 @@ async function saveSegments(projectId) {
     } else {
       msgDiv.className = 'alert alert-info';
       msgDiv.textContent = 'Segments saved.';
+      _deletedSegIds = [];  // deletions are now persisted
       setTimeout(function() { msgEl.textContent = ''; }, 3000);
     }
     msgEl.textContent = '';
