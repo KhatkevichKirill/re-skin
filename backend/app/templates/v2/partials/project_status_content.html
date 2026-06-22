@@ -333,6 +333,26 @@ onModelChange();
 
 var _newRowCount = 0;
 
+// Auto-save so segment edits always persist (the #1 confusion was deleting a
+// segment but forgetting to click "Save segments" before running).
+var SEG_PROJECT_ID = "{{ project.id }}";
+var _autoSaveTimer = null;
+function scheduleSegSave() {
+  clearTimeout(_autoSaveTimer);
+  _autoSaveTimer = setTimeout(function () { saveSegments(SEG_PROJECT_ID); }, 600);
+}
+
+// Render a server error readably (string detail, or a 422 validation list).
+function fmtSegErr(body) {
+  var d = body && body.detail;
+  if (Array.isArray(d)) {
+    return d.map(function (e) {
+      return (e.loc ? e.loc.join(".") + ": " : "") + (e.msg || "invalid");
+    }).join("; ");
+  }
+  return d || "";
+}
+
 // Called when operator changes a segment's end input.
 // - Clamps the typed value to the open interval (myStart, nextEnd).
 // - Updates the next row's start display to the new value.
@@ -435,6 +455,7 @@ function deleteRow(btn) {
   // Re-link: the segment after the removed one absorbs the gap (its start moves
   // back to the previous segment's end), so two swaps become adjacent.
   recomputeStarts();
+  scheduleSegSave();  // deletions persist automatically
 }
 
 function addSegRow() {
@@ -555,17 +576,17 @@ async function saveSegments(projectId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    var msgDiv = document.createElement('div');
-    if (!res.ok) {
-      var errData = await res.json().catch(function(){ return { detail: res.statusText }; });
-      msgDiv.className = 'alert alert-danger';
-      msgDiv.textContent = 'Save failed: ' + (errData.detail || res.statusText);
-    } else {
-      msgDiv.className = 'alert alert-info';
-      msgDiv.textContent = 'Segments saved.';
-      _deletedSegIds = [];  // deletions are now persisted
-      setTimeout(function() { msgEl.textContent = ''; }, 3000);
+    if (res.ok) {
+      // Reload so the editor reflects the persisted + normalized segments
+      // (new rows get real ids; deleted rows are gone). Bulletproof state sync.
+      _deletedSegIds = [];
+      location.reload();
+      return;
     }
+    var errData = await res.json().catch(function(){ return { detail: res.statusText }; });
+    var msgDiv = document.createElement('div');
+    msgDiv.className = 'alert alert-danger';
+    msgDiv.textContent = 'Save failed: ' + (fmtSegErr(errData) || res.statusText);
     msgEl.textContent = '';
     msgEl.appendChild(msgDiv);
   } catch(e) {
