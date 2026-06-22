@@ -1,7 +1,8 @@
 # re-skin
 
-A video re-skinning tool that uses AI (Seedance via kie.ai) to swap faces/segments
-in video clips, with a web UI for reviewing and approving segments before processing.
+A video re-skinning tool that uses AI (Seedance or Gemini Omni, via kie.ai) to
+swap faces/segments in video clips, with a web UI for reviewing and approving
+segments before processing. The generation model is selectable per run.
 
 ## Architecture
 

@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 _UPLOAD_BASE = "https://kieai.redpandaai.co"
 _JOBS_BASE = "https://api.kie.ai"
 
+# Gemini Omni Video accepts only a fixed set of output durations (seconds).
+_OMNI_DURATIONS = (4, 6, 8, 10)
+
 
 # ---------------------------------------------------------------------------
 # Custom exceptions
@@ -224,6 +227,86 @@ class KieClient:
             raise KieTaskError(f"createTask response missing taskId: {data}")
 
         logger.info("Task created: taskId=%s", task_id)
+        return task_id
+
+    def create_omni_task(
+        self,
+        *,
+        prompt: str,
+        image_urls: list[str],
+        video_url: str,
+        video_start: float,
+        video_end: float,
+        resolution: str = "720p",
+        aspect_ratio: str = "9:16",
+        duration: int,
+        seed: int | None = None,
+    ) -> str:
+        """
+        Create a Gemini Omni Video task on the (shared) jobs API.
+
+        Unlike Seedance, Gemini takes its reference clip via ``video_list`` (a
+        single ``{url, start, ends}`` object, trim range <= 10s) and its
+        reference images via ``image_urls``.
+
+        Args:
+            prompt: Text prompt for the generation.
+            image_urls: Up to 7 reference image URLs.
+            video_url: Public URL of the reference clip (<= 30s, <= 100MB).
+            video_start: Trim start (seconds) within the clip.
+            video_end: Trim end (seconds); ``video_end - video_start`` must be <= 10.
+            resolution: ``720p``, ``1080p``, or ``4k``.
+            aspect_ratio: ``16:9`` or ``9:16``.
+            duration: Output length in seconds — one of 4, 6, 8, 10.
+            seed: Optional reproducibility seed.
+
+        Returns:
+            The ``taskId`` string.
+
+        Raises:
+            ValueError: If *duration* is not one of the allowed values.
+            KieTaskError: On HTTP or API errors.
+        """
+        if duration not in _OMNI_DURATIONS:
+            raise ValueError(
+                f"duration must be one of {_OMNI_DURATIONS}, got {duration}"
+            )
+
+        url = f"{self._jobs_base}/api/v1/jobs/createTask"
+        payload = {
+            "model": "gemini-omni-video",
+            "input": {
+                "prompt": prompt,
+                "image_urls": image_urls,
+                "video_list": [
+                    {"url": video_url, "start": video_start, "ends": video_end}
+                ],
+                "resolution": resolution,
+                "aspect_ratio": aspect_ratio,
+                "duration": duration,
+            },
+        }
+        if seed is not None:
+            payload["input"]["seed"] = seed
+        logger.info(
+            "Creating Gemini Omni task (resolution=%s, duration=%ds)",
+            resolution, duration,
+        )
+
+        try:
+            data = self._create_task_with_retry(url, payload)
+        except KieTaskError:
+            raise
+        except Exception as exc:
+            raise KieTaskError(f"create_omni_task failed: {exc}") from exc
+
+        task_id: str | None = (
+            data.get("data", {}).get("taskId") if isinstance(data, dict) else None
+        )
+        if not task_id:
+            raise KieTaskError(f"createTask response missing taskId: {data}")
+
+        logger.info("Omni task created: taskId=%s", task_id)
         return task_id
 
     def get_task(self, task_id: str) -> dict:

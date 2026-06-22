@@ -196,6 +196,106 @@ class TestCreateTask:
 
 
 # ---------------------------------------------------------------------------
+# create_omni_task
+# ---------------------------------------------------------------------------
+
+
+class TestCreateOmniTask:
+    @respx.mock
+    def test_returns_task_id_and_sends_correct_body(self):
+        """create_omni_task sends the gemini-omni-video payload and returns taskId."""
+        create_url = f"{JOBS_BASE}/api/v1/jobs/createTask"
+        respx.post(create_url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "msg": "success",
+                    "data": {"taskId": "task_gemini_1", "recordId": "rec"},
+                },
+            )
+        )
+
+        client = _make_client()
+        task_id = client.create_omni_task(
+            prompt="replace the person",
+            image_urls=["https://img.test/face.jpg"],
+            video_url="https://vid.test/seg.mp4",
+            video_start=0,
+            video_end=8.0,
+            resolution="1080p",
+            aspect_ratio="9:16",
+            duration=8,
+        )
+        assert task_id == "task_gemini_1"
+
+        req = respx.calls.last.request
+        body = json.loads(req.content)
+        assert body["model"] == "gemini-omni-video"
+        inp = body["input"]
+        assert inp["prompt"] == "replace the person"
+        assert inp["image_urls"] == ["https://img.test/face.jpg"]
+        assert inp["video_list"] == [
+            {"url": "https://vid.test/seg.mp4", "start": 0, "ends": 8.0}
+        ]
+        assert inp["resolution"] == "1080p"
+        assert inp["aspect_ratio"] == "9:16"
+        assert inp["duration"] == 8
+        assert "seed" not in inp  # omitted when not provided
+
+    @respx.mock
+    def test_seed_included_when_provided(self):
+        """create_omni_task includes seed in the payload when given."""
+        respx.post(f"{JOBS_BASE}/api/v1/jobs/createTask").mock(
+            return_value=httpx.Response(
+                200, json={"code": 200, "data": {"taskId": "t2"}}
+            )
+        )
+        client = _make_client()
+        client.create_omni_task(
+            prompt="x",
+            image_urls=[],
+            video_url="https://vid.test/seg.mp4",
+            video_start=0,
+            video_end=4.0,
+            duration=4,
+            seed=42,
+        )
+        body = json.loads(respx.calls.last.request.content)
+        assert body["input"]["seed"] == 42
+
+    def test_invalid_duration_raises(self):
+        """create_omni_task raises ValueError for a duration outside the allowed set."""
+        client = _make_client()
+        with pytest.raises(ValueError, match="duration must be one of"):
+            client.create_omni_task(
+                prompt="x",
+                image_urls=[],
+                video_url="https://vid.test/seg.mp4",
+                video_start=0,
+                video_end=5.0,
+                duration=5,  # not in (4, 6, 8, 10)
+            )
+
+    @respx.mock
+    def test_raises_on_http_error(self):
+        """create_omni_task raises KieTaskError on a 4xx response."""
+        respx.post(f"{JOBS_BASE}/api/v1/jobs/createTask").mock(
+            return_value=httpx.Response(403, json={"error": "Forbidden"})
+        )
+        client = _make_client()
+        with pytest.raises(KieTaskError, match="403"):
+            client.create_omni_task(
+                prompt="x",
+                image_urls=[],
+                video_url="https://vid.test/seg.mp4",
+                video_start=0,
+                video_end=4.0,
+                duration=4,
+            )
+
+
+# ---------------------------------------------------------------------------
 # poll_task
 # ---------------------------------------------------------------------------
 

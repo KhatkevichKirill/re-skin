@@ -182,13 +182,25 @@
           </p>
         </div>
 
-        <!-- Resolution -->
+        <!-- Model -->
+        <div class="form-group">
+          <label for="run-model">Model</label>
+          <select id="run-model" name="model" onchange="onModelChange()">
+            <option value="seedance" {% if default_model == "seedance" %}selected{% endif %}>Seedance — video-to-video character swap</option>
+            <option value="gemini-omni" {% if default_model == "gemini-omni" %}selected{% endif %}>Gemini Omni — multimodal video generation</option>
+          </select>
+          <p class="hint" id="model-hint" style="display:none">
+            Gemini Omni caps each segment at 10s of generated output — longer swap segments are truncated to 10s.
+          </p>
+        </div>
+
+        <!-- Resolution (options depend on the selected model) -->
         <div class="form-group">
           <label for="run-resolution">Resolution</label>
-          <select id="run-resolution" name="resolution">
-            <option value="480p" {% if default_resolution == "480p" %}selected{% endif %}>480p — cheapest, use for tests</option>
-            <option value="720p" {% if default_resolution == "720p" %}selected{% endif %}>720p — balanced</option>
-            <option value="1080p" {% if default_resolution == "1080p" %}selected{% endif %}>1080p — production quality</option>
+          <select id="run-resolution" name="resolution" data-default="{{ default_resolution }}">
+            <option value="480p">480p — cheapest, use for tests</option>
+            <option value="720p">720p — balanced</option>
+            <option value="1080p">1080p — production quality</option>
           </select>
         </div>
 
@@ -278,6 +290,43 @@ function handleRunCreated(event) {
     } catch(e) {}
   }
 }
+
+// __ Model → resolution options __
+// Each backend supports a different resolution set; rebuild the dropdown when
+// the model changes so only valid options are offered.
+var MODEL_RESOLUTIONS = {
+  'seedance':    [['480p','480p — cheapest, use for tests'], ['720p','720p — balanced'], ['1080p','1080p — production quality']],
+  'gemini-omni': [['720p','720p — balanced'], ['1080p','1080p — production quality'], ['4k','4k — maximum quality']]
+};
+
+function onModelChange() {
+  var modelSel = document.getElementById('run-model');
+  var resSel = document.getElementById('run-resolution');
+  var hint = document.getElementById('model-hint');
+  if (!modelSel || !resSel) return;
+  var model = modelSel.value;
+  var opts = MODEL_RESOLUTIONS[model] || MODEL_RESOLUTIONS['seedance'];
+  var prev = resSel.value;
+  var preferred = resSel.getAttribute('data-default') || '720p';
+  while (resSel.firstChild) resSel.removeChild(resSel.firstChild);
+  var values = opts.map(function(o){ return o[0]; });
+  opts.forEach(function(o) {
+    var opt = document.createElement('option');
+    opt.value = o[0];
+    opt.textContent = o[1];
+    resSel.appendChild(opt);
+  });
+  // Keep the current choice if still valid, else fall back to the server
+  // default, else the first allowed value.
+  if (values.indexOf(prev) !== -1) resSel.value = prev;
+  else if (values.indexOf(preferred) !== -1) resSel.value = preferred;
+  else resSel.value = values[0];
+  if (hint) hint.style.display = (model === 'gemini-omni') ? '' : 'none';
+}
+
+document.addEventListener('DOMContentLoaded', onModelChange);
+// Fragment may be swapped in by HTMX after DOMContentLoaded already fired.
+onModelChange();
 
 // __ Segment editor helpers __
 

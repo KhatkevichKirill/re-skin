@@ -42,8 +42,14 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["v2"])
 
-_VALID_RESOLUTIONS = {"480p", "720p", "1080p"}
+_VALID_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}
 _VALID_AUDIO_MODES = {"original", "seedance"}
+_VALID_MODELS = {"seedance", "gemini-omni"}
+# Allowed resolutions per model (each backend supports a different set).
+_MODEL_RESOLUTIONS = {
+    "seedance": {"480p", "720p", "1080p"},
+    "gemini-omni": {"720p", "1080p", "4k"},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +431,7 @@ def create_run(
     pid: str,
     prompt: str = Form(...),
     name: Optional[str] = Form(None),
+    model: str = Form("seedance"),
     resolution: str = Form(settings.DEFAULT_RESOLUTION),
     audio_mode: str = Form("original"),
     gdrive_folder_id: Optional[str] = Form(None),
@@ -447,11 +454,22 @@ def create_run(
             ),
         )
 
-    # Validate resolution
-    if resolution not in _VALID_RESOLUTIONS:
+    # Validate model
+    if model not in _VALID_MODELS:
         raise HTTPException(
             status_code=400,
-            detail=f"resolution must be one of {sorted(_VALID_RESOLUTIONS)}",
+            detail=f"model must be one of {sorted(_VALID_MODELS)}",
+        )
+
+    # Validate resolution (must be allowed for the chosen model)
+    allowed_res = _MODEL_RESOLUTIONS[model]
+    if resolution not in allowed_res:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"resolution {resolution!r} not allowed for model {model!r}; "
+                f"choose one of {sorted(allowed_res)}"
+            ),
         )
 
     # Validate audio_mode
@@ -483,6 +501,7 @@ def create_run(
         project_id=pid,
         name=name,
         prompt=prompt,
+        model=model,
         resolution=resolution,
         audio_mode=audio_mode,
         gdrive_folder_id=resolved_folder_id,

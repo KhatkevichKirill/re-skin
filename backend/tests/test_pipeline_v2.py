@@ -194,6 +194,9 @@ class FakeKieClient:
         self.create_task_calls: list[str] = []
         # Each entry: {"task_id": str, "prompt": str, "reference_image_urls": list}
         self.create_task_records: list[dict] = []
+        # Gemini Omni task records: {"task_id", "prompt", "image_urls", "video_url",
+        #   "video_start", "video_end", "resolution", "aspect_ratio", "duration"}
+        self.create_omni_records: list[dict] = []
         self.poll_calls: list[str] = []
 
     def upload_file(self, local_path: str, upload_path: str = "charswap", **kw) -> str:
@@ -216,6 +219,34 @@ class FakeKieClient:
             "task_id": task_id,
             "prompt": prompt,
             "reference_image_urls": list(reference_image_urls),
+        })
+        return task_id
+
+    def create_omni_task(
+        self,
+        *,
+        prompt,
+        image_urls,
+        video_url,
+        video_start,
+        video_end,
+        resolution,
+        aspect_ratio,
+        duration,
+        seed=None,
+    ) -> str:
+        task_id = f"fake-omni-{uuid.uuid4().hex[:8]}"
+        self.create_task_calls.append(task_id)
+        self.create_omni_records.append({
+            "task_id": task_id,
+            "prompt": prompt,
+            "image_urls": list(image_urls),
+            "video_url": video_url,
+            "video_start": video_start,
+            "video_end": video_end,
+            "resolution": resolution,
+            "aspect_ratio": aspect_ratio,
+            "duration": duration,
         })
         return task_id
 
@@ -908,6 +939,79 @@ class TestSegmentOverride:
         with Session() as s:
             run = s.get(Run, run_id)
             assert run.status == RunStatus.done
+
+
+# ---------------------------------------------------------------------------
+# Tests: model routing (Seedance vs Gemini Omni)
+# ---------------------------------------------------------------------------
+
+
+class TestModelRouting:
+    """process_run must route to the kie method matching run.model."""
+
+    def _setup_ready_project(self, db_session, synthetic_video, patch_propose):
+        from app.pipeline_v2 import analyze_project
+
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+        return project_id
+
+    def test_seedance_routes_to_create_task(
+        self, db_engine, db_session, synthetic_video, patch_propose
+    ):
+        """A default (seedance) run uses create_task, not create_omni_task."""
+        from app.pipeline_v2 import process_run
+
+        project_id = self._setup_ready_project(db_session, synthetic_video, patch_propose)
+        run_id = _create_run(db_session, project_id)  # model defaults to seedance
+
+        fake_kie = FakeKieClient(synthetic_video)
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert len(fake_kie.create_task_records) == 2
+        assert len(fake_kie.create_omni_records) == 0
+
+    def test_gemini_routes_to_create_omni_task(
+        self, db_engine, db_session, synthetic_video, patch_propose
+    ):
+        """A gemini-omni run uses create_omni_task with snapped duration + video trim."""
+        from app.pipeline_v2 import process_run
+
+        project_id = self._setup_ready_project(db_session, synthetic_video, patch_propose)
+
+        run = Run(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            name="Gemini Run",
+            prompt="Replace the character",
+            reference_image_urls=[],
+            model="gemini-omni",
+            resolution="720p",
+            status=RunStatus.queued,
+        )
+        db_session.add(run)
+        db_session.commit()
+
+        fake_kie = FakeKieClient(synthetic_video)
+        process_run(run.id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        # Two swap segments → two omni calls, no seedance calls.
+        assert len(fake_kie.create_omni_records) == 2
+        assert len(fake_kie.create_task_records) == 0
+
+        for rec in fake_kie.create_omni_records:
+            assert rec["resolution"] == "720p"
+            # 4:3 synthetic video (320x240) → landscape aspect for Gemini.
+            assert rec["aspect_ratio"] == "16:9"
+            assert rec["duration"] in (4, 6, 8, 10)
+            assert rec["video_start"] == 0
+            # Trim never exceeds Gemini's 10s cap.
+            assert 0 < rec["video_end"] <= 10.0
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            r = s.get(Run, run.id)
+            assert r.status == RunStatus.done
 
 
 # ---------------------------------------------------------------------------
