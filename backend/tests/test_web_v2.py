@@ -299,6 +299,15 @@ class TestProjectDetail:
         assert str(seg0.start_sec) in html or "0.0" in html
         assert str(seg1.end_sec) in html or "10.0" in html
 
+    def test_project_ready_shows_per_segment_prompt_fields(self, client, db_session):
+        p = _make_project(db_session, status=ProjectStatus.ready)
+        _make_segment_def(db_session, p.id, 0, action="swap")
+        resp = client.get(f"/v2/projects/{p.id}")
+        html = resp.text
+        assert "Per-segment prompts" in html
+        assert "seg-prompt-field" in html
+        assert "collectSegmentPrompts" in html
+
     def test_project_ready_shows_new_run_form(self, client, db_session):
         p = _make_project(db_session, status=ProjectStatus.ready)
         resp = client.get(f"/v2/projects/{p.id}")

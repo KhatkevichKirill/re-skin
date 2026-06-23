@@ -1632,3 +1632,63 @@ class TestCopyRun:
     def test_copy_missing_run_is_404(self, client):
         resp = client.post("/api/v2/runs/no-such-run/copy", data={"resolution": "720p"})
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Per-segment prompts supplied at run creation
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentPromptsOnCreate:
+    def test_segment_prompt_appended_as_override(self, client, db_session, SessionFactory):
+        import json as _json
+
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd0 = _make_segment_def(db_session, project.id, 0)
+        sd1 = _make_segment_def(db_session, project.id, 1)
+
+        resp = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={
+                "prompt": "base prompt",
+                "segment_prompts": _json.dumps({sd0.id: "make the jacket red"}),
+            },
+        )
+        assert resp.status_code == 201, resp.text
+
+        s = SessionFactory()
+        run = s.get(Run, resp.json()["run_id"])
+        rss = {rs.segment_def_id: rs for rs in run.run_segments}
+        s.close()
+        # Only the segment with extra text gets a pre-created override RunSegment.
+        assert sd0.id in rss
+        assert rss[sd0.id].prompt_override == "base prompt\nmake the jacket red"
+        assert sd1.id not in rss
+
+    def test_blank_and_unknown_segment_prompts_ignored(self, client, db_session, SessionFactory):
+        import json as _json
+
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd0 = _make_segment_def(db_session, project.id, 0)
+
+        resp = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={
+                "prompt": "base",
+                "segment_prompts": _json.dumps({sd0.id: "   ", "no-such-id": "x"}),
+            },
+        )
+        assert resp.status_code == 201
+        s = SessionFactory()
+        run = s.get(Run, resp.json()["run_id"])
+        n = len(run.run_segments)
+        s.close()
+        assert n == 0  # blank text + unknown id both ignored
+
+    def test_invalid_segment_prompts_json_is_400(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        resp = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "base", "segment_prompts": "{not valid json"},
+        )
+        assert resp.status_code == 400

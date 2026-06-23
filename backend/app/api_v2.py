@@ -9,6 +9,7 @@ endpoints. v1 /api/jobs endpoints are left completely untouched.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -492,12 +493,17 @@ def create_run(
     gdrive_folder_id: Optional[str] = Form(None),
     reference_files: List[UploadFile] = File(default=[]),
     reference_urls: Optional[str] = Form(None),
+    segment_prompts: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> RunCreateResponse:
     """Create a new Run under a project (one character attempt).
 
     The project must be in *ready* status. Exactly one character prompt is
     required. Reference images (files + URLs) are capped at MAX_REFERENCE_IMAGES.
+
+    *segment_prompts* is an optional JSON object ``{segment_def_id: extra_text}``
+    of per-segment additions: the extra text is appended to the run prompt for
+    that swap segment on the very first run (blank/absent → uses the run prompt).
     """
     project = _get_project_or_404(pid, db)
     if project.status != ProjectStatus.ready:
@@ -578,6 +584,41 @@ def create_run(
         saved_ref_paths.append(dest)
 
     run.reference_image_urls = saved_ref_paths + list(ref_urls)
+
+    # Optional per-segment prompt additions: pre-create RunSegments carrying a
+    # prompt_override (= run prompt + the extra text) so the FIRST run already
+    # submits tailored prompts. process_run is idempotent and reuses these.
+    if segment_prompts:
+        try:
+            seg_map = json.loads(segment_prompts)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=400, detail="segment_prompts must be valid JSON"
+            ) from exc
+        if isinstance(seg_map, dict) and seg_map:
+            swap_defs = {
+                s.id: s
+                for s in db.execute(
+                    select(SegmentDef).where(
+                        SegmentDef.project_id == pid, SegmentDef.action == "swap"
+                    )
+                )
+                .scalars()
+                .all()
+            }
+            for sd_id, extra in seg_map.items():
+                text = extra.strip() if isinstance(extra, str) else ""
+                sd = swap_defs.get(sd_id)
+                if text and sd is not None:
+                    db.add(
+                        RunSegment(
+                            run_id=run_id,
+                            segment_def_id=sd_id,
+                            index=sd.index,
+                            status=SegmentStatus.pending,
+                            prompt_override=f"{prompt.rstrip()}\n{text}",
+                        )
+                    )
 
     # Transition created → queued
     try:
