@@ -63,6 +63,55 @@ function deleteThisRun(rid, pid) {
   </div>
 </div>
 
+{% if status_val in ("done", "failed") %}
+<!-- __ Copy run at a different resolution __ -->
+{% set copy_res = ["720p", "1080p", "4k"] if run.model == "gemini-omni" else ["480p", "720p", "1080p"] %}
+<div class="card">
+  <div class="card-header"><h2>Copy run</h2></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">
+      Re-submit this exact run (prompt, references, model{% if run.audio_mode %}, audio{% endif %}, and any per-segment tweaks) at a different resolution — e.g. promote a 480p test to production.
+    </p>
+    <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap">
+      <div class="form-group" style="margin-bottom:0">
+        <label for="copy-resolution">Resolution</label>
+        <select id="copy-resolution">
+          {% for r in copy_res %}
+          <option value="{{ r }}" {% if r != run.resolution and not loop.previtem %}selected{% endif %}>{{ r }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0; flex:1; min-width:180px">
+        <label for="copy-name">New run name (optional)</label>
+        <input type="text" id="copy-name" placeholder="defaults to “{{ run.name or 'run' }} · <resolution>”" maxlength="255" />
+      </div>
+      <button type="button" class="btn btn-primary" onclick="copyRun('{{ run.id }}')">Copy &amp; run</button>
+      <span id="copy-status" class="text-muted" style="font-size:12px"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+function copyRun(rid) {
+  var res = document.getElementById('copy-resolution').value;
+  var name = document.getElementById('copy-name').value;
+  var statusEl = document.getElementById('copy-status');
+  statusEl.textContent = 'Submitting…';
+  var fd = new FormData();
+  fd.append('resolution', res);
+  if (name && name.trim()) fd.append('name', name.trim());
+  fetch('/api/v2/runs/' + encodeURIComponent(rid) + '/copy', { method: 'POST', body: fd })
+    .then(function (r) {
+      if (r.status === 201) {
+        return r.json().then(function (d) { window.location.href = '/v2/runs/' + d.run_id; });
+      }
+      return r.json().then(function (b) { statusEl.textContent = 'Error: ' + (b.detail || r.status); });
+    })
+    .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
+}
+</script>
+{% endif %}
+
 <!-- __ Status-driven content (polling target) __ -->
 <div id="run-status-content">
   {% include "partials/run_status_content.html" %}

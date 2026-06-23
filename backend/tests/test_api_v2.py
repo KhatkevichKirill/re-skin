@@ -1512,3 +1512,123 @@ class TestSingleFileUpload:
         run = session.get(Run, run_id)
         session.close()
         assert len(run.reference_image_urls) == 1
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v2/runs/{rid}/copy — duplicate a run at a new resolution
+# ---------------------------------------------------------------------------
+
+
+class TestCopyRun:
+    def test_copy_clones_config_and_enqueues(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        run = _make_run(
+            s, project.id, name="Test", prompt="hello there",
+            model="seedance", resolution="480p", audio_mode="seedance",
+            status=RunStatus.done,
+        )
+        pid, rid = project.id, run.id
+        s.close()
+
+        resp = client.post(f"/api/v2/runs/{rid}/copy", data={"resolution": "1080p"})
+        assert resp.status_code == 201, resp.text
+        new_id = resp.json()["run_id"]
+        assert resp.json()["status"] == "queued"
+        assert new_id in spy["process_run"]
+        assert new_id != rid
+
+        s = SessionFactory()
+        nr = s.get(Run, new_id)
+        s.close()
+        assert nr.project_id == pid
+        assert nr.prompt == "hello there"
+        assert nr.model == "seedance"
+        assert nr.audio_mode == "seedance"
+        assert nr.resolution == "1080p"
+        assert nr.status == RunStatus.queued
+
+    def test_copy_uses_custom_name(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        run = _make_run(s, project.id, resolution="480p", status=RunStatus.done)
+        rid = run.id
+        s.close()
+        resp = client.post(
+            f"/api/v2/runs/{rid}/copy", data={"resolution": "720p", "name": "Prod cut"}
+        )
+        assert resp.status_code == 201
+        s = SessionFactory()
+        nr = s.get(Run, resp.json()["run_id"])
+        s.close()
+        assert nr.name == "Prod cut"
+
+    def test_copy_clones_segment_overrides(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        sd = _make_segment_def(s, project.id, 0)
+        run = _make_run(s, project.id, resolution="480p", status=RunStatus.done)
+        _make_run_segment(
+            s, run.id, sd.id, status=SegmentStatus.completed,
+            prompt_override="tuned segment prompt",
+        )
+        rid, sd_id = run.id, sd.id
+        s.close()
+
+        resp = client.post(f"/api/v2/runs/{rid}/copy", data={"resolution": "720p"})
+        assert resp.status_code == 201
+        new_id = resp.json()["run_id"]
+
+        s = SessionFactory()
+        nr = s.get(Run, new_id)
+        overrides = [rs for rs in nr.run_segments if rs.prompt_override]
+        s.close()
+        assert len(overrides) == 1
+        assert overrides[0].segment_def_id == sd_id
+        assert overrides[0].prompt_override == "tuned segment prompt"
+
+    def test_copy_clones_local_reference_file(self, spy_client, SessionFactory, tmp_path):
+        client, spy = spy_client
+        ref = tmp_path / "face.jpg"
+        ref.write_bytes(b"img-bytes")
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        run = _make_run(
+            s, project.id, resolution="480p", status=RunStatus.done,
+            reference_image_urls=[str(ref)],
+        )
+        rid = run.id
+        s.close()
+
+        resp = client.post(f"/api/v2/runs/{rid}/copy", data={"resolution": "720p"})
+        assert resp.status_code == 201
+        s = SessionFactory()
+        nr = s.get(Run, resp.json()["run_id"])
+        new_refs = list(nr.reference_image_urls)
+        s.close()
+        assert len(new_refs) == 1
+        assert new_refs[0] != str(ref)       # copied into the new run's dir
+        assert os.path.exists(new_refs[0])   # and the copy is on disk
+
+    def test_copy_invalid_resolution_for_model_is_400(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        run = _make_run(
+            db_session, project.id, model="gemini-omni", resolution="720p",
+            status=RunStatus.done,
+        )
+        resp = client.post(f"/api/v2/runs/{run.id}/copy", data={"resolution": "480p"})
+        assert resp.status_code == 400
+        assert "resolution" in resp.json()["detail"].lower()
+
+    def test_copy_blocked_when_project_not_ready(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.created)
+        run = _make_run(db_session, project.id, resolution="480p", status=RunStatus.done)
+        resp = client.post(f"/api/v2/runs/{run.id}/copy", data={"resolution": "720p"})
+        assert resp.status_code == 409
+
+    def test_copy_missing_run_is_404(self, client):
+        resp = client.post("/api/v2/runs/no-such-run/copy", data={"resolution": "720p"})
+        assert resp.status_code == 404

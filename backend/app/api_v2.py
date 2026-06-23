@@ -845,3 +845,127 @@ def retry_run(rid: str, db: Session = Depends(get_db)) -> RunResponse:
 
     log.info("Retrying run %s", rid)
     return RunResponse.model_validate(run)
+
+
+def _copy_reference_files(items: list, dest_dir: str) -> list:
+    """Clone a run's reference list for a copied run.
+
+    Local file paths are copied into *dest_dir* (so the copy is self-contained and
+    survives deleting the source run); http(s) URLs and missing/odd entries are
+    passed through unchanged.
+    """
+    out: list = []
+    made = False
+    for ref in items or []:
+        if isinstance(ref, str) and (ref.startswith("http://") or ref.startswith("https://")):
+            out.append(ref)
+            continue
+        if isinstance(ref, str) and os.path.exists(ref):
+            if not made:
+                os.makedirs(dest_dir, exist_ok=True)
+                made = True
+            dst = os.path.join(dest_dir, os.path.basename(ref))
+            shutil.copy2(ref, dst)
+            out.append(dst)
+        else:
+            out.append(ref)  # best-effort: keep whatever it was
+    return out
+
+
+@router.post(
+    "/runs/{rid}/copy",
+    status_code=status.HTTP_201_CREATED,
+    response_model=RunCreateResponse,
+)
+def copy_run(
+    rid: str,
+    resolution: str = Form(...),
+    name: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+) -> RunCreateResponse:
+    """Duplicate a run with a new resolution and enqueue it.
+
+    Clones everything that defines the result — prompt, reference images, model,
+    audio mode, Drive folder, and any per-segment prompt/reference overrides —
+    but with the chosen *resolution*. Handy for re-running a 480p test at a higher
+    resolution once you're happy with it.
+    """
+    src = _get_run_or_404(rid, db)
+    project = _get_project_or_404(src.project_id, db)
+    if project.status != ProjectStatus.ready:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot copy run: project status is {project.status!r}, expected 'ready'",
+        )
+
+    allowed = _MODEL_RESOLUTIONS[src.model]
+    if resolution not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"resolution {resolution!r} not allowed for model {src.model!r}; "
+                f"choose one of {sorted(allowed)}"
+            ),
+        )
+
+    new_id = str(uuid.uuid4())
+    new_name = (name.strip() if name and name.strip() else f"{src.name or 'run'} · {resolution}")[:255]
+    new_run = Run(
+        id=new_id,
+        project_id=src.project_id,
+        name=new_name,
+        prompt=src.prompt,
+        model=src.model,
+        resolution=resolution,
+        audio_mode=src.audio_mode,
+        gdrive_folder_id=src.gdrive_folder_id,
+        status=RunStatus.created,
+        reference_image_urls=[],
+    )
+    db.add(new_run)
+    db.flush()
+
+    # Clone run-level reference images into the new run's own dir.
+    refs_dir = os.path.join(project_dir(src.project_id), "runs", new_id, "references")
+    new_run.reference_image_urls = _copy_reference_files(
+        list(src.reference_image_urls or []), refs_dir
+    )
+
+    # Clone per-segment overrides so the copy reproduces the same tuned result.
+    # process_run is idempotent: it reuses these RunSegments (by segment_def_id)
+    # instead of creating fresh ones, so the overrides take effect.
+    for src_rs in src.run_segments:
+        if not (src_rs.prompt_override or src_rs.reference_image_urls_override):
+            continue
+        new_rs_id = str(uuid.uuid4())
+        override_refs = None
+        if src_rs.reference_image_urls_override:
+            seg_dir = os.path.join(
+                project_dir(src.project_id), "runs", new_id, "segment_refs", new_rs_id
+            )
+            override_refs = _copy_reference_files(
+                list(src_rs.reference_image_urls_override), seg_dir
+            )
+        db.add(
+            RunSegment(
+                id=new_rs_id,
+                run_id=new_id,
+                segment_def_id=src_rs.segment_def_id,
+                index=src_rs.index,
+                status=SegmentStatus.pending,
+                prompt_override=src_rs.prompt_override,
+                reference_image_urls_override=override_refs,
+            )
+        )
+
+    try:
+        transition(new_run, RunStatus.queued)
+    except InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    db.commit()
+    enqueue_process_run(new_id)
+
+    log.info("Copied run %s → %s (resolution=%s)", rid, new_id, resolution)
+    status_val = new_run.status.value if hasattr(new_run.status, "value") else str(new_run.status)
+    return RunCreateResponse(run_id=new_id, status=status_val)
