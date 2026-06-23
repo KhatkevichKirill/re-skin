@@ -22,6 +22,7 @@ class ProjectCreateResponse(BaseModel):
 
 class ProjectResponse(BaseModel):
     id: str
+    name: Optional[str] = None
     status: str
     source_type: str
     source_ref: str
@@ -42,11 +43,18 @@ class ProjectResponse(BaseModel):
 
 class ProjectListItem(BaseModel):
     id: str
+    name: Optional[str] = None
     source_ref: str
     status: str
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ProjectUpdate(BaseModel):
+    """Editable project settings."""
+
+    name: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

@@ -218,6 +218,48 @@ class TestDashboard:
         assert "badge-ready" in resp.text
         assert "ProjectStatus." not in resp.text
 
+    def test_dashboard_shows_project_name(self, client, db_session):
+        _make_project(db_session, status=ProjectStatus.ready, name="My Campaign")
+        resp = client.get("/v2/")
+        assert "My Campaign" in resp.text
+
+    def test_dashboard_has_runs_pivot_toggle(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        resp = client.get("/v2/")
+        # Each project row gets an expand toggle wired to its runs fragment.
+        assert f"toggleRuns('{project.id}'" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Runs pivot fragment — GET /v2/projects/{pid}/runs-fragment
+# ---------------------------------------------------------------------------
+
+
+class TestRunsFragment:
+    def test_fragment_lists_runs_with_meta(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        _make_run(
+            db_session, project.id, name="Redhead",
+            model="gemini-omni", resolution="1080p", status=RunStatus.done,
+        )
+        resp = client.get(f"/v2/projects/{project.id}/runs-fragment")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "Redhead" in html
+        assert "Gemini Omni" in html   # model label
+        assert "1080p" in html          # resolution
+        assert "badge-done" in html     # status badge
+        assert "deleteRun(" in html     # per-run delete button
+
+    def test_fragment_empty_when_no_runs(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        resp = client.get(f"/v2/projects/{project.id}/runs-fragment")
+        assert resp.status_code == 200
+        assert "No runs yet" in resp.text
+
+    def test_fragment_404_for_missing_project(self, client):
+        assert client.get("/v2/projects/nope/runs-fragment").status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # Project detail tests

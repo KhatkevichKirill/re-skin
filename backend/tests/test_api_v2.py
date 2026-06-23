@@ -1354,3 +1354,108 @@ class TestRerunSegment:
 
         response = client.post(f"/api/v2/runs/{run.id}/segments/no-such-seg/rerun")
         assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/v2/projects/{pid} — editable project name
+# ---------------------------------------------------------------------------
+
+
+class TestProjectName:
+    def test_patch_name_persists_and_shows_in_get(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+
+        resp = client.patch(f"/api/v2/projects/{project.id}", json={"name": "  Erewhon promo  "})
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "Erewhon promo"  # trimmed
+
+        get_resp = client.get(f"/api/v2/projects/{project.id}")
+        assert get_resp.json()["name"] == "Erewhon promo"
+
+    def test_patch_empty_name_clears_to_null(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready, name="old name")
+        resp = client.patch(f"/api/v2/projects/{project.id}", json={"name": "   "})
+        assert resp.status_code == 200
+        assert resp.json()["name"] is None
+
+    def test_patch_missing_project_is_404(self, client):
+        resp = client.patch("/api/v2/projects/no-such-project", json={"name": "x"})
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/v2/projects/{pid} and /api/v2/runs/{rid} — DB + disk
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteProject:
+    def test_delete_removes_db_rows_and_disk(self, client, db_session, SessionFactory):
+        from app.storage import project_dir
+
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.done)
+        pid, rid = project.id, run.id
+
+        pdir = project_dir(pid)  # creates the dir
+        assert os.path.isdir(pdir)
+
+        resp = client.delete(f"/api/v2/projects/{pid}")
+        assert resp.status_code == 204
+        assert not os.path.exists(pdir)
+
+        s = SessionFactory()
+        assert s.get(VideoProject, pid) is None
+        assert s.get(Run, rid) is None  # cascade
+        s.close()
+
+    def test_delete_blocked_while_analyzing(self, client, db_session):
+        from app.storage import project_dir
+
+        project = _make_project(db_session, status=ProjectStatus.analyzing)
+        pdir = project_dir(project.id)
+        resp = client.delete(f"/api/v2/projects/{project.id}")
+        assert resp.status_code == 409
+        assert os.path.isdir(pdir)  # untouched
+
+    def test_delete_blocked_while_run_active(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        _make_run(db_session, project.id, status=RunStatus.processing)
+        resp = client.delete(f"/api/v2/projects/{project.id}")
+        assert resp.status_code == 409
+
+    def test_delete_missing_project_is_404(self, client):
+        assert client.delete("/api/v2/projects/no-such-project").status_code == 404
+
+
+class TestDeleteRun:
+    def test_delete_removes_db_rows_and_disk(self, client, db_session, SessionFactory):
+        from app.storage import run_clips_dir, run_dir
+
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.done)
+        rs = _make_run_segment(db_session, run.id, sd.id)
+        rid, rs_id = run.id, rs.id
+
+        run_clips_dir(rid, project.id)  # creates runs/<rid>/clips
+        rdir = run_dir(rid, project.id)
+        assert os.path.isdir(rdir)
+
+        resp = client.delete(f"/api/v2/runs/{rid}")
+        assert resp.status_code == 204
+        assert not os.path.exists(rdir)
+
+        s = SessionFactory()
+        assert s.get(Run, rid) is None
+        assert s.get(RunSegment, rs_id) is None  # cascade
+        s.close()
+
+    def test_delete_blocked_while_active(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        run = _make_run(db_session, project.id, status=RunStatus.stitching)
+        resp = client.delete(f"/api/v2/runs/{run.id}")
+        assert resp.status_code == 409
+
+    def test_delete_missing_run_is_404(self, client):
+        assert client.delete("/api/v2/runs/no-such-run").status_code == 404

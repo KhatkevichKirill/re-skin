@@ -1,0 +1,34 @@
+{% if runs %}
+<table style="width:100%; font-size:13px; margin:0">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Status</th>
+      <th>Model</th>
+      <th>Resolution</th>
+      <th>Created</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for run in runs %}
+    <tr data-run-id="{{ run.id }}">
+      <td>{% if run.name %}{{ run.name }}{% else %}<em class="text-muted">unnamed</em>{% endif %}</td>
+      <td><span class="badge badge-{{ run.status }}">{{ run.status }}</span></td>
+      <td>{% if run.model == "gemini-omni" %}Gemini Omni{% else %}Seedance{% endif %}</td>
+      <td>{{ run.resolution }}</td>
+      <td class="text-muted" style="white-space:nowrap">{{ run.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td class="text-right" style="white-space:nowrap">
+        <a class="btn btn-sm btn-secondary" href="/v2/runs/{{ run.id }}">Open</a>
+        {% if run.result_available %}
+        <a class="btn btn-sm btn-success" href="/api/v2/runs/{{ run.id }}/result" download>Download</a>
+        {% endif %}
+        <button type="button" class="btn btn-sm btn-danger" onclick="deleteRun('{{ run.id }}', this)">Delete</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="text-muted" style="padding:8px 2px">No runs yet for this project.</div>
+{% endif %}

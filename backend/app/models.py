@@ -204,6 +204,9 @@ class VideoProject(Base):
         default=_utcnow, onupdate=_utcnow, server_default=func.now()
     )
 
+    # Human-readable label (operator-editable; nullable — falls back to source_ref)
+    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     # Source
     source_type: Mapped[str] = mapped_column(
         Enum("upload", "gdrive", name="project_source_type_enum"), nullable=False

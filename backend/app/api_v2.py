@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import uuid
 from typing import List, Optional
 
@@ -27,6 +28,7 @@ from .schemas_v2 import (
     ProjectCreateResponse,
     ProjectListItem,
     ProjectResponse,
+    ProjectUpdate,
     RunCreateResponse,
     RunListItem,
     RunResponse,
@@ -35,7 +37,7 @@ from .schemas_v2 import (
     SegmentsUpdateRequest,
 )
 from .state_machine import InvalidTransition, ProjectStatus, RunStatus, SegmentStatus, transition
-from .storage import project_dir, project_source_path
+from .storage import project_dir, project_source_path, run_dir
 from .tasks import enqueue_analyze_project, enqueue_process_run
 
 log = logging.getLogger(__name__)
@@ -45,6 +47,14 @@ router = APIRouter(tags=["v2"])
 _VALID_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}
 _VALID_AUDIO_MODES = {"original", "seedance"}
 _VALID_MODELS = {"seedance", "gemini-omni"}
+# Run states that mean a worker may still be touching the run's files — block
+# deletion while in any of these (delete would race the worker / rmtree live files).
+_ACTIVE_RUN_STATUSES = {
+    RunStatus.queued,
+    RunStatus.processing,
+    RunStatus.stitching,
+    RunStatus.delivering,
+}
 # Allowed resolutions per model (each backend supports a different set).
 _MODEL_RESOLUTIONS = {
     "seedance": {"480p", "720p", "1080p"},
@@ -207,6 +217,51 @@ def get_project(pid: str, db: Session = Depends(get_db)) -> ProjectResponse:
     """Return full project details."""
     project = _get_project_or_404(pid, db)
     return ProjectResponse.model_validate(project)
+
+
+@router.patch("/projects/{pid}", response_model=ProjectResponse)
+def update_project(
+    pid: str, body: ProjectUpdate, db: Session = Depends(get_db)
+) -> ProjectResponse:
+    """Update editable project settings (currently just the display name)."""
+    project = _get_project_or_404(pid, db)
+    if body.name is not None:
+        name = body.name.strip()
+        project.name = name[:255] or None
+    db.commit()
+    db.refresh(project)
+    log.info("Updated project %s name=%r", pid, project.name)
+    return ProjectResponse.model_validate(project)
+
+
+@router.delete("/projects/{pid}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_project(pid: str, db: Session = Depends(get_db)) -> Response:
+    """Permanently delete a project: DB rows (cascades to segments/runs) + disk.
+
+    Blocked (409) while the project is analyzing or any of its runs is active, so
+    we never remove files a worker is still using.
+    """
+    project = _get_project_or_404(pid, db)
+    if project.status == ProjectStatus.analyzing:
+        raise HTTPException(
+            status_code=409, detail="Cannot delete a project while it is analyzing"
+        )
+    active = db.execute(
+        select(Run.id).where(
+            Run.project_id == pid, Run.status.in_(_ACTIVE_RUN_STATUSES)
+        )
+    ).first()
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a project while one of its runs is active",
+        )
+
+    db.delete(project)  # cascades to SegmentDef / Run / RunSegment
+    db.commit()
+    shutil.rmtree(project_dir(pid), ignore_errors=True)
+    log.info("Deleted project %s (db + disk)", pid)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/projects/{pid}/segments", response_model=list[SegmentDefResponse])
@@ -544,6 +599,26 @@ def get_run(rid: str, db: Session = Depends(get_db)) -> RunResponse:
     """Return full run details."""
     run = _get_run_or_404(rid, db)
     return RunResponse.model_validate(run)
+
+
+@router.delete("/runs/{rid}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_run(rid: str, db: Session = Depends(get_db)) -> Response:
+    """Permanently delete a run: DB rows (cascades to RunSegments) + disk.
+
+    Blocked (409) while the run is active (queued/processing/stitching/delivering).
+    """
+    run = _get_run_or_404(rid, db)
+    if run.status in _ACTIVE_RUN_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete a run while it is {run.status.value!r}",
+        )
+    project_id = run.project_id
+    db.delete(run)  # cascades to RunSegment
+    db.commit()
+    shutil.rmtree(run_dir(rid, project_id), ignore_errors=True)
+    log.info("Deleted run %s (db + disk)", rid)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/runs/{rid}/segments", response_model=list[RunSegmentResponse])

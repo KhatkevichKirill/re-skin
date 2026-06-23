@@ -131,6 +131,43 @@ def projects_dashboard(
 
 
 # ---------------------------------------------------------------------------
+# Dashboard runs pivot — GET /v2/projects/{pid}/runs-fragment
+# ---------------------------------------------------------------------------
+
+
+@router.get("/projects/{pid}/runs-fragment", response_class=HTMLResponse)
+def project_runs_fragment(
+    pid: str, request: Request, db: Session = Depends(get_db)
+) -> HTMLResponse:
+    """HTMX fragment: the Existing-runs list for a project, shown inline in the
+    dashboard pivot so finished videos are reachable without opening the project."""
+    _get_project_or_404(pid, db)
+    runs = _get_runs(pid, db)
+    rows = []
+    for run in runs:
+        status_val = run.status.value if hasattr(run.status, "value") else str(run.status)
+        rows.append(
+            {
+                "id": run.id,
+                "name": run.name,
+                "status": status_val,
+                "model": run.model,
+                "resolution": run.resolution,
+                "created_at": run.created_at,
+                "result_available": (
+                    status_val == "done"
+                    and bool(run.result_local_path)
+                    and os.path.exists(run.result_local_path)
+                ),
+            }
+        )
+    return templates.TemplateResponse(
+        "partials/project_runs_list.html",
+        {"request": request, "project_id": pid, "runs": rows},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Project page — GET /v2/projects/{pid}
 # ---------------------------------------------------------------------------
 

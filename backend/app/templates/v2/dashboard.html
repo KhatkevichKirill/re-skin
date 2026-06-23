@@ -66,12 +66,14 @@ function handleProjectCreated(event) {
 <div class="card">
   <div class="card-header">
     <h2>All Projects</h2>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">click ▸ to see a project's runs</span>
   </div>
   {% if projects %}
   <table>
     <thead>
       <tr>
-        <th>ID</th>
+        <th style="width:28px"></th>
+        <th>Name</th>
         <th>Source</th>
         <th>Status</th>
         <th>Created</th>
@@ -81,14 +83,34 @@ function handleProjectCreated(event) {
     <tbody>
       {% for project in projects %}
       {% set sv = project.status.value if project.status.value is defined else project.status|string %}
-      <tr>
-        <td><code style="font-size:11px">{{ project.id[:8] }}…</code></td>
-        <td style="max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="{{ project.source_ref }}">
+      <tr id="proj-row-{{ project.id }}">
+        <td>
+          <button type="button" class="btn btn-sm btn-secondary pivot-toggle"
+                  title="Show runs" onclick="toggleRuns('{{ project.id }}', this)"
+                  style="padding:2px 8px">▸</button>
+        </td>
+        <td>
+          {% if project.name %}<strong>{{ project.name }}</strong>{% else %}<em class="text-muted">unnamed</em>{% endif %}
+          <div><code style="font-size:11px;color:var(--color-muted)">{{ project.id[:8] }}…</code></div>
+        </td>
+        <td style="max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="{{ project.source_ref }}">
           {{ project.source_ref }}
         </td>
         <td><span class="badge badge-{{ sv }}">{{ sv }}</span></td>
         <td class="text-muted" style="white-space:nowrap">{{ project.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
-        <td class="text-right"><a class="btn btn-sm btn-secondary" href="/v2/projects/{{ project.id }}">View</a></td>
+        <td class="text-right" style="white-space:nowrap">
+          <a class="btn btn-sm btn-secondary" href="/v2/projects/{{ project.id }}">View</a>
+          <button type="button" class="btn btn-sm btn-danger"
+                  onclick="deleteProject('{{ project.id }}', this)">Delete</button>
+        </td>
+      </tr>
+      <tr id="runs-row-{{ project.id }}" class="runs-row" style="display:none">
+        <td></td>
+        <td colspan="5" style="background:var(--color-surface,#f8f9fa)">
+          <div id="runs-cell-{{ project.id }}" data-loaded="0">
+            <span class="text-muted" style="font-size:12px">Loading…</span>
+          </div>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -97,5 +119,68 @@ function handleProjectCreated(event) {
   <div class="card-body text-muted">No projects yet. Create one above.</div>
   {% endif %}
 </div>
+
+<script>
+// Lazy-load + toggle a project's Existing-runs list inline (the dashboard pivot).
+// The fragment is swapped in by htmx (server-rendered, auto-escaped) — no manual
+// innerHTML of untrusted data.
+function toggleRuns(pid, btn) {
+  var row = document.getElementById('runs-row-' + pid);
+  if (!row) return;
+  var open = row.style.display !== 'none';
+  if (open) {
+    row.style.display = 'none';
+    btn.textContent = '▸';
+    return;
+  }
+  row.style.display = '';
+  btn.textContent = '▾';
+  var cell = document.getElementById('runs-cell-' + pid);
+  if (cell && cell.dataset.loaded === '0' && window.htmx) {
+    htmx.ajax('GET', '/v2/projects/' + encodeURIComponent(pid) + '/runs-fragment',
+              { target: '#runs-cell-' + pid, swap: 'innerHTML' })
+      .then(function () { cell.dataset.loaded = '1'; });
+  }
+}
+
+function deleteProject(pid, btn) {
+  if (!confirm('Delete this project and ALL its runs — files removed from disk. This cannot be undone. Continue?')) return;
+  btn.disabled = true;
+  fetch('/api/v2/projects/' + encodeURIComponent(pid), { method: 'DELETE' })
+    .then(function (r) {
+      if (r.status === 204) {
+        var pr = document.getElementById('proj-row-' + pid);
+        var rr = document.getElementById('runs-row-' + pid);
+        if (pr) pr.remove();
+        if (rr) rr.remove();
+      } else {
+        return r.json().then(function (b) {
+          btn.disabled = false;
+          alert('Could not delete: ' + (b.detail || r.status));
+        });
+      }
+    })
+    .catch(function (e) { btn.disabled = false; alert('Network error: ' + e); });
+}
+
+// Called from the runs-fragment rows (loaded into the pivot).
+function deleteRun(rid, btn) {
+  if (!confirm('Delete this run — files removed from disk. This cannot be undone. Continue?')) return;
+  btn.disabled = true;
+  fetch('/api/v2/runs/' + encodeURIComponent(rid), { method: 'DELETE' })
+    .then(function (r) {
+      if (r.status === 204) {
+        var tr = btn.closest('tr');
+        if (tr) tr.remove();
+      } else {
+        return r.json().then(function (b) {
+          btn.disabled = false;
+          alert('Could not delete: ' + (b.detail || r.status));
+        });
+      }
+    })
+    .catch(function (e) { btn.disabled = false; alert('Network error: ' + e); });
+}
+</script>
 
 {% endblock %}

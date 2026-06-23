@@ -11,7 +11,26 @@
     {% if run.name %}<span style="color:var(--color-muted);font-weight:400"> — {{ run.name }}</span>{% endif %}
     <span class="badge badge-{{ status_val }}" id="status-badge">{{ status_val }}</span>
   </h2>
+  {% if status_val in ("done", "failed") %}
+  <button type="button" class="btn btn-sm btn-danger" style="margin-left:auto"
+          onclick="deleteThisRun('{{ run.id }}', '{{ run.project_id }}')">Delete run</button>
+  {% endif %}
 </div>
+
+<script>
+function deleteThisRun(rid, pid) {
+  if (!confirm('Delete this run — files removed from disk. This cannot be undone. Continue?')) return;
+  fetch('/api/v2/runs/' + encodeURIComponent(rid), { method: 'DELETE' })
+    .then(function (r) {
+      if (r.status === 204) {
+        window.location.href = '/v2/projects/' + encodeURIComponent(pid);
+      } else {
+        return r.json().then(function (b) { alert('Could not delete: ' + (b.detail || r.status)); });
+      }
+    })
+    .catch(function (e) { alert('Network error: ' + e); });
+}
+</script>
 
 <!-- __ Run metadata __ -->
 <div class="card">

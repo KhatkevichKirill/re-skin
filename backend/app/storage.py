@@ -93,6 +93,15 @@ def project_source_path(project_id: str, ext: str = "mp4") -> str:
     return os.path.join(_BASE, "projects", project_id, f"source.{ext}")
 
 
+def run_dir(run_id: str, project_id: str) -> str:
+    """Root working directory for a single Run (parent of clips/ and results/).
+
+    Unlike the other helpers this does NOT create the directory — it's used for
+    deletion, where creating it would be pointless.
+    """
+    return os.path.join(_BASE, "projects", project_id, "runs", run_id)
+
+
 def run_clips_dir(run_id: str, project_id: str) -> str:
     """Directory that holds raw clips cut from the project source for a Run."""
     return _ensure(os.path.join(_BASE, "projects", project_id, "runs", run_id, "clips"))

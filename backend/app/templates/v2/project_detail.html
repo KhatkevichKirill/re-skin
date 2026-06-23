@@ -7,10 +7,50 @@
 <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px">
   <a href="/v2/" class="btn btn-sm btn-secondary">&larr; All Projects</a>
   <h2 style="margin:0; font-size:17px">
-    Project <code style="font-size:14px">{{ project.id[:8] }}</code>
+    {% if project.name %}{{ project.name }}{% else %}Project{% endif %}
+    <code style="font-size:14px">{{ project.id[:8] }}</code>
     <span class="badge badge-{{ status_val }}" id="status-badge">{{ status_val }}</span>
   </h2>
 </div>
+
+<!-- ── Project settings ── -->
+<div class="card">
+  <div class="card-header"><h2>Project settings</h2></div>
+  <div class="card-body">
+    <div class="form-group" style="margin-bottom:0">
+      <label for="project-name">Project name</label>
+      <div style="display:flex; gap:8px; align-items:center; max-width:480px">
+        <input type="text" id="project-name" value="{{ project.name or '' }}"
+               placeholder="e.g. Erewhon promo — September" maxlength="255" style="flex:1" />
+        <button type="button" class="btn btn-primary btn-sm" onclick="saveProjectName('{{ project.id }}')">Save</button>
+        <span id="project-name-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+      <p class="hint">A human-readable label shown in the projects list. Leave blank to clear.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+function saveProjectName(pid) {
+  var inp = document.getElementById('project-name');
+  var statusEl = document.getElementById('project-name-status');
+  statusEl.textContent = 'Saving…';
+  fetch('/api/v2/projects/' + encodeURIComponent(pid), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: inp.value }),
+  })
+  .then(function (r) {
+    if (r.ok) {
+      statusEl.textContent = 'Saved.';
+      setTimeout(function () { statusEl.textContent = ''; }, 2500);
+    } else {
+      return r.json().then(function (b) { statusEl.textContent = 'Error: ' + (b.detail || r.status); });
+    }
+  })
+  .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
+}
+</script>
 
 <!-- ── Probe metadata ── -->
 <div class="card">
