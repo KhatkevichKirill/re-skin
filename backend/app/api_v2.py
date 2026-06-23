@@ -490,7 +490,7 @@ def create_run(
     resolution: str = Form(settings.DEFAULT_RESOLUTION),
     audio_mode: str = Form("original"),
     gdrive_folder_id: Optional[str] = Form(None),
-    reference_files: Optional[List[UploadFile]] = File(None),
+    reference_files: List[UploadFile] = File(default=[]),
     reference_urls: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> RunCreateResponse:
@@ -737,7 +737,7 @@ def patch_run_segment(
     rid: str,
     rsid: str,
     prompt: Optional[str] = Form(None),
-    reference_files: Optional[List[UploadFile]] = File(None),
+    reference_files: List[UploadFile] = File(default=[]),
     reference_urls: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> RunSegmentResponse:
@@ -774,7 +774,7 @@ def rerun_segment(
     rid: str,
     rsid: str,
     prompt: Optional[str] = Form(None),
-    reference_files: Optional[List[UploadFile]] = File(None),
+    reference_files: List[UploadFile] = File(default=[]),
     reference_urls: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> RunResponse:

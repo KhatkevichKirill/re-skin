@@ -1459,3 +1459,56 @@ class TestDeleteRun:
 
     def test_delete_missing_run_is_404(self, client):
         assert client.delete("/api/v2/runs/no-such-run").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Single-file uploads (regression: Optional[List[UploadFile]] coerced a single
+# file to a 422 "Input should be a valid list" on FastAPI 0.104)
+# ---------------------------------------------------------------------------
+
+
+class TestSingleFileUpload:
+    def test_patch_segment_with_one_reference_file(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.done)
+        rs = _make_run_segment(db_session, run.id, sd.id, status=SegmentStatus.completed)
+
+        resp = client.patch(
+            f"/api/v2/runs/{run.id}/segments/{rs.id}",
+            data={"prompt": "new prompt"},
+            files={"reference_files": ("a.jpg", io.BytesIO(b"img-bytes"), "image/jpeg")},
+        )
+        assert resp.status_code == 200, resp.text
+        assert len(resp.json()["reference_image_urls_override"]) == 1
+
+    def test_rerun_segment_with_one_reference_file(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        sd = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.done)
+        rs = _make_run_segment(db_session, run.id, sd.id, status=SegmentStatus.completed)
+
+        resp = client.post(
+            f"/api/v2/runs/{run.id}/segments/{rs.id}/rerun",
+            data={"prompt": "redo"},
+            files={"reference_files": ("a.jpg", io.BytesIO(b"img-bytes"), "image/jpeg")},
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_create_run_with_one_reference_file(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        session.close()
+
+        resp = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap"},
+            files={"reference_files": ("a.jpg", io.BytesIO(b"img-bytes"), "image/jpeg")},
+        )
+        assert resp.status_code == 201, resp.text
+        run_id = resp.json()["run_id"]
+        session = SessionFactory()
+        run = session.get(Run, run_id)
+        session.close()
+        assert len(run.reference_image_urls) == 1
