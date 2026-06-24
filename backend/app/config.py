@@ -70,6 +70,15 @@ class Settings:
 
     # Infrastructure
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
+
+    # DATABASE_URL — two supported forms:
+    #   SQLite (default / tests):
+    #     sqlite:///./data/app.db  (relative, resolved against BASE_DIR above)
+    #     sqlite:///:memory:       (in-memory, used by the test suite)
+    #   PostgreSQL (production):
+    #     postgresql+psycopg2://<user>:<password>@<host>:5432/<dbname>
+    #     e.g. postgresql+psycopg2://reskin:secret@db:5432/reskin
+    #     Use the psycopg2 driver — it is pinned in requirements.txt.
     DATABASE_URL: str = _resolve_db_url(
         os.getenv("DATABASE_URL", "sqlite:///./data/app.db")
     )

@@ -29,11 +29,24 @@ _ensure_data_dir(settings.DATABASE_URL)
 # SQLite-specific: enable WAL mode and foreign keys via connection event
 _is_sqlite = settings.DATABASE_URL.startswith("sqlite")
 
+if _is_sqlite:
+    _engine_kwargs: dict = {
+        "connect_args": {"check_same_thread": False},
+    }
+else:
+    # Postgres: use connection pooling suitable for multi-worker deployments.
+    # pool_pre_ping sends a lightweight "SELECT 1" before handing out a connection
+    # so stale connections after a Postgres restart are detected and recycled.
+    _engine_kwargs = {
+        "pool_pre_ping": True,
+        "pool_size": 5,       # persistent connections per process
+        "max_overflow": 10,   # extra connections allowed under load
+    }
+
 engine = create_engine(
     settings.DATABASE_URL,
-    # For SQLite: allow use from multiple threads (needed for testing / sync usage)
-    connect_args={"check_same_thread": False} if _is_sqlite else {},
     echo=False,
+    **_engine_kwargs,
 )
 
 if _is_sqlite:

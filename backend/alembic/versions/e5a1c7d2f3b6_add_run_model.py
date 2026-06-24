@@ -28,9 +28,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # SQLite does not support native ENUMs — the column is stored as VARCHAR.
-    # The CHECK constraint is omitted for SQLite compatibility; application-layer
-    # validation (API) enforces the allowed set.
+    # SQLite stores ENUMs as VARCHAR; Postgres creates a native ENUM type.
+    # On Postgres, the type must exist before add_column can reference it.
+    bind = op.get_bind()
+    if bind.dialect.name == 'postgresql':
+        model_enum = sa.Enum('seedance', 'gemini-omni', name='run_model_enum')
+        model_enum.create(bind, checkfirst=True)
+
     op.add_column(
         'runs',
         sa.Column(

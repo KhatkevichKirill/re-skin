@@ -24,9 +24,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # SQLite does not support native ENUMs — the column is stored as VARCHAR.
-    # The CHECK constraint is omitted for SQLite compatibility; application-layer
-    # validation (API + stitch()) enforces the allowed set.
+    # SQLite stores ENUMs as VARCHAR; Postgres creates a native ENUM type.
+    # On Postgres, the type must exist before add_column can reference it.
+    bind = op.get_bind()
+    if bind.dialect.name == 'postgresql':
+        # create_type=True would create it automatically, but we use
+        # get_or_create pattern via sa.Enum.create() for clarity.
+        audio_mode_enum = sa.Enum('original', 'seedance', name='run_audio_mode_enum')
+        audio_mode_enum.create(bind, checkfirst=True)
+
     op.add_column(
         'runs',
         sa.Column(
