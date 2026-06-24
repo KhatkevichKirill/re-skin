@@ -258,6 +258,24 @@ def process_run(
             raise ValueError(f"VideoProject not found: {run.project_id}")
 
         try:
+            # queued → processing: normal first-time path.
+            # Any other active state (processing/stitching/delivering) means this
+            # is an orphan resume — reset to queued first, then advance.
+            # The processing → queued edge was added in state_machine.py (TR5b).
+            if run.status != RunStatus.queued:
+                log.info(
+                    "process_run: run %s is in status=%r (not queued) — "
+                    "resetting to queued for orphan resume",
+                    run_id, run.status,
+                )
+                try:
+                    transition(run, RunStatus.queued)
+                except Exception:
+                    # Fallback for stitching/delivering which lack a direct →queued
+                    # edge: go via failed first.
+                    transition(run, RunStatus.failed)
+                    transition(run, RunStatus.queued)
+                session.commit()
             transition(run, RunStatus.processing)
             session.commit()
 
@@ -319,6 +337,89 @@ def process_run(
                     log.info("RunSegment %s (idx %d) already completed, skipping submit",
                              rs.id, rs.index)
                     continue
+
+                # Resume / no-rebill: segment not yet completed but has a
+                # seedance_task_id (worker crashed during the poll loop).  Check
+                # kie.ai first — if the task already succeeded we can download the
+                # result without resubmitting, saving a Seedance credit.
+                if (
+                    rs.status != SegmentStatus.pending
+                    and rs.seedance_task_id
+                ):
+                    task_id = rs.seedance_task_id
+                    log.info(
+                        "RunSegment %s (idx %d) has existing task_id=%s (status=%s) "
+                        "— checking kie.ai before resubmitting",
+                        rs.id, rs.index, task_id, rs.status,
+                    )
+                    try:
+                        data = kie.get_task(task_id)
+                        state = (data.get("state") or "").lower()
+                    except Exception as exc:
+                        log.warning(
+                            "get_task(%s) failed during resume check: %s — will resubmit",
+                            task_id, exc,
+                        )
+                        state = "unknown"
+
+                    if state == "success":
+                        url = _parse_result_url(data)
+                        if url:
+                            result_dst = os.path.join(
+                                r_dir, f"result_{sd.index:04d}.mp4"
+                            )
+                            try:
+                                kie.download_result(url, result_dst)
+                                rs.seedance_result_url = url
+                                rs.local_result_path = result_dst
+                                try:
+                                    transition(rs, SegmentStatus.completed)
+                                except Exception:
+                                    rs.status = SegmentStatus.completed
+                                session.commit()
+                                log.info(
+                                    "RunSegment %s (idx %d) task %s was already "
+                                    "success — recovered without rebilling",
+                                    rs.id, rs.index, task_id,
+                                )
+                                continue
+                            except Exception as exc:
+                                log.warning(
+                                    "download_result failed for task %s: %s "
+                                    "— will resubmit",
+                                    task_id, exc,
+                                )
+                        else:
+                            log.warning(
+                                "task %s success but no result url — will resubmit",
+                                task_id,
+                            )
+                    elif state not in ("fail",):
+                        # Still in-progress or unknown — if we got here via a
+                        # restart the task may still be running on kie.ai.
+                        # We re-add it to the pending poll set to avoid
+                        # re-submitting a task that Seedance is already processing.
+                        log.info(
+                            "RunSegment %s (idx %d) task %s state=%r — "
+                            "resuming poll without resubmitting",
+                            rs.id, rs.index, task_id, state,
+                        )
+                        # Ensure segment is in generating state for the poll loop.
+                        if rs.status != SegmentStatus.generating:
+                            try:
+                                # generating requires submitted→generating path;
+                                # force-set status directly since we're resuming.
+                                rs.status = SegmentStatus.generating
+                            except Exception:
+                                pass
+                            session.flush()
+                        pending[task_id] = {
+                            "rs_id": rs.id,
+                            "index": sd.index,
+                            "deadline": time.monotonic() + RUN_SKIP_TIMEOUT_SEC,
+                        }
+                        continue
+                    # state == "fail" or download failed → fall through to reset+resubmit
 
                 # Retry: reset an interrupted RunSegment before resubmitting.
                 if rs.status != SegmentStatus.pending:

@@ -79,6 +79,25 @@ Full end-to-end verification run on branch `feat/postgres-migration` against a t
 
 **Cross-link:** [[parallel-workers]] (sibling task, see dispatched-agents note above).
 
+## [2026-06-24] update | TR5b orphaned-run reconciliation on worker startup
+
+Implemented on branch `feat/orphan-reconciliation` (stacked on `feat/parallel-workers` → `feat/postgres-migration`).
+
+**What changed:**
+- `backend/app/recovery.py` (new): `reconcile_orphaned_runs()` — startup reconciliation routine. Queue-idle safety gate (no reconciliation if StartedJobRegistry is non-empty), re-poll of generating segments' kie task IDs before resubmission, reset active runs to `queued`, re-enqueue. Also resets orphaned `analyzing` projects to `failed`.
+- `backend/app/state_machine.py`: Added `processing → queued` to `RUN_TRANSITIONS` so orphaned-run reset is a valid transition.
+- `backend/app/pipeline_v2.py`: `process_run` now detects non-`queued` entry status and resets to `queued` before advancing (handles any orphan state cleanly). Submit phase re-polls existing `seedance_task_id` before resubmitting — marks segment `completed` if task is already `success` on kie.ai (no rebilling).
+- `backend/app/api_v2.py`: `/runs/{rid}/retry` now accepts `queued`, `processing`, `stitching`, `delivering` in addition to `failed` (for manual operator intervention on stuck runs).
+- `worker/worker.py`: Calls `reconcile_orphaned_runs()` on startup before `worker.work()`.
+- `backend/tests/test_recovery.py` (new): 19 passing tests covering safety gate, orphan detection, re-poll/no-rebill, state-machine fix, and process_run orphan resume.
+- `backend/tests/test_api_v2.py`: Updated `TestRetryRun` — old test asserting `processing` returns 409 is replaced with test asserting `done` returns 409 (correct non-retryable status); added 2 tests for `processing` and `queued` retry (both should return 200).
+- `wiki/lessons/production-gotchas.md`: Updated "Worker crash leaves runs orphaned" from "Planned fix" to "Fix shipped".
+- `wiki/roadmap.md`: TR5b marked DONE.
+- `wiki/components/parallel-workers.md`: New "Startup Orphaned-Run Reconciliation" section documenting the implementation and race-safety reasoning.
+- `wiki/components/pipeline.md`: New "Resume / No-Rebill Behavior" section.
+
+**Tests:** 416 passed, 4 skipped, 2 failed (pre-existing ffmpeg), 29 errors (pre-existing ffmpeg) — 21 more passes than the `feat/parallel-workers` baseline (395 passed).
+
 ## [2026-06-24] update | Parallel workers for throughput
 
 Implemented on branch `feat/parallel-workers` (branched from `feat/postgres-migration`, commit on top of `d00ae34`).

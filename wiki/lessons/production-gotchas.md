@@ -1,7 +1,7 @@
 ---
 title: "Production Gotchas & Lessons Learned"
-tags: [lessons, production, ops, ffmpeg, docker, postgres, alembic]
-sources: [tasks/todo.md, git log, deploy/postgres-cutover.md]
+tags: [lessons, production, ops, ffmpeg, docker, postgres, alembic, rq, recovery]
+sources: [tasks/todo.md, git log, deploy/postgres-cutover.md, backend/app/recovery.py]
 updated: 2026-06-24
 ---
 
@@ -180,4 +180,20 @@ The RQ queue ends up empty with one idle worker, while the DB shows active runs 
 - For a `processing` orphan: first reset `run.status = RunStatus.queued` in the DB, then re-enqueue.
 - **Before resubmitting, check kie.ai for already-`success` tasks** of segments left in `generating`. The poll loop may have died *after* Seedance finished. Run `72325061` seg 2 had a finished result on kie.ai (`KieClient().get_task(task_id)` → state `success`); we downloaded it and marked the segment `completed` manually, so the resubmit skipped it and saved a Seedance call. The bare resume path would have reset and re-billed it.
 
-**Planned fix (TR5b)**: Startup orphaned-run reconciliation — on worker boot, find runs in `processing`/`queued` with no live RQ job and either re-enqueue them or re-poll their `generating` segments' kie task ids before resubmitting. Becomes more urgent with multiple workers (more frequent restarts). See [[parallel-workers]].
+**Fix shipped (TR5b — `feat/orphan-reconciliation`)**: Startup orphaned-run reconciliation. On worker boot, before the worker starts consuming jobs, `reconcile_orphaned_runs()` (in `backend/app/recovery.py`) runs:
+
+1. **Safety gate (race-safety with N workers)**: Check that the RQ default queue AND the StartedJobRegistry are both empty. If any job is in-flight on any worker, skip reconciliation entirely — we never re-enqueue a run that might be actively executing elsewhere. This is conservative (orphan not recovered until next idle restart) but guarantees no double-processing. In practice, crashes happen during redeploys/OOM kills which drain all workers simultaneously, so the queue is always idle at restart.
+
+2. **Orphan detection**: Query DB for runs in `queued`, `processing`, `stitching`, `delivering`. All four active states are covered.
+
+3. **Re-poll before resubmit (no-rebill)**: For each `processing` run, check `generating` segments' existing `seedance_task_id` against kie.ai. If already `success`, download the result and mark the segment `completed` — avoids a redundant Seedance call (exactly the manual step done for run `72325061` seg 2).
+
+4. **Reset and re-enqueue**: Reset each orphaned run from its active state to `queued` (via the new `processing → queued` state-machine edge added in TR5b), then call `enqueue_process_run`.
+
+5. **State-machine fix**: Added `processing → queued` to `RUN_TRANSITIONS` so the reset path is a valid transition. Previously, re-enqueuing a `processing` orphan threw `InvalidTransition: 'processing' → 'processing'`. `process_run` itself also now detects a non-`queued` run at entry and resets to `queued` before advancing, so it handles any active-state input gracefully.
+
+6. **`/retry` endpoint extended**: `POST /api/v2/runs/{id}/retry` now accepts `queued`, `processing`, `stitching`, and `delivering` in addition to `failed`. Includes a doc comment warning operators not to call it on a genuinely active run (no automatic safety guard — use startup reconciliation for automatic safe recovery).
+
+Projects stuck in `analyzing` are also reset to `failed` (operator must re-trigger analysis from the UI).
+
+See `backend/app/recovery.py`, `backend/app/state_machine.py`, `backend/app/pipeline_v2.py`, `backend/app/api_v2.py`, and [[components/parallel-workers]] for implementation details.

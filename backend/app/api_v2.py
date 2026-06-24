@@ -869,22 +869,65 @@ def rerun_segment(
 
 @router.post("/runs/{rid}/retry", response_model=RunResponse)
 def retry_run(rid: str, db: Session = Depends(get_db)) -> RunResponse:
-    """Re-enqueue a failed run."""
+    """Re-enqueue a failed or stuck run.
+
+    Accepted statuses
+    -----------------
+    - ``failed``     — normal retry after a processing error.
+    - ``queued``     — orphaned run stuck in queue with no live RQ job.
+    - ``processing`` — orphaned run whose worker crashed mid-flight.
+    - ``stitching``  — orphaned run whose worker crashed during stitch.
+    - ``delivering`` — orphaned run whose worker crashed during GDrive upload.
+
+    Safety note
+    -----------
+    This endpoint does NOT check whether the run is genuinely idle vs. actively
+    being worked on by another worker right now.  Do NOT call it on a run that
+    is legitimately in-progress: re-enqueuing a live run would double-process it.
+    The startup reconciliation routine (``recovery.py``) uses a queue-idle guard
+    to avoid this; a human operator must exercise the same judgement when calling
+    this endpoint manually.
+
+    For automatic safe recovery, rely on the startup reconciliation.  Use this
+    endpoint for manual intervention only.
+    """
     run = _get_run_or_404(rid, db)
-    if run.status != RunStatus.failed:
+
+    _RETRYABLE = {
+        RunStatus.failed,
+        RunStatus.queued,
+        RunStatus.processing,
+        RunStatus.stitching,
+        RunStatus.delivering,
+    }
+
+    if run.status not in _RETRYABLE:
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot retry: run status is {run.status!r}, expected 'failed'",
+            detail=(
+                f"Cannot retry: run status is {run.status!r}. "
+                f"Retryable statuses: {sorted(s.value for s in _RETRYABLE)}"
+            ),
         )
-    try:
-        transition(run, RunStatus.queued)
-    except InvalidTransition as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    original_status = run.status
+
+    # For already-queued runs, skip the transition (already queued).
+    if run.status != RunStatus.queued:
+        try:
+            transition(run, RunStatus.queued)
+        except InvalidTransition:
+            # stitching/delivering → queued lacks a direct edge; go via failed.
+            try:
+                transition(run, RunStatus.failed)
+                transition(run, RunStatus.queued)
+            except InvalidTransition as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     db.commit()
     enqueue_process_run(rid)
 
-    log.info("Retrying run %s", rid)
+    log.info("Retrying run %s (was %s)", rid, original_status)
     return RunResponse.model_validate(run)
 
 

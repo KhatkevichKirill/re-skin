@@ -1,7 +1,7 @@
 ---
 title: "Parallel Workers for Throughput"
 tags: [workers, rq, throughput, scaling, stitch, pipeline, postgres]
-sources: [backend/app/pipeline_v2.py, docker-compose.yml, wiki/decisions/postgres-migration.md]
+sources: [backend/app/pipeline_v2.py, docker-compose.yml, wiki/decisions/postgres-migration.md, backend/app/recovery.py]
 updated: 2026-06-24
 ---
 
@@ -223,7 +223,7 @@ limits: 3×6g = 18g already exceeds the 16g physical RAM ceiling (would swap).
 | File path isolation | Per-run paths (`run_clips_dir` / `run_results_dir`) are keyed by `run_id` (UUID). Two workers processing different runs never touch the same files. |
 | Shared mutable state | None. `pipeline_v2` has no module-level mutable state. Client objects (`KieClient`, `GDriveClient`) are instantiated fresh per job. |
 | RQ double-dequeue | Impossible: Redis BLPOP is atomic. RQ also uses a "StartedJobRegistry" to track in-flight jobs. |
-| Worker crashes + orphaned runs | Each additional worker = one more potential orphan on restart. TR5b (startup reconciliation) becomes more urgent. See [[production-gotchas]] → "Worker crash leaves runs orphaned". |
+| Worker crashes + orphaned runs | Each additional worker = one more potential orphan on restart. **TR5b DONE**: startup reconciliation runs on every worker boot — see [[lessons/production-gotchas]] and the "Startup Orphaned-Run Reconciliation" section below. |
 | Postgres connection pool | Each worker process gets `pool_size=5 / max_overflow=10` connections. 2 workers = up to 30 connections. Postgres 16 default `max_connections=100` — safe. |
 
 ---
@@ -263,16 +263,42 @@ for jid in reg.get_job_ids():
 "
 ```
 
-### If a worker crashes mid-run
+### Startup Orphaned-Run Reconciliation (TR5b — DONE)
 
-The run stays in `processing` (or `queued`). Manual recovery procedure:
-1. Check `run.status` in the DB.
-2. For `processing`: reset `run.status = 'queued'` manually.
-3. Re-enqueue: `from app.tasks import enqueue_process_run; enqueue_process_run(run_id)`.
-4. `process_run` is idempotent: completed segments with result files on disk
-   are skipped; others are re-submitted to Seedance.
+`backend/app/recovery.py` implements automatic recovery. The worker calls
+`reconcile_orphaned_runs(redis_conn)` **once on startup, before consuming any jobs**.
 
-Permanent fix: TR5b (startup reconciliation — detect orphaned runs on worker boot).
+**Race-safety (N workers):**
+
+The key guard is the **queue-idle check**: reconciliation only runs if both the
+RQ default queue (`len(q) == 0`) AND the StartedJobRegistry (`reg.get_job_ids()
+== []`) are empty. If any job is in-flight on any peer worker, the registry is
+non-empty and reconciliation is skipped entirely.
+
+This guarantees we never re-enqueue a run that is currently being processed by
+another worker. The trade-off: an orphan is not recovered until the next restart
+where the system happens to be fully idle. In practice, crashes are caused by
+OOM kills or redeploys — both of which kill all workers simultaneously, so the
+queue IS idle at the restart moment.
+
+**What the reconciliation does:**
+
+1. Query DB for runs in `queued`, `processing`, `stitching`, or `delivering`.
+2. For `processing` runs with `generating` segments: call `kie.get_task(task_id)`
+   on each segment's `seedance_task_id`. If already `success`, download the
+   result and mark the segment `completed` — **no Seedance rebilling** (exactly
+   the manual step done during the 2026-06-24 incident for run `72325061` seg 2).
+3. Reset each orphaned run to `queued` via the `processing → queued` state-machine
+   edge added in TR5b.
+4. Call `enqueue_process_run(run_id)` for each recovered run.
+5. Projects stuck in `analyzing` are reset to `failed` (operator re-triggers
+   analysis from UI).
+
+**Manual recovery (still works as fallback):**
+
+`POST /api/v2/runs/{rid}/retry` now accepts `queued`, `processing`, `stitching`,
+`delivering`, and `failed` — not just `failed`. Exercise human judgement: do not
+call this on a run that is genuinely active on another worker.
 
 ---
 

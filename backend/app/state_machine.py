@@ -87,7 +87,10 @@ PROJECT_TRANSITIONS: dict[ProjectStatus, set[ProjectStatus]] = {
 RUN_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
     RunStatus.created:    {RunStatus.queued},
     RunStatus.queued:     {RunStatus.processing},
-    RunStatus.processing: {RunStatus.stitching, RunStatus.failed},
+    # processing → queued: allowed so an orphaned run (crash-resumed) can be
+    # reset to queued before re-enqueuing.  Only reconcile_orphaned_runs and the
+    # /retry endpoint use this edge — normal forward processing never does.
+    RunStatus.processing: {RunStatus.queued, RunStatus.stitching, RunStatus.failed},
     RunStatus.stitching:  {RunStatus.delivering, RunStatus.failed},
     RunStatus.delivering: {RunStatus.done, RunStatus.failed},
     RunStatus.done:       {RunStatus.queued},  # allowed for per-segment re-run

@@ -1166,12 +1166,41 @@ class TestRetryRun:
         assert body["status"] == "queued"
         assert spy["process_run"] == [run.id]
 
-    def test_retry_non_failed_run_is_409(self, client, db_session):
+    def test_retry_non_retryable_run_is_409(self, client, db_session):
+        """done status is not retryable via /retry (use /runs/{rid}/segments/{rsid}/rerun for that)."""
         project = _make_project(db_session)
-        run = _make_run(db_session, project.id, status=RunStatus.processing)
+        run = _make_run(db_session, project.id, status=RunStatus.done)
 
         response = client.post(f"/api/v2/runs/{run.id}/retry")
         assert response.status_code == 409
+
+    def test_retry_processing_run_succeeds(self, spy_client, SessionFactory):
+        """TR5b: /retry must accept a run stuck in processing (orphan resume)."""
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session)
+        run = _make_run(session, project.id, status=RunStatus.processing)
+        session.close()
+
+        response = client.post(f"/api/v2/runs/{run.id}/retry")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "queued"
+        assert run.id in spy["process_run"]
+
+    def test_retry_queued_run_succeeds(self, spy_client, SessionFactory):
+        """TR5b: /retry must accept a run stuck in queued (orphan resume)."""
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session)
+        run = _make_run(session, project.id, status=RunStatus.queued)
+        session.close()
+
+        response = client.post(f"/api/v2/runs/{run.id}/retry")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "queued"
+        assert run.id in spy["process_run"]
 
     def test_retry_missing_run_is_404(self, client):
         response = client.post("/api/v2/runs/no-such-run/retry")

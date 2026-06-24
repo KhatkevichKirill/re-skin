@@ -1,7 +1,7 @@
 ---
 title: "Pipeline (v2)"
 tags: [pipeline, worker, rq, seedance, v2]
-sources: [backend/app/pipeline_v2.py, backend/app/tasks.py]
+sources: [backend/app/pipeline_v2.py, backend/app/tasks.py, backend/app/recovery.py]
 updated: 2026-06-24
 ---
 
@@ -47,7 +47,26 @@ Called once per Run after submission.
 - Individual segment failures don't kill the run — failed segments fall back to the original clip
 - Skip timeout (2h) prevents one stuck Seedance task from blocking the whole run
 - GDrive delivery retries `RUN_DELIVER_ATTEMPTS` times (default 3) with `RUN_DELIVER_BACKOFF_SEC` (default 10s) backoff
-- If a worker process dies mid-run, the run stays in `processing` state and can be retried via `/api/v2/runs/{id}/retry` — which resets failed/pending RunSegments and re-enqueues
+- If a worker process dies mid-run, the run stays in `processing` state; **startup reconciliation** (TR5b) auto-detects and re-enqueues on the next worker boot — see [[components/parallel-workers]] → "Startup Orphaned-Run Reconciliation"
+
+## Resume / No-Rebill Behavior (TR5b)
+
+`process_run` is safe to call on an orphaned run already in an active state
+(`processing`, `stitching`, `delivering`). The entry-point detects a non-`queued`
+run and resets it to `queued` first (via the `processing → queued` state-machine
+edge added in TR5b), then re-advances normally.
+
+For **segments stuck in `generating` with an existing `seedance_task_id`**,
+`process_run` calls `kie.get_task(task_id)` before resubmitting:
+
+- State `success` → download the result, mark segment `completed`, skip
+  resubmission entirely. Avoids a redundant Seedance credit (this is what was
+  done manually for run `72325061` seg 2 on 2026-06-24; see [[lessons/production-gotchas]]).
+- State still in-progress → re-add to the poll loop without re-submitting.
+- State `fail` or network error → fall through to reset + resubmit normally.
+
+Only segments with **no `seedance_task_id`** (i.e., never submitted, or cleared
+by a previous retry) are submitted fresh.
 
 ## RQ Task Wrappers
 
