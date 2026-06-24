@@ -99,7 +99,7 @@ class TestUploadFile:
         expected_result = {"id": "NEW_FILE_ID", "webViewLink": "https://drive.google.com/file/d/NEW_FILE_ID/view"}
 
         svc = _make_mock_service()
-        svc.files().create().execute.return_value = expected_result
+        svc.files().create().next_chunk.return_value = (None, expected_result)
 
         client = GDriveClient(service=svc)
 
@@ -124,7 +124,7 @@ class TestUploadFile:
         local.write_bytes(b"x")
 
         svc = _make_mock_service()
-        svc.files().create().execute.return_value = {"id": "ID1", "webViewLink": "http://link"}
+        svc.files().create().next_chunk.return_value = (None, {"id": "ID1", "webViewLink": "http://link"})
 
         client = GDriveClient(service=svc)
 
@@ -145,7 +145,7 @@ class TestUploadFile:
         monkeypatch.setattr(cfg_module.settings, "GDRIVE_DEFAULT_FOLDER_ID", "DEFAULT_FOLDER")
 
         svc = _make_mock_service()
-        svc.files().create().execute.return_value = {"id": "ID2", "webViewLink": "http://link2"}
+        svc.files().create().next_chunk.return_value = (None, {"id": "ID2", "webViewLink": "http://link2"})
 
         client = GDriveClient(service=svc)
 
@@ -161,7 +161,7 @@ class TestUploadFile:
         local.write_bytes(b"x")
 
         svc = _make_mock_service()
-        svc.files().create().execute.side_effect = RuntimeError("API down")
+        svc.files().create().next_chunk.side_effect = RuntimeError("API down")
 
         client = GDriveClient(service=svc)
 

@@ -15,6 +15,13 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload  # noqa: E
 
 log = logging.getLogger(__name__)
 
+# Resumable-upload tuning. The default chunksize (-1) streams the whole file in
+# ONE request; on a slow/uneven uplink a large final.mp4 then hits the socket
+# read timeout. Upload in bounded chunks and let next_chunk retry transient
+# failures so delivery is robust regardless of file size / link quality.
+_UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024  # 5 MB per request
+_UPLOAD_NUM_RETRIES = 5  # per-chunk retries with exponential backoff
+
 
 # ---------------------------------------------------------------------------
 # Custom exceptions
@@ -252,17 +259,25 @@ class GDriveClient:
             if folder_id:
                 body["parents"] = [folder_id]
 
-            media = MediaFileUpload(local_path, mimetype=mime_type, resumable=True)
-            result = (
-                self.service.files()
-                .create(
-                    body=body,
-                    media_body=media,
-                    fields="id,webViewLink",
-                    supportsAllDrives=True,
-                )
-                .execute()
+            media = MediaFileUpload(
+                local_path,
+                mimetype=mime_type,
+                resumable=True,
+                chunksize=_UPLOAD_CHUNK_SIZE,
             )
+            request = self.service.files().create(
+                body=body,
+                media_body=media,
+                fields="id,webViewLink",
+                supportsAllDrives=True,
+            )
+            # Drive the resumable upload chunk-by-chunk; each next_chunk retries
+            # transient errors (incl. socket timeouts) with exponential backoff.
+            result = None
+            while result is None:
+                status, result = request.next_chunk(num_retries=_UPLOAD_NUM_RETRIES)
+                if status:
+                    log.debug("Upload progress: %.0f%%", status.progress() * 100)
         except GDriveAuthError:
             raise
         except Exception as exc:
