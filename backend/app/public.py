@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import get_db
-from .models import VideoProject
+from .models import Run, VideoProject
 
 log = logging.getLogger(__name__)
 
@@ -65,3 +65,33 @@ def public_project_source(
 
     log.info("Public source fetch for project %s", pid)
     return FileResponse(src, media_type="video/mp4", filename="source.mp4")
+
+
+def make_result_token(run_id: str) -> str:
+    """Return the per-run HMAC token for its public final-video link."""
+    secret = (settings.PUBLIC_LINK_SECRET or "").encode()
+    msg = f"run-result:{run_id}".encode()
+    return hmac.new(secret, msg, hashlib.sha256).hexdigest()
+
+
+@router.get("/runs/{rid}/result")
+def public_run_result(
+    rid: str,
+    token: str = Query(..., description="Per-run signed access token"),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Stream a run's final video if *token* is valid (Range supported)."""
+    expected = make_result_token(rid)
+    if not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=403, detail="Invalid or missing token")
+
+    run = db.get(Run, rid)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    path = run.result_local_path
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Result video not available")
+
+    log.info("Public result fetch for run %s", rid)
+    return FileResponse(path, media_type="video/mp4", filename="result.mp4")

@@ -23,7 +23,7 @@ from .config import settings
 from .db import get_db
 from .models import Run, RunSegment, SegmentDef, VideoProject
 from sqlalchemy.orm import selectinload
-from .public import make_source_token
+from .public import make_result_token, make_source_token
 from .state_machine import ProjectStatus, RunStatus, SegmentStatus
 
 log = logging.getLogger(__name__)
@@ -265,6 +265,7 @@ def run_detail(
             "gdrive_link": gdrive_link,
             "total_swap": total_swap,
             "completed": completed,
+            "result_public_token": make_result_token(rid),
         },
     )
 
@@ -310,5 +311,6 @@ def run_status_fragment(
             "total_swap": total_swap,
             "completed": completed,
             "generating_seg": generating_seg,
+            "result_public_token": make_result_token(rid),
         },
     )

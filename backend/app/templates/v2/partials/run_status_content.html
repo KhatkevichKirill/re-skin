@@ -42,8 +42,40 @@
       <a class="btn btn-secondary" href="{{ gdrive_link }}" target="_blank" rel="noopener">Open in Google Drive</a>
       {% endif %}
     </div>
+
+    <!-- Public token link to the final video (for external tools / Gemini) -->
+    <div class="form-group" style="max-width:560px; margin:12px 0 0">
+      <label style="font-size:12px; font-weight:600">Public link to result (for external tools)</label>
+      <div style="display:flex; gap:8px">
+        <input
+          id="result-public-link"
+          type="text"
+          readonly
+          data-path="/public/runs/{{ run.id }}/result?token={{ result_public_token }}"
+          style="flex:1; font-size:12px"
+        />
+        <button type="button" class="btn btn-sm btn-secondary" onclick="copyResultLink(this)">Copy</button>
+      </div>
+      <p class="hint">Unauthenticated, tokenized link — anyone with it can view this result video.</p>
+    </div>
   </div>
 </div>
+
+<script>
+(function () {
+  var el = document.getElementById('result-public-link');
+  if (el && el.dataset.path) el.value = window.location.origin + el.dataset.path;
+})();
+function copyResultLink(btn) {
+  var el = document.getElementById('result-public-link');
+  if (!el) return;
+  el.select();
+  navigator.clipboard.writeText(el.value).then(function () {
+    var t = btn.textContent; btn.textContent = 'Copied';
+    setTimeout(function () { btn.textContent = t; }, 1500);
+  }).catch(function () { try { document.execCommand('copy'); } catch (e) {} });
+}
+</script>
 {% else %}
 <div class="card">
   <div class="card-header"><h2>Run Failed</h2></div>

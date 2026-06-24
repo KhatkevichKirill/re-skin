@@ -1740,3 +1740,40 @@ class TestPublicSourceLink:
         tok = make_source_token(project.id)
         r = client.get(f"/public/projects/{project.id}/source", params={"token": tok})
         assert r.status_code == 404
+
+
+class TestPublicResultLink:
+    def test_valid_token_streams_result(self, client, db_session, tmp_path):
+        from app.public import make_result_token
+
+        out = tmp_path / "final.mp4"
+        out.write_bytes(b"resultbytes")
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        run = _make_run(
+            db_session, project.id, status=RunStatus.done, result_local_path=str(out)
+        )
+        tok = make_result_token(run.id)
+
+        r = client.get(f"/public/runs/{run.id}/result", params={"token": tok})
+        assert r.status_code == 200
+        assert r.content == b"resultbytes"
+        assert r.headers["content-type"].startswith("video/mp4")
+
+    def test_bad_token_is_403(self, client, db_session, tmp_path):
+        out = tmp_path / "final.mp4"
+        out.write_bytes(b"x")
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        run = _make_run(
+            db_session, project.id, status=RunStatus.done, result_local_path=str(out)
+        )
+        r = client.get(f"/public/runs/{run.id}/result", params={"token": "nope"})
+        assert r.status_code == 403
+
+    def test_missing_result_file_is_404(self, client, db_session):
+        from app.public import make_result_token
+
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        run = _make_run(db_session, project.id, status=RunStatus.failed)
+        tok = make_result_token(run.id)
+        r = client.get(f"/public/runs/{run.id}/result", params={"token": tok})
+        assert r.status_code == 404
