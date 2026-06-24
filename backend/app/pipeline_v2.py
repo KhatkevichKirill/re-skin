@@ -59,6 +59,12 @@ log = logging.getLogger(__name__)
 RUN_SKIP_TIMEOUT_SEC = float(os.getenv("RUN_SKIP_TIMEOUT_SEC", "7200"))  # 2 hours
 RUN_POLL_INTERVAL_SEC = float(os.getenv("RUN_POLL_INTERVAL_SEC", "15"))
 
+# Delivery (Google Drive upload) retry tuning. The upload itself is chunked with
+# per-chunk retries; this is a whole-upload retry so a fully-failed delivery
+# self-heals without re-generating or re-stitching the video.
+RUN_DELIVER_ATTEMPTS = int(os.getenv("RUN_DELIVER_ATTEMPTS", "3"))
+RUN_DELIVER_BACKOFF_SEC = float(os.getenv("RUN_DELIVER_BACKOFF_SEC", "10"))
+
 
 def _default_kie() -> KieClient:
     return KieClient()
@@ -194,6 +200,28 @@ def _parse_result_url(data: dict) -> Optional[str]:
     return urls[0] if urls else None
 
 
+def _deliver_with_retry(gdrive: GDriveClient, path: str, folder_id: str, run_id: str) -> dict:
+    """Upload the final video to Drive, retrying the whole upload on failure.
+
+    Raises the last exception if every attempt fails (the caller then marks the
+    run failed — but the final video stays on disk, so a manual Retry re-delivers
+    without re-stitching).
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, RUN_DELIVER_ATTEMPTS + 1):
+        try:
+            return gdrive.upload_file(path, folder_id, f"reskin_run_{run_id}.mp4")
+        except Exception as exc:
+            last_exc = exc
+            log.warning(
+                "Drive upload attempt %d/%d failed for run %s: %s",
+                attempt, RUN_DELIVER_ATTEMPTS, run_id, exc,
+            )
+            if attempt < RUN_DELIVER_ATTEMPTS:
+                time.sleep(RUN_DELIVER_BACKOFF_SEC * attempt)
+    raise last_exc  # type: ignore[misc]
+
+
 def process_run(
     run_id: str,
     *,
@@ -314,6 +342,9 @@ def process_run(
                     "index": sd.index,
                     "deadline": time.monotonic() + RUN_SKIP_TIMEOUT_SEC,
                 }
+            # Did we (re)submit anything this run? If not, and a final video
+            # already exists, this is a delivery-only retry → skip the re-stitch.
+            did_submit = bool(pending)
             log.info("Submitted %d swap task(s) to Seedance for run %s",
                      len(pending), run_id)
 
@@ -365,45 +396,59 @@ def process_run(
                     time.sleep(RUN_POLL_INTERVAL_SEC)
 
             # ---------------------------------------------------------------
-            # Assemble clips in order. Non-completed swaps fall back to the
-            # original (un-swapped) clip so the timeline stays intact.
-            # ---------------------------------------------------------------
-            clip_paths: list[str] = []
-            for sd in seg_defs:
-                if sd.action == "keep":
-                    keep_dst = os.path.join(c_dir, f"clip_{sd.index:04d}.mp4")
-                    media_mod.cut_clip(source, sd.start_sec, sd.end_sec, keep_dst)
-                    clip_paths.append(keep_dst)
-                    continue
-                rs = session.get(RunSegment, rs_map[sd.id].id)
-                if (
-                    rs.status == SegmentStatus.completed
-                    and rs.local_result_path
-                    and os.path.exists(rs.local_result_path)
-                ):
-                    clip_paths.append(rs.local_result_path)
-                else:
-                    log.warning("Segment %d not swapped (status=%s) — using original clip",
-                                sd.index, rs.status)
-                    orig_dst = os.path.join(c_dir, f"orig_{sd.index:04d}.mp4")
-                    media_mod.cut_clip(source, sd.start_sec, sd.end_sec, orig_dst)
-                    clip_paths.append(orig_dst)
-
-            # ---------------------------------------------------------------
-            # Stitch
+            # Stitch — unless this is a delivery-only retry: when nothing was
+            # (re)processed this run AND a final video already exists on disk,
+            # reuse it and skip the expensive re-encode (e.g. a Retry after the
+            # Drive upload timed out). We still pass through the `stitching`
+            # state so the run's state-machine path stays valid.
             # ---------------------------------------------------------------
             transition(run, RunStatus.stitching)
             session.commit()
             final_dst = os.path.join(r_dir, "final.mp4")
-            log.info("Stitching %d clips → %s (%dx%d @ %.2ffps)",
-                     len(clip_paths), final_dst, width, height, fps)
-            audio_mode = run.audio_mode if run.audio_mode else "original"
-            media_mod.stitch(
-                clip_paths, audio_source=source, dst=final_dst,
-                width=width, height=height, fps=fps,
-                audio_mode=audio_mode,
+            reuse_final = (
+                not did_submit
+                and run.result_local_path
+                and os.path.exists(run.result_local_path)
             )
-            run.result_local_path = final_dst
+            if reuse_final:
+                final_dst = run.result_local_path
+                log.info(
+                    "No segments reprocessed and final video exists — skipping "
+                    "re-stitch (delivery-only retry): %s", final_dst,
+                )
+            else:
+                # Assemble clips in order. Non-completed swaps fall back to the
+                # original (un-swapped) clip so the timeline stays intact.
+                clip_paths: list[str] = []
+                for sd in seg_defs:
+                    if sd.action == "keep":
+                        keep_dst = os.path.join(c_dir, f"clip_{sd.index:04d}.mp4")
+                        media_mod.cut_clip(source, sd.start_sec, sd.end_sec, keep_dst)
+                        clip_paths.append(keep_dst)
+                        continue
+                    rs = session.get(RunSegment, rs_map[sd.id].id)
+                    if (
+                        rs.status == SegmentStatus.completed
+                        and rs.local_result_path
+                        and os.path.exists(rs.local_result_path)
+                    ):
+                        clip_paths.append(rs.local_result_path)
+                    else:
+                        log.warning("Segment %d not swapped (status=%s) — using original clip",
+                                    sd.index, rs.status)
+                        orig_dst = os.path.join(c_dir, f"orig_{sd.index:04d}.mp4")
+                        media_mod.cut_clip(source, sd.start_sec, sd.end_sec, orig_dst)
+                        clip_paths.append(orig_dst)
+
+                log.info("Stitching %d clips → %s (%dx%d @ %.2ffps)",
+                         len(clip_paths), final_dst, width, height, fps)
+                audio_mode = run.audio_mode if run.audio_mode else "original"
+                media_mod.stitch(
+                    clip_paths, audio_source=source, dst=final_dst,
+                    width=width, height=height, fps=fps,
+                    audio_mode=audio_mode,
+                )
+                run.result_local_path = final_dst
             session.flush()
 
             # ---------------------------------------------------------------
@@ -415,7 +460,7 @@ def process_run(
             if folder_id:
                 if gdrive is None:
                     gdrive = _default_gdrive()
-                result = gdrive.upload_file(final_dst, folder_id, f"reskin_run_{run_id}.mp4")
+                result = _deliver_with_retry(gdrive, final_dst, folder_id, run_id)
                 run.result_gdrive_file_id = result.get("id")
                 log.info("Uploaded final video to Drive: %s", result.get("webViewLink"))
                 session.flush()

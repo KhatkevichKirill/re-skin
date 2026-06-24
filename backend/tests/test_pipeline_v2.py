@@ -1104,3 +1104,88 @@ class TestAudioModeForwarding:
         assert call["kwargs"].get("audio_mode") == "original", (
             f"Expected audio_mode='original', got {call['kwargs'].get('audio_mode')!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: delivery retry + delivery-only retry (skip re-stitch)
+# ---------------------------------------------------------------------------
+
+
+class TestDeliveryRetryAndReuse:
+    def test_delivery_retries_then_succeeds(
+        self, db_engine, db_session, synthetic_video, patch_propose, monkeypatch
+    ):
+        """A transient Drive-upload failure is retried within the same run."""
+        from app.pipeline_v2 import analyze_project, process_run
+        import app.pipeline_v2 as pv2
+
+        # No real backoff sleeps.
+        monkeypatch.setattr(pv2.time, "sleep", lambda *a, **k: None)
+        # Skip the real ffmpeg stitch for speed (we only care about delivery).
+        monkeypatch.setattr(pv2.media_mod, "stitch", lambda *a, **k: None)
+
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+        run_id = _create_run(db_session, project_id, gdrive_folder_id="folder-x")
+
+        class FlakyGDrive(FakeGDriveClient):
+            def __init__(self, fail_times):
+                super().__init__()
+                self._left = fail_times
+
+            def upload_file(self, *a, **k):
+                if self._left > 0:
+                    self._left -= 1
+                    raise RuntimeError("transient upload fail")
+                return super().upload_file(*a, **k)
+
+        gd = FlakyGDrive(2)  # fail twice, succeed on the 3rd (RUN_DELIVER_ATTEMPTS=3)
+        process_run(run_id, kie=FakeKieClient(synthetic_video), gdrive=gd)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            run = s.get(Run, run_id)
+            assert run.status == RunStatus.done
+            assert run.result_gdrive_file_id is not None
+        assert len(gd.upload_calls) == 1  # only the successful attempt recorded
+
+    def test_delivery_only_retry_skips_stitch(
+        self, db_engine, db_session, synthetic_video, patch_propose, monkeypatch
+    ):
+        """Retry after a delivery failure: all segments completed + final exists →
+        the run re-delivers WITHOUT re-stitching."""
+        from app.pipeline_v2 import analyze_project, process_run
+        from app.storage import run_results_dir
+        import app.pipeline_v2 as pv2
+
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+        run_id = _create_run(db_session, project_id, gdrive_folder_id="folder-x")
+
+        Session = sessionmaker(bind=db_engine)
+        r_dir = run_results_dir(run_id, project_id)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            for sd in [d for d in project.segments if d.action == "swap"]:
+                res = os.path.join(r_dir, f"result_{sd.index:04d}.mp4")
+                shutil.copy2(synthetic_video, res)
+                s.add(RunSegment(
+                    run_id=run_id, segment_def_id=sd.id, index=sd.index,
+                    status=SegmentStatus.completed, local_result_path=res,
+                ))
+            run = s.get(Run, run_id)
+            final = os.path.join(r_dir, "final.mp4")
+            shutil.copy2(synthetic_video, final)
+            run.result_local_path = final
+            s.commit()
+
+        stitch_calls: list = []
+        monkeypatch.setattr(pv2.media_mod, "stitch", lambda *a, **k: stitch_calls.append(1))
+
+        gd = FakeGDriveClient()
+        process_run(run_id, kie=FakeKieClient(synthetic_video), gdrive=gd)
+
+        assert stitch_calls == []          # re-stitch skipped
+        assert len(gd.upload_calls) == 1   # but it WAS re-delivered
+        with Session() as s:
+            assert s.get(Run, run_id).status == RunStatus.done
