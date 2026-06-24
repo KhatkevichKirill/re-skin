@@ -362,3 +362,24 @@ class TestGetDefaultTarget:
         result = get_default_target(info)
         assert isinstance(result, tuple)
         assert len(result) == 3
+
+    def test_fps_capped_at_30(self):
+        """A 60fps source is stitched at the 30fps cap (default FFMPEG_MAX_FPS)."""
+        from app.media import MediaInfo
+        info = MediaInfo(
+            duration_sec=10.0, width=1080, height=1920, fps=60.0,
+            aspect_ratio="9:16", has_audio=True,
+        )
+        w, h, fps = get_default_target(info)
+        assert (w, h) == (1080, 1920)
+        assert fps == 30.0
+
+    def test_fps_below_cap_unchanged(self):
+        """A 24fps source is left untouched (below the cap)."""
+        from app.media import MediaInfo
+        info = MediaInfo(
+            duration_sec=10.0, width=1920, height=1080, fps=24.0,
+            aspect_ratio="16:9", has_audio=True,
+        )
+        _, _, fps = get_default_target(info)
+        assert fps == 24.0

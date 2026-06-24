@@ -27,6 +27,12 @@ FFPROBE = os.environ.get("FFPROBE_BIN", "/usr/bin/ffprobe")
 # bounded and matches the worker's CPU cap. Override via FFMPEG_THREADS.
 _FFMPEG_THREADS = os.environ.get("FFMPEG_THREADS", "2")
 
+# Cap the stitched output frame rate. 60fps sources double the stitch frame
+# count (CPU + memory) for content that gains almost nothing from it, and the
+# AI clips are typically <=30fps anyway. Sources at/below the cap are untouched.
+# Set FFMPEG_MAX_FPS=0 to disable the cap (keep the source fps).
+_MAX_FPS = float(os.environ.get("FFMPEG_MAX_FPS", "30"))
+
 # Maximum lines of stderr to include in MediaError messages.
 _STDERR_TAIL = 20
 
@@ -402,8 +408,13 @@ def get_default_target(info: MediaInfo) -> Tuple[int, int, float]:
     """
     Return ``(width, height, fps)`` that the final stitched video should use.
 
-    Always the source's native resolution + fps so that AI-processed clips
-    (which may be downscaled/retimed by Seedance) are normalized *up* to match
-    the untouched original.
+    The source's native resolution + fps, so AI-processed clips (which may be
+    downscaled/retimed by Seedance) are normalized to match the original — except
+    fps is capped at ``FFMPEG_MAX_FPS`` (default 30): a 60fps source is stitched
+    at 30fps to roughly halve the stitch cost, while sources at/below the cap are
+    left untouched.
     """
-    return (info.width, info.height, info.fps)
+    fps = info.fps
+    if _MAX_FPS and fps and fps > _MAX_FPS:
+        fps = _MAX_FPS
+    return (info.width, info.height, fps)
