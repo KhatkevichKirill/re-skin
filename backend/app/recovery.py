@@ -203,10 +203,44 @@ def _repoll_generating_segments(run_id: str, redis_conn: Redis) -> None:
             )
 
 
+# Distributed lock so that with N workers cold-starting simultaneously, only ONE
+# performs reconciliation. Without it, all replicas pass the queue-idle gate at the
+# same instant and each re-enqueues the same orphaned runs (observed in production
+# 2026-06-24: two workers double-enqueued two runs on a Postgres cutover). TTL is a
+# deadlock guard if the holder dies mid-reconcile; it only needs to span the boot skew.
+_RECONCILE_LOCK_KEY = "reskin:reconcile:lock"
+_RECONCILE_LOCK_TTL_SEC = 120
+
+
 def reconcile_orphaned_runs(redis_conn: Redis) -> None:
     """
-    Main entry point — called once on worker startup before the worker starts
-    listening for new jobs.
+    Public entry point — called once on worker startup before the worker starts
+    listening. Acquires a Redis lock so exactly one worker reconciles per
+    cold-start window (prevents duplicate re-enqueue across simultaneous boots),
+    then delegates to :func:`_reconcile_orphaned_runs_impl`.
+    """
+    acquired = redis_conn.set(
+        _RECONCILE_LOCK_KEY, "1", nx=True, ex=_RECONCILE_LOCK_TTL_SEC
+    )
+    if not acquired:
+        log.info(
+            "reconcile_orphaned_runs: another worker holds the reconciliation "
+            "lock — skipping (avoids duplicate re-enqueue across simultaneous "
+            "worker boots)."
+        )
+        return
+    try:
+        _reconcile_orphaned_runs_impl(redis_conn)
+    finally:
+        try:
+            redis_conn.delete(_RECONCILE_LOCK_KEY)
+        except Exception:  # pragma: no cover - best-effort lock release
+            pass
+
+
+def _reconcile_orphaned_runs_impl(redis_conn: Redis) -> None:
+    """
+    Core reconciliation logic (runs under the lock held by the caller).
 
     1. Safety gate: if the RQ queue+started-registry is NOT empty, skip
        reconciliation entirely (another worker is active; not a cold start).

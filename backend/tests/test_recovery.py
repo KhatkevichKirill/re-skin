@@ -240,6 +240,37 @@ class TestSafetyGate:
         run = db_session.get(Run, run_id)
         assert run.status == RunStatus.queued  # still queued, untouched
 
+    def test_skip_when_reconcile_lock_held_by_another_worker(self, db_session):
+        """With N workers cold-starting at once, only the lock holder reconciles.
+
+        A worker that fails to acquire the Redis lock (set NX returns falsy) must
+        skip entirely — no DB mutation, no re-enqueue — so the same orphan is not
+        enqueued twice. Regression test for the 2026-06-24 double-enqueue race.
+        """
+        import app.recovery as rec
+
+        project_id = _make_project(db_session)
+        run_id = _make_run(db_session, project_id, RunStatus.processing)
+
+        # Lock NOT acquired (another worker holds it): redis.set(nx=True) -> None.
+        mock_redis = MagicMock()
+        mock_redis.set.return_value = None
+
+        with patch.object(rec, "_queue_is_idle", return_value=True):
+            with patch("app.recovery.enqueue_process_run") as mock_enq:
+                rec.reconcile_orphaned_runs(mock_redis)
+                mock_enq.assert_not_called()
+
+        # Lock was attempted with NX + a TTL; not released (we never held it).
+        mock_redis.set.assert_called_once()
+        assert mock_redis.set.call_args.kwargs.get("nx") is True
+        mock_redis.delete.assert_not_called()
+
+        # Run untouched — the lock holder will handle it.
+        db_session.expire_all()
+        run = db_session.get(Run, run_id)
+        assert run.status == RunStatus.processing
+
 
 # ---------------------------------------------------------------------------
 # 2. Orphan detection and re-enqueue on idle queue

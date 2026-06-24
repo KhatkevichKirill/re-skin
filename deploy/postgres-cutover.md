@@ -81,7 +81,28 @@ Final revision: `a1b2c3d4e5f7`
 
 ## Step 4: Run the ETL
 
-Copy the live SQLite DB (never open it for writing):
+> ⚠️ **WAL GOTCHA — read this.** The app runs SQLite in **WAL mode**, so recently
+> committed rows live in `data/app.db-wal`, NOT yet in `data/app.db`. A plain
+> `cp data/app.db ...` copies ONLY the main file and silently loses everything
+> still in the WAL — you migrate a STALE snapshot. (This bit us on 2026-06-24:
+> two `done` runs came across as `queued`/`processing`. See [[production-gotchas]].)
+>
+> **Checkpoint the WAL into the main file first** (requires no active writers — you
+> already confirmed no in-flight runs in pre-flight, and api/worker still point at
+> SQLite at this stage but should be idle):
+>
+> ```bash
+> # Checkpoint WAL → main db (sqlite3 CLI, or the python one-liner if sqlite3 absent)
+> sqlite3 data/app.db "PRAGMA wal_checkpoint(TRUNCATE);" \
+>   || python3 -c "import sqlite3; sqlite3.connect('data/app.db').execute('PRAGMA wal_checkpoint(TRUNCATE)')"
+> ```
+>
+> Alternatively, point the ETL `--source` directly at the **live** `data/app.db`
+> while its `-wal`/`-shm` sidecars are still present — SQLite reads the WAL
+> automatically. The ETL opens the source read-only and never writes to it. The
+> ONLY unsafe move is copying `app.db` alone, detached from its WAL.
+
+Copy the live SQLite DB **after** the checkpoint above (now WAL-free and complete):
 
 ```bash
 cp data/app.db /tmp/app_etl_$(date +%Y%m%d).db
