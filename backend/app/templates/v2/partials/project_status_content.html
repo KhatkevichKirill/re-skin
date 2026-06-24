@@ -36,8 +36,46 @@
     >
       Your browser can't play this video.
     </video>
+
+    <!-- Public token link to the original video (for external OCR / Gemini) -->
+    <div class="form-group" style="max-width:560px; margin:14px auto 0">
+      <label style="font-size:12px; font-weight:600">Public link to original (for Gemini / OCR)</label>
+      <div style="display:flex; gap:8px">
+        <input
+          id="src-public-link"
+          type="text"
+          readonly
+          data-path="/public/projects/{{ project.id }}/source?token={{ source_public_token }}"
+          style="flex:1; font-size:12px"
+        />
+        <button type="button" class="btn btn-sm btn-secondary" onclick="copySrcLink(this)">Copy</button>
+      </div>
+      <p class="hint">
+        Unauthenticated, tokenized link — paste into Gemini etc. to read on-screen text.
+        Anyone with the link can view this source video.
+      </p>
+    </div>
   </div>
 </div>
+
+<script>
+// Build the absolute public link (origin + signed path) and wire Copy.
+(function () {
+  var el = document.getElementById('src-public-link');
+  if (el && el.dataset.path) el.value = window.location.origin + el.dataset.path;
+})();
+function copySrcLink(btn) {
+  var el = document.getElementById('src-public-link');
+  if (!el) return;
+  el.select();
+  navigator.clipboard.writeText(el.value).then(function () {
+    var t = btn.textContent; btn.textContent = 'Copied';
+    setTimeout(function () { btn.textContent = t; }, 1500);
+  }).catch(function () {
+    try { document.execCommand('copy'); } catch (e) {}
+  });
+}
+</script>
 
 <!-- Segment Editor -->
 <div class="card">

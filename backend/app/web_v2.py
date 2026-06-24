@@ -23,6 +23,7 @@ from .config import settings
 from .db import get_db
 from .models import Run, RunSegment, SegmentDef, VideoProject
 from sqlalchemy.orm import selectinload
+from .public import make_source_token
 from .state_machine import ProjectStatus, RunStatus, SegmentStatus
 
 log = logging.getLogger(__name__)
@@ -191,6 +192,7 @@ def project_detail(
             "runs": runs,
             "default_model": "seedance",
             "default_resolution": settings.DEFAULT_RESOLUTION,
+            "source_public_token": make_source_token(pid),
             "max_refs": settings.MAX_REFERENCE_IMAGES,
             "gdrive_folder_id": settings.GDRIVE_DEFAULT_FOLDER_ID or "",
             "default_prompt": _DEFAULT_PROMPT,
@@ -222,6 +224,7 @@ def project_status_fragment(
             "runs": runs,
             "default_model": "seedance",
             "default_resolution": settings.DEFAULT_RESOLUTION,
+            "source_public_token": make_source_token(pid),
             "max_refs": settings.MAX_REFERENCE_IMAGES,
             "gdrive_folder_id": settings.GDRIVE_DEFAULT_FOLDER_ID or "",
             "default_prompt": _DEFAULT_PROMPT,

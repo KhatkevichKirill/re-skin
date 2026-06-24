@@ -1692,3 +1692,51 @@ class TestSegmentPromptsOnCreate:
             data={"prompt": "base", "segment_prompts": "{not valid json"},
         )
         assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Public token-signed source link (/public/projects/{pid}/source)
+# ---------------------------------------------------------------------------
+
+
+class TestPublicSourceLink:
+    def test_valid_token_streams_source(self, client, db_session, tmp_path):
+        from app.public import make_source_token
+
+        src = tmp_path / "source.mp4"
+        src.write_bytes(b"\x00\x01videodata")
+        project = _make_project(
+            db_session, status=ProjectStatus.ready, source_local_path=str(src)
+        )
+        tok = make_source_token(project.id)
+
+        r = client.get(f"/public/projects/{project.id}/source", params={"token": tok})
+        assert r.status_code == 200
+        assert r.content == b"\x00\x01videodata"
+        assert r.headers["content-type"].startswith("video/mp4")
+
+    def test_bad_token_is_403(self, client, db_session, tmp_path):
+        src = tmp_path / "s.mp4"
+        src.write_bytes(b"x")
+        project = _make_project(
+            db_session, status=ProjectStatus.ready, source_local_path=str(src)
+        )
+        r = client.get(
+            f"/public/projects/{project.id}/source", params={"token": "deadbeef"}
+        )
+        assert r.status_code == 403
+
+    def test_missing_token_is_422(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        r = client.get(f"/public/projects/{project.id}/source")
+        assert r.status_code == 422
+
+    def test_valid_token_missing_file_is_404(self, client, db_session):
+        from app.public import make_source_token
+
+        project = _make_project(
+            db_session, status=ProjectStatus.ready, source_local_path="/nope/x.mp4"
+        )
+        tok = make_source_token(project.id)
+        r = client.get(f"/public/projects/{project.id}/source", params={"token": tok})
+        assert r.status_code == 404

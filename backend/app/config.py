@@ -62,6 +62,12 @@ class Settings:
     BASIC_AUTH_USER: str = os.getenv("BASIC_AUTH_USER", "reskin")
     BASIC_AUTH_PASS: str = os.getenv("BASIC_AUTH_PASS", "")
 
+    # Secret used to sign unauthenticated public links (/public/...). Falls back
+    # to BASIC_AUTH_PASS so it works out of the box; override to rotate links.
+    PUBLIC_LINK_SECRET: str = os.getenv("PUBLIC_LINK_SECRET", "") or os.getenv(
+        "BASIC_AUTH_PASS", ""
+    )
+
     # Infrastructure
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
     DATABASE_URL: str = _resolve_db_url(
