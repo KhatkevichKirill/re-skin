@@ -26,8 +26,10 @@ _This section is for growth ideas — add to it as plans develop._
 
 ### Scaling
 
-- **Multi-worker**: Multiple RQ workers for parallel run processing across jobs. Currently single worker due to memory constraints on the VPS (16GiB, 4vCPU). A second 8g worker could double throughput.
-- **Horizontal scaling**: If load grows, move from single-VPS to multi-node. SQLite becomes a bottleneck at concurrent writes → would need migration to Postgres. Redis is already separate.
+- **Multi-worker (DONE on `feat/parallel-workers`)**: Worker service now supports `docker-compose up --scale worker=N`. N=2 is the recommended maximum on the current 4 vCPU / 16 GiB host (see [[components/parallel-workers]] for resource math). Requires [[decisions/postgres-migration]] to be deployed first.
+- **Poll-decoupling refactor (TR-POLL)**: Each RQ worker holds its job slot during the entire Seedance poll loop (up to 2h). Decoupling submit → poll (self-re-enqueueing, lightweight queue) → stitch would free CPU workers during the wait. Deferred: significant state-machine work. Concrete design in [[components/parallel-workers]] → "Proposed Decoupling". Do after v2 ships.
+- **TR5b — Orphaned-run reconciliation**: More workers = more container restarts = more orphaned runs. Detect runs in `processing`/`queued`/`polling` with no live RQ job on worker startup and re-enqueue them. See [[lessons/production-gotchas]] → "Worker crash leaves runs orphaned". Priority increases with N>1 workers.
+- **Horizontal scaling**: If load grows beyond a single VPS, multi-node deployment. Postgres + Redis are already external to the app; the main work would be a shared NFS/object-storage mount for `./data/` (currently a local bind mount).
 
 ### UX / Workflow
 

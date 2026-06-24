@@ -147,6 +147,14 @@ See [[decisions/postgres-migration]] for the full ADR.
 
 ## RQ / Worker
 
+### `container_name` prevents `docker-compose --scale`
+
+**Problem**: Setting `container_name: re-skin-worker` in docker-compose.yml prevents running more than one worker replica. Docker names containers based on the `container_name` value; a second instance would collide. `docker-compose up --scale worker=2` silently stops at 1, or errors out.
+
+**Fix**: Remove `container_name` from the worker service. Docker then auto-names replicas as `<project>_worker_1`, `<project>_worker_2`, etc. Services that should stay singletons (api, nginx, redis, db) retain their `container_name`.
+
+**Lesson**: Only use `container_name` on services that must be singletons. Omit it from any service that may need to scale.
+
 ### RQ job timeout
 
 **Problem**: RQ's default job timeout is short. Long Seedance tasks (up to 2h total for a run) were killed mid-processing.

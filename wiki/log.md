@@ -78,3 +78,22 @@ Full end-to-end verification run on branch `feat/postgres-migration` against a t
 **Bugs found:** None. The migration was implemented correctly; no fixes required.
 
 **Cross-link:** [[parallel-workers]] (sibling task, see dispatched-agents note above).
+
+## [2026-06-24] update | Parallel workers for throughput
+
+Implemented on branch `feat/parallel-workers` (branched from `feat/postgres-migration`, commit on top of `d00ae34`).
+
+**What changed:**
+- `docker-compose.yml`: removed `container_name: re-skin-worker` (enables `--scale worker=N`); reduced per-worker limits to `cpus=2.0 / mem_limit=6g / memswap_limit=7g` (fits 2 workers on 4 vCPU / 16 GiB); added `STITCH_CUT_CONCURRENCY=2`; `FFMPEG_THREADS=2`.
+- `backend/app/pipeline_v2.py`: replaced serial `cut_clip` loop in stitch assembly with `ThreadPoolExecutor(max_workers=STITCH_CUT_CONCURRENCY)`; added `STITCH_CUT_CONCURRENCY` env constant; futures stored in submission order so `clip_paths` stays correctly ordered.
+- `backend/tests/test_pipeline_v2.py`: added `TestStitchCutConcurrency` (3 tests, ffmpeg-gated like all pipeline tests) and `TestParallelStitchOrdering` (3 pure-Python tests, no ffmpeg — all pass on host).
+- `wiki/components/parallel-workers.md`: new page (this is the `[[parallel-workers]]` page referenced from several existing wiki pages).
+- `wiki/architecture.md`: updated worker topology to "RQ Worker ×N", updated resource limits.
+- `wiki/roadmap.md`: updated Multi-worker to DONE, added TR-POLL (poll-decoupling) and TR5b urgency note.
+- `wiki/index.md`: added parallel-workers component page.
+
+**Verification:**
+- 4 × 2s sleep jobs on 2 workers: all done in 4.63s (vs ~8s serial). Jobs 1+2 completed simultaneously at 2.48s — serialization eliminated.
+- `pytest tests/`: 395 passed, 4 skipped, 2 failed, 29 errors — 3 more passes than baseline (new TestParallelStitchOrdering). All failures/errors pre-existing ffmpeg-not-found.
+
+**Ops note:** Branch depends on `feat/postgres-migration` — must be deployed together with Postgres. Poll-decoupling (TR-POLL) proposed but not implemented; see [[components/parallel-workers]].

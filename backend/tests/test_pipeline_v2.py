@@ -1189,3 +1189,240 @@ class TestDeliveryRetryAndReuse:
         assert len(gd.upload_calls) == 1   # but it WAS re-delivered
         with Session() as s:
             assert s.get(Run, run_id).status == RunStatus.done
+
+
+# ---------------------------------------------------------------------------
+# Tests: parallel stitch cut_clip (STITCH_CUT_CONCURRENCY)
+# ---------------------------------------------------------------------------
+
+
+class TestStitchCutConcurrency:
+    """
+    Verify that the parallel cut_clip loop in the stitch phase:
+    1. Produces clips in the correct segment order (not first-finished order).
+    2. Is controlled by STITCH_CUT_CONCURRENCY env var.
+    3. A cut_clip failure propagates and marks the run failed.
+    """
+
+    def _setup(self, db_session, db_engine, synthetic_video, patch_propose):
+        """Set up a ready project + queued run."""
+        from app.pipeline_v2 import analyze_project
+
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+        run_id = _create_run(db_session, project_id, prompt="concurrency test")
+        return project_id, run_id
+
+    def test_stitch_clip_order_preserved_with_concurrency(
+        self,
+        db_engine,
+        db_session,
+        synthetic_video,
+        patch_propose,
+        monkeypatch,
+    ):
+        """
+        Even with STITCH_CUT_CONCURRENCY=2, clips must appear in ascending
+        segment-index order in the stitch call — not in completion order.
+        """
+        import app.pipeline_v2 as pv2
+
+        monkeypatch.setenv("STITCH_CUT_CONCURRENCY", "2")
+        # Reload the constant so the monkeypatched env takes effect.
+        monkeypatch.setattr(pv2, "STITCH_CUT_CONCURRENCY", 2)
+
+        project_id, run_id = self._setup(
+            db_session, db_engine, synthetic_video, patch_propose
+        )
+
+        stitch_calls: list[list[str]] = []
+        real_stitch = pv2.media_mod.stitch
+
+        def spy_stitch(clip_paths, **kwargs):
+            stitch_calls.append(list(clip_paths))
+            return real_stitch(clip_paths, **kwargs)
+
+        monkeypatch.setattr(pv2.media_mod, "stitch", spy_stitch)
+
+        fake_kie = FakeKieClient(synthetic_video)
+        from app.pipeline_v2 import process_run
+
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert len(stitch_calls) == 1, "stitch should be called exactly once"
+        clips = stitch_calls[0]
+
+        # Verify ordering: segment indices appear in ascending order.
+        # The fixed partition has 3 segments: swap(0), keep(1), swap(2).
+        # The stitch list should be [result_0000, clip_0001, result_0002]
+        # (or orig_0000/orig_0002 for fallbacks — doesn't matter, the point
+        # is they're in index order).
+        assert len(clips) == 3, f"Expected 3 clips, got {len(clips)}: {clips}"
+
+        # Check filenames contain ascending indices.
+        import re
+        indices_in_filenames = [
+            int(m.group(1))
+            for path in clips
+            if (m := re.search(r"(\d{4})\.mp4$", path))
+        ]
+        assert indices_in_filenames == sorted(indices_in_filenames), (
+            f"Clips not in ascending index order: {clips}"
+        )
+
+        with sessionmaker(bind=db_engine)() as s:
+            run = s.get(Run, run_id)
+            assert run.status == RunStatus.done
+
+    def test_stitch_cut_error_propagates(
+        self,
+        db_engine,
+        db_session,
+        synthetic_video,
+        patch_propose,
+        monkeypatch,
+    ):
+        """
+        If a cut_clip call raises during the stitch phase, the exception must
+        propagate (run ends failed), not be silently swallowed.
+        """
+        import app.pipeline_v2 as pv2
+
+        monkeypatch.setattr(pv2, "STITCH_CUT_CONCURRENCY", 2)
+
+        project_id, run_id = self._setup(
+            db_session, db_engine, synthetic_video, patch_propose
+        )
+
+        call_count = {"n": 0}
+        real_cut_clip = pv2.media_mod.cut_clip
+
+        def failing_cut_clip(src, start, end, dst):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("simulated cut_clip failure in stitch")
+            return real_cut_clip(src, start, end, dst)
+
+        monkeypatch.setattr(pv2.media_mod, "cut_clip", failing_cut_clip)
+
+        fake_kie = FakeKieClient(synthetic_video)
+        from app.pipeline_v2 import process_run
+
+        with pytest.raises(RuntimeError, match="simulated cut_clip failure"):
+            process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        with sessionmaker(bind=db_engine)() as s:
+            run = s.get(Run, run_id)
+            assert run.status == RunStatus.failed
+
+    def test_stitch_concurrency_1_behaves_identically(
+        self,
+        db_engine,
+        db_session,
+        synthetic_video,
+        patch_propose,
+        monkeypatch,
+    ):
+        """
+        STITCH_CUT_CONCURRENCY=1 (serial) and =2 (parallel) must both produce
+        a completed run — verify the serial path still works.
+        """
+        import app.pipeline_v2 as pv2
+
+        monkeypatch.setattr(pv2, "STITCH_CUT_CONCURRENCY", 1)
+
+        project_id, run_id = self._setup(
+            db_session, db_engine, synthetic_video, patch_propose
+        )
+
+        from app.pipeline_v2 import process_run
+
+        process_run(run_id, kie=FakeKieClient(synthetic_video), gdrive=FakeGDriveClient())
+
+        with sessionmaker(bind=db_engine)() as s:
+            run = s.get(Run, run_id)
+            assert run.status == RunStatus.done
+
+
+# ---------------------------------------------------------------------------
+# Tests: parallel stitch ordering guarantee (no ffmpeg/DB required)
+# ---------------------------------------------------------------------------
+
+
+class TestParallelStitchOrdering:
+    """
+    Pure-logic tests verifying the ThreadPoolExecutor ordering guarantee in
+    _cut_or_lookup / ordered_futures.  No ffmpeg, no DB, no pipeline_v2 imports —
+    tests the Python-level contract: futures collected in insertion order, results
+    retrieved in that order, regardless of completion order.
+    """
+
+    def test_futures_collected_in_insertion_order(self):
+        """
+        When N futures are submitted to a ThreadPoolExecutor in a specific order
+        and may complete in any order, collecting via ordered list (not as_completed)
+        must return results in submission order.
+        """
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Simulate segments with varying execution times to exercise out-of-order
+        # completion:  seg 0 sleeps longer than seg 1.
+        segments = [
+            {"index": 0, "delay": 0.05, "result": "clip_0000.mp4"},
+            {"index": 1, "delay": 0.01, "result": "clip_0001.mp4"},
+            {"index": 2, "delay": 0.03, "result": "clip_0002.mp4"},
+        ]
+
+        def _work(seg):
+            time.sleep(seg["delay"])
+            return seg["result"]
+
+        ordered_futures = []
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            for seg in segments:
+                fut = pool.submit(_work, seg)
+                ordered_futures.append((seg["index"], fut))
+
+        results = [fut.result() for _idx, fut in ordered_futures]
+
+        # Must be in submission order, not completion order.
+        assert results == ["clip_0000.mp4", "clip_0001.mp4", "clip_0002.mp4"]
+
+    def test_future_exception_propagates_on_result(self):
+        """
+        If one of the futures raises, calling .result() must re-raise the exception.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _bad_work():
+            raise ValueError("simulated cut error")
+
+        def _good_work(val):
+            return val
+
+        ordered_futures = []
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            ordered_futures.append(pool.submit(_bad_work))
+            ordered_futures.append(pool.submit(_good_work, "ok"))
+
+        with pytest.raises(ValueError, match="simulated cut error"):
+            for fut in ordered_futures:
+                fut.result()
+
+    def test_concurrency_1_produces_same_order(self):
+        """
+        STITCH_CUT_CONCURRENCY=1 (max_workers=1) still produces results in
+        insertion order — the pool serializes execution but order is preserved.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        inputs = [f"clip_{i:04d}.mp4" for i in range(5)]
+        ordered_futures = []
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            for item in inputs:
+                fut = pool.submit(lambda x: x, item)
+                ordered_futures.append(fut)
+
+        results = [fut.result() for fut in ordered_futures]
+        assert results == inputs

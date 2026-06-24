@@ -91,13 +91,34 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    container_name: re-skin-worker
+    # SCALING NOTE: container_name is intentionally omitted so that
+    # `docker-compose up --scale worker=N` (or compose deploy.replicas) works.
+    # A fixed container_name prevents Docker from launching more than one
+    # instance of a service — removing it enables N named replicas
+    # (re-skin_worker_1, re-skin_worker_2, …).
+    #
+    # To run 2 workers:
+    #   docker-compose up -d --scale worker=2
+    # or set WORKER_REPLICAS=2 in .env and use the deploy section (swarm mode).
+    #
+    # RESOURCE BUDGET (4 vCPU / 16 GiB host):
+    #   postgres:   ~0.5 vCPU  / 0.5 GiB
+    #   redis:      ~0.1 vCPU  / 0.1 GiB
+    #   api:        ~0.5 vCPU  / 2.0 GiB (mem_limit above)
+    #   nginx:      ~0.1 vCPU  / 0.1 GiB
+    #   2×worker:   2×2.0 vCPU / 2×6.0 GiB  ← sized below
+    #   ─────────────────────────────────────
+    #   TOTAL:      ~5.2 vCPU peak / ~14.7 GiB
+    #   headroom:   ~0.8 GiB / ~1.3 vCPU (host OS + burst)
+    #
+    # With N=2 workers: each worker gets cpus=2.0 / mem_limit=6g.
+    # A single 1080p stitch uses 2-4 GiB; InsightFace analyze uses ~2 GiB.
+    # 6g per worker is a safe ceiling for the current workload.
+    # DO NOT raise N beyond 2 on this host without cutting cpus/mem further.
     restart: unless-stopped
-    # Hard RAM cap: InsightFace + ffmpeg can spike; if a job exceeds this the
-    # container is OOM-killed (and restarted) instead of freezing the whole host.
-    mem_limit: 8g
-    memswap_limit: 10g
-    cpus: "3"
+    mem_limit: 6g
+    memswap_limit: 7g
+    cpus: "2.0"
     # python -m worker.worker — PYTHONPATH=/app means `from app.tasks import ...`
     # resolves correctly because app/ and worker/ are both under /app.
     command: python -m worker.worker
@@ -108,7 +129,12 @@ services:
       DATA_DIR: /app/data
       PYTHONPATH: /app
       PYTHONUNBUFFERED: "1"
-      FFMPEG_THREADS: "4"
+      # 2 ffmpeg threads per worker keeps per-process memory bounded while
+      # allowing up to STITCH_CUT_CONCURRENCY parallel cut_clip calls.
+      FFMPEG_THREADS: "2"
+      # Parallel cut_clip calls during stitch assembly (keep + fallback segments).
+      # Default 2: two ffmpeg cuts run simultaneously per worker. Safe on cpus=2.0.
+      STITCH_CUT_CONCURRENCY: "2"
     depends_on:
       redis:
         condition: service_healthy

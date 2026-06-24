@@ -40,23 +40,28 @@ Internet
                                │
                                ▼
                     ┌──────────────────────┐
-                    │ RQ Worker (Python)    │
+                    │ RQ Worker ×N (Python) │
                     │  analyze_project      │
                     │  process_run          │
                     │  (InsightFace, FFmpeg │
                     │   kie.ai, GDrive)     │
+                    │                       │
+                    │  Scale: --scale worker=N │
                     └──────────────────────┘
 ```
 
 **Shared volumes:**
-- `./data/` — bound to both api + worker (media files: clips, results, source videos)
+- `./data/` — bound to api + all worker replicas (media files: clips, results, source videos)
 - `postgres-data` — named Docker volume for PostgreSQL data (replaces `./data/app.db`)
 - `./secrets/` — GDrive service-account JSON (read-only)
-- `insightface-models` — named volume, ~300MB buffalo_l model, persists across restarts
+- `insightface-models` — named volume, ~300MB buffalo_l model, shared by all worker replicas
 
-**Resource limits (docker-compose.yml):**
+**Resource limits (docker-compose.yml) — sized for N=2 workers on 4 vCPU / 16 GiB:**
 - `api`: mem_limit 2g
-- `worker`: mem_limit 8g, memswap_limit 10g, cpus 3
+- `worker` (per replica): mem_limit 6g, memswap_limit 7g, cpus 2.0
+- Scale: `docker-compose up -d --scale worker=2`. N=3 would exceed host RAM ceiling.
+
+See [[components/parallel-workers]] for resource math, scaling ops notes, and the poll-hold bottleneck proposal.
 
 ## Data Model
 

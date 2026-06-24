@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from . import media as media_mod
@@ -64,6 +65,13 @@ RUN_POLL_INTERVAL_SEC = float(os.getenv("RUN_POLL_INTERVAL_SEC", "15"))
 # self-heals without re-generating or re-stitching the video.
 RUN_DELIVER_ATTEMPTS = int(os.getenv("RUN_DELIVER_ATTEMPTS", "3"))
 RUN_DELIVER_BACKOFF_SEC = float(os.getenv("RUN_DELIVER_BACKOFF_SEC", "10"))
+
+# Stitch-phase parallelism: number of concurrent cut_clip calls for keep/fallback
+# segments during assembly.  Bounded so we don't saturate the CPU — each ffmpeg
+# process already uses FFMPEG_THREADS threads internally.  Default 2 is safe
+# even on a single worker; set higher only if worker has spare CPU headroom.
+# Set to 1 to disable parallelism (equivalent to the old serial loop).
+STITCH_CUT_CONCURRENCY = int(os.getenv("STITCH_CUT_CONCURRENCY", "2"))
 
 
 def _default_kie() -> KieClient:
@@ -419,26 +427,60 @@ def process_run(
             else:
                 # Assemble clips in order. Non-completed swaps fall back to the
                 # original (un-swapped) clip so the timeline stays intact.
-                clip_paths: list[str] = []
-                for sd in seg_defs:
+                #
+                # PARALLELISM: keep-segment cuts and fallback-original cuts are
+                # independent ffmpeg calls with no shared state.  We run them
+                # concurrently (up to STITCH_CUT_CONCURRENCY) using a thread pool,
+                # then collect results in the original seg_defs order so the stitch
+                # list is always correctly ordered.
+                #
+                # Each worker is a closure that either (a) cuts and returns a path,
+                # or (b) returns the already-computed result path.  Futures are
+                # stored in order so we can re-raise any exception on the main thread
+                # without losing the ordering guarantee.
+
+                def _cut_or_lookup(sd: SegmentDef) -> str:
+                    """Return the clip path for this segment (cut if needed)."""
                     if sd.action == "keep":
                         keep_dst = os.path.join(c_dir, f"clip_{sd.index:04d}.mp4")
                         media_mod.cut_clip(source, sd.start_sec, sd.end_sec, keep_dst)
-                        clip_paths.append(keep_dst)
-                        continue
+                        return keep_dst
+                    # swap segment
                     rs = session.get(RunSegment, rs_map[sd.id].id)
                     if (
                         rs.status == SegmentStatus.completed
                         and rs.local_result_path
                         and os.path.exists(rs.local_result_path)
                     ):
-                        clip_paths.append(rs.local_result_path)
-                    else:
-                        log.warning("Segment %d not swapped (status=%s) — using original clip",
-                                    sd.index, rs.status)
-                        orig_dst = os.path.join(c_dir, f"orig_{sd.index:04d}.mp4")
-                        media_mod.cut_clip(source, sd.start_sec, sd.end_sec, orig_dst)
-                        clip_paths.append(orig_dst)
+                        return rs.local_result_path
+                    # fallback: use original (un-swapped) clip
+                    log.warning(
+                        "Segment %d not swapped (status=%s) — using original clip",
+                        sd.index, rs.status,
+                    )
+                    orig_dst = os.path.join(c_dir, f"orig_{sd.index:04d}.mp4")
+                    media_mod.cut_clip(source, sd.start_sec, sd.end_sec, orig_dst)
+                    return orig_dst
+
+                # Determine which segments need ffmpeg work (cuts) vs which are
+                # already-available result files.  Only segments that require a
+                # cut_clip call benefit from concurrency; already-available results
+                # are returned immediately.
+                #
+                # We submit ALL seg_defs (keeps + fallbacks) to the pool and track
+                # them by insertion order using an ordered list of (index, future).
+                ordered_futures: list[tuple[int, object]] = []  # (sd.index, Future)
+                with ThreadPoolExecutor(max_workers=STITCH_CUT_CONCURRENCY) as pool:
+                    for sd in seg_defs:
+                        fut = pool.submit(_cut_or_lookup, sd)
+                        ordered_futures.append((sd.index, fut))
+
+                # Collect results in seg_defs order.  If any future raised an
+                # exception, it will re-raise here, marking the run failed (outer
+                # except clause handles that).
+                clip_paths: list[str] = []
+                for _idx, fut in ordered_futures:
+                    clip_paths.append(fut.result())  # type: ignore[union-attr]
 
                 log.info("Stitching %d clips → %s (%dx%d @ %.2ffps)",
                          len(clip_paths), final_dst, width, height, fps)

@@ -22,6 +22,7 @@ Content catalog for the re-skin LLM wiki. Updated on every ingest or new page.
 | Page | Summary |
 |------|---------|
 | [components/pipeline](components/pipeline.md) | v2 pipeline: analyze_project (InsightFace → SegmentDefs), process_run (parallel submit + concurrent poll + stitch + deliver) |
+| [components/parallel-workers](components/parallel-workers.md) | Multi-worker scaling: bottleneck analysis, N-worker docker-compose setup, parallel stitch cut_clip, resource math, poll-decoupling proposal |
 
 ## AI Models
 
