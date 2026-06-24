@@ -68,9 +68,11 @@ services:
     # Hard RAM cap: InsightFace + ffmpeg can spike; if a job exceeds this the
     # container is OOM-killed (and restarted) instead of freezing the whole host.
     mem_limit: 2560m
-    # mem_swap == mem_limit → no swap for this container, so a runaway job is
-    # killed promptly rather than thrashing swap and hanging SSH.
-    memswap_limit: 2560m
+    # Allow ~2 GB of swap on top of the 2.5 GB RAM cap: a heavy but legitimate
+    # 1080p stitch can briefly spill to swap and finish instead of being
+    # OOM-killed (ffmpeg rc=-9), while a true runaway is still bounded at ~4.6 GB
+    # total and CPU-capped, so it can't thrash the host into an SSH freeze.
+    memswap_limit: 4608m
     # Leave ~0.5 of the 2 host cores free so a full-CPU x264 stitch/encode can't
     # starve SSH / the api. Applied live via `docker update` on running jobs.
     cpus: 1.5

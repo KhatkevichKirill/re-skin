@@ -21,6 +21,12 @@ log = logging.getLogger(__name__)
 FFMPEG = os.environ.get("FFMPEG_BIN", "/usr/bin/ffmpeg")
 FFPROBE = os.environ.get("FFPROBE_BIN", "/usr/bin/ffprobe")
 
+# Cap ffmpeg/x264 worker threads during the stitch re-encode. More threads hold
+# more in-flight frames (1080p frames are ~3 MB each), which on a memory-capped
+# container can trip the OOM killer (ffmpeg dies with rc=-9). 2 keeps memory
+# bounded and matches the worker's CPU cap. Override via FFMPEG_THREADS.
+_FFMPEG_THREADS = os.environ.get("FFMPEG_THREADS", "2")
+
 # Maximum lines of stderr to include in MediaError messages.
 _STDERR_TAIL = 20
 
@@ -245,7 +251,7 @@ def stitch(
     # audio_mode == "original" — EXACTLY the existing behaviour.
     # ------------------------------------------------------------------
     if audio_mode == "original":
-        cmd = [FFMPEG, "-y"]
+        cmd = [FFMPEG, "-y", "-threads", _FFMPEG_THREADS]
         for clip in clips:
             cmd += ["-i", clip]
         cmd += ["-i", audio_source]
@@ -304,7 +310,7 @@ def stitch(
     # Count clips that need a silence source input.
     # We will add one extra input per audio-less clip (anullsrc).
     silence_input_indices: List[int] = []
-    cmd = [FFMPEG, "-y"]
+    cmd = [FFMPEG, "-y", "-threads", _FFMPEG_THREADS]
     for clip in clips:
         cmd += ["-i", clip]
 
