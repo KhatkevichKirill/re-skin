@@ -39,6 +39,17 @@ Multiple Runs share the same Project segmentation. The video is downloaded/uploa
 - **Audio modes**: `original` muxes the full source audio track (ignores segment audio); `seedance` uses clip audio from Seedance and source audio for keep segments. The `seedance` mode avoids the drift issue where Seedance outputs are sometimes slightly shorter/longer than the original clip, causing desync when muxed with the source audio.
 - **SegmentDef reuse**: SegmentDefs are created once during `analyze_project` and shared across all Runs. RunSegments are created at Run creation time (one per swap SegmentDef).
 
+## Run operations (copy / retry / rerun-segment)
+
+A Run is the unit of iteration, so several actions clone or re-drive it:
+
+- **Copy run** (`POST /api/v2/runs/{id}/copy`): duplicate a finished run and enqueue it, changing one or both of:
+  - **resolution** — defaults to the source run's; pass a different one to promote a 480p test to 1080p/4k.
+  - **reference photo** — pass `reference_files` and/or `reference_urls` to swap the character to a new face. This is the **"project as a template"** workflow: tune a run once (prompt + per-segment prompt tweaks), then re-run it on a new person of the same type. When a new photo is supplied it **replaces the photo everywhere** — both the run-level references AND per-segment reference overrides are dropped so every swap segment uses the new photo; per-segment *prompt* overrides are still carried over. Omitting the photo clones the source references unchanged (the original resolution-only behaviour).
+- **Retry run** (`POST /api/v2/runs/{id}/retry`) and **startup reconciliation** re-drive an existing run in place — see [[production-gotchas]] and [[components/parallel-workers]].
+
+Copy relies on `process_run`'s idempotency: cloned RunSegments (keyed by `segment_def_id`) are reused rather than recreated, so prompt overrides take effect on the first run.
+
 ## What Didn't Change
 
 All v1 modules (media.py, face.py, kie_client.py, gdrive_client.py, storage.py) were reused as-is. Only the pipeline orchestration, API routes, and HTML templates changed.

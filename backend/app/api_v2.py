@@ -963,16 +963,28 @@ def _copy_reference_files(items: list, dest_dir: str) -> list:
 )
 def copy_run(
     rid: str,
-    resolution: str = Form(...),
+    resolution: Optional[str] = Form(None),
     name: Optional[str] = Form(None),
+    reference_files: List[UploadFile] = File(default=[]),
+    reference_urls: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> RunCreateResponse:
-    """Duplicate a run with a new resolution and enqueue it.
+    """Duplicate a run — optionally at a new resolution and/or with a new
+    reference photo — and enqueue it.
 
-    Clones everything that defines the result — prompt, reference images, model,
-    audio mode, Drive folder, and any per-segment prompt/reference overrides —
-    but with the chosen *resolution*. Handy for re-running a 480p test at a higher
-    resolution once you're happy with it.
+    Clones everything that defines the result — prompt, model, audio mode, Drive
+    folder, and any per-segment prompt overrides. Two things can be changed:
+
+    * **resolution** — defaults to the source run's resolution if omitted; pass a
+      different one to promote a 480p test to production.
+    * **reference photo** — pass *reference_files* and/or *reference_urls* to swap
+      the character to a new face of the same type. This is the "project as a
+      template" workflow: tune a run once, then re-run it with a new person's
+      photo. When new references are supplied they REPLACE the photo everywhere —
+      both the run-level references AND any per-segment reference overrides are
+      dropped so every swap segment uses the new photo (per-segment *prompt*
+      tweaks are still carried over). When omitted, the source run's references
+      (run-level and per-segment) are cloned unchanged.
     """
     src = _get_run_or_404(rid, db)
     project = _get_project_or_404(src.project_id, db)
@@ -982,6 +994,8 @@ def copy_run(
             detail=f"Cannot copy run: project status is {project.status!r}, expected 'ready'",
         )
 
+    # Resolution: default to the source run's when not changing it.
+    resolution = (resolution or src.resolution).strip()
     allowed = _MODEL_RESOLUTIONS[src.model]
     if resolution not in allowed:
         raise HTTPException(
@@ -992,8 +1006,29 @@ def copy_run(
             ),
         )
 
+    # New reference photo (optional). When provided it replaces the photo
+    # everywhere; when absent we clone the source run's references.
+    new_ref_files = reference_files or []
+    new_ref_urls = [u.strip() for u in (reference_urls or "").split(",") if u.strip()]
+    has_new_refs = bool(new_ref_files or new_ref_urls)
+    if has_new_refs:
+        total_refs = len(new_ref_files) + len(new_ref_urls)
+        if total_refs > settings.MAX_REFERENCE_IMAGES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Too many reference images: got {total_refs}, "
+                    f"max {settings.MAX_REFERENCE_IMAGES}"
+                ),
+            )
+
     new_id = str(uuid.uuid4())
-    new_name = (name.strip() if name and name.strip() else f"{src.name or 'run'} · {resolution}")[:255]
+    if name and name.strip():
+        new_name = name.strip()
+    else:
+        suffix = "new ref" if has_new_refs else resolution
+        new_name = f"{src.name or 'run'} · {suffix}"
+    new_name = new_name[:255]
     new_run = Run(
         id=new_id,
         project_id=src.project_id,
@@ -1009,30 +1044,55 @@ def copy_run(
     db.add(new_run)
     db.flush()
 
-    # Clone run-level reference images into the new run's own dir.
     refs_dir = os.path.join(project_dir(src.project_id), "runs", new_id, "references")
-    new_run.reference_image_urls = _copy_reference_files(
-        list(src.reference_image_urls or []), refs_dir
-    )
+    if has_new_refs:
+        # Use the supplied photo as the new run-level reference.
+        saved_ref_paths: list[str] = []
+        if new_ref_files:
+            os.makedirs(refs_dir, exist_ok=True)
+            for rf in new_ref_files:
+                dest = os.path.join(
+                    refs_dir, rf.filename or f"ref_{len(saved_ref_paths)}.jpg"
+                )
+                _save_upload(rf, dest)
+                saved_ref_paths.append(dest)
+        new_run.reference_image_urls = saved_ref_paths + new_ref_urls
+    else:
+        # Clone run-level reference images into the new run's own dir.
+        new_run.reference_image_urls = _copy_reference_files(
+            list(src.reference_image_urls or []), refs_dir
+        )
 
     # Clone per-segment overrides so the copy reproduces the same tuned result.
     # process_run is idempotent: it reuses these RunSegments (by segment_def_id)
     # instead of creating fresh ones, so the overrides take effect.
+    #
+    # When a new photo is supplied we DROP per-segment reference overrides so the
+    # new run-level photo is used in every segment (the "replace everywhere"
+    # behaviour); per-segment prompt tweaks are still carried over.
     for src_rs in src.run_segments:
-        if not (src_rs.prompt_override or src_rs.reference_image_urls_override):
-            continue
-        new_rs_id = str(uuid.uuid4())
-        override_refs = None
-        if src_rs.reference_image_urls_override:
-            seg_dir = os.path.join(
-                project_dir(src.project_id), "runs", new_id, "segment_refs", new_rs_id
-            )
-            override_refs = _copy_reference_files(
-                list(src_rs.reference_image_urls_override), seg_dir
-            )
+        if has_new_refs:
+            if not src_rs.prompt_override:
+                # Only a photo override here → dropped; process_run will create a
+                # fresh pending segment that inherits the new run-level photo.
+                continue
+            override_refs = None
+        else:
+            if not (src_rs.prompt_override or src_rs.reference_image_urls_override):
+                continue
+            override_refs = None
+            if src_rs.reference_image_urls_override:
+                new_rs_id_refs = str(uuid.uuid4())
+                seg_dir = os.path.join(
+                    project_dir(src.project_id), "runs", new_id, "segment_refs",
+                    new_rs_id_refs,
+                )
+                override_refs = _copy_reference_files(
+                    list(src_rs.reference_image_urls_override), seg_dir
+                )
         db.add(
             RunSegment(
-                id=new_rs_id,
+                id=str(uuid.uuid4()),
                 run_id=new_id,
                 segment_def_id=src_rs.segment_def_id,
                 index=src_rs.index,
@@ -1050,6 +1110,9 @@ def copy_run(
     db.commit()
     enqueue_process_run(new_id)
 
-    log.info("Copied run %s → %s (resolution=%s)", rid, new_id, resolution)
+    log.info(
+        "Copied run %s → %s (resolution=%s, new_refs=%s)",
+        rid, new_id, resolution, has_new_refs,
+    )
     status_val = new_run.status.value if hasattr(new_run.status, "value") else str(new_run.status)
     return RunCreateResponse(run_id=new_id, status=status_val)

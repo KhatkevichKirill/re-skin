@@ -70,20 +70,29 @@ function deleteThisRun(rid, pid) {
   <div class="card-header"><h2>Copy run</h2></div>
   <div class="card-body">
     <p class="hint" style="margin-top:0">
-      Re-submit this exact run (prompt, references, model{% if run.audio_mode %}, audio{% endif %}, and any per-segment tweaks) at a different resolution — e.g. promote a 480p test to production.
+      Re-submit this run (prompt, model{% if run.audio_mode %}, audio{% endif %}, and any per-segment prompt tweaks) — optionally at a different resolution and/or with a new reference photo.
+      Leave the photo blank to reuse the same references. Provide a new photo to re-run the tuned settings on a new face of the same type — it replaces the photo in every segment.
     </p>
     <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap">
       <div class="form-group" style="margin-bottom:0">
         <label for="copy-resolution">Resolution</label>
         <select id="copy-resolution">
           {% for r in copy_res %}
-          <option value="{{ r }}" {% if r != run.resolution and not loop.previtem %}selected{% endif %}>{{ r }}</option>
+          <option value="{{ r }}" {% if r == run.resolution %}selected{% endif %}>{{ r }}</option>
           {% endfor %}
         </select>
       </div>
-      <div class="form-group" style="margin-bottom:0; flex:1; min-width:180px">
+      <div class="form-group" style="margin-bottom:0; flex:1; min-width:200px">
+        <label for="copy-ref-url">New reference photo URL (optional)</label>
+        <input type="text" id="copy-ref-url" placeholder="https://… (comma-separated for several)" />
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label for="copy-ref-file">…or upload</label>
+        <input type="file" id="copy-ref-file" accept="image/*" multiple />
+      </div>
+      <div class="form-group" style="margin-bottom:0; flex:1; min-width:160px">
         <label for="copy-name">New run name (optional)</label>
-        <input type="text" id="copy-name" placeholder="defaults to “{{ run.name or 'run' }} · <resolution>”" maxlength="255" />
+        <input type="text" id="copy-name" placeholder="defaults to “{{ run.name or 'run' }} · <resolution|new ref>”" maxlength="255" />
       </div>
       <button type="button" class="btn btn-primary" onclick="copyRun('{{ run.id }}')">Copy &amp; run</button>
       <span id="copy-status" class="text-muted" style="font-size:12px"></span>
@@ -95,11 +104,19 @@ function deleteThisRun(rid, pid) {
 function copyRun(rid) {
   var res = document.getElementById('copy-resolution').value;
   var name = document.getElementById('copy-name').value;
+  var refUrl = document.getElementById('copy-ref-url').value;
+  var refFileEl = document.getElementById('copy-ref-file');
   var statusEl = document.getElementById('copy-status');
   statusEl.textContent = 'Submitting…';
   var fd = new FormData();
   fd.append('resolution', res);
   if (name && name.trim()) fd.append('name', name.trim());
+  if (refUrl && refUrl.trim()) fd.append('reference_urls', refUrl.trim());
+  if (refFileEl && refFileEl.files) {
+    for (var i = 0; i < refFileEl.files.length; i++) {
+      fd.append('reference_files', refFileEl.files[i]);
+    }
+  }
   fetch('/api/v2/runs/' + encodeURIComponent(rid) + '/copy', { method: 'POST', body: fd })
     .then(function (r) {
       if (r.status === 201) {

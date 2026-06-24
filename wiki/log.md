@@ -116,3 +116,19 @@ Implemented on branch `feat/parallel-workers` (branched from `feat/postgres-migr
 - `pytest tests/`: 395 passed, 4 skipped, 2 failed, 29 errors — 3 more passes than baseline (new TestParallelStitchOrdering). All failures/errors pre-existing ffmpeg-not-found.
 
 **Ops note:** Branch depends on `feat/postgres-migration` — must be deployed together with Postgres. Poll-decoupling (TR-POLL) proposed but not implemented; see [[components/parallel-workers]].
+
+## [2026-06-24] update | Production cutover to PostgreSQL + 2 workers (deployed & pushed)
+
+Deployed the stacked work (Postgres → parallel workers → TR5b) to the live host and pushed to `origin/main` (commits `1e360a6`..`55142f6`, rebased onto the public-repo head `3166ae8`).
+
+**Cutover sequence:** backup SQLite → set POSTGRES_* in `.env` → `docker compose build` → `up -d db` (healthy) → `alembic upgrade head` (one-off container, head `a1b2c3d4e5f7`) → ETL → switch `DATABASE_URL` → `up -d --scale worker=2`. Final: api on Postgres, `worker-1`/`worker-2`, 47 done + 3 failed runs, 14 projects, HTTP 200 via nginx.
+
+**Two production findings (both fixed, see [[production-gotchas]]):**
+1. **SQLite WAL not in `cp app.db`** — first ETL snapshot was stale (two `done` runs came across as active), and TR5b then re-enqueued them. Fixed by re-ETL from the now-checkpointed live DB; runbook + lesson updated.
+2. **TR5b reconcile double-enqueue race** — both workers cold-started, both passed the idle gate, both re-enqueued the same runs. Fixed with a Redis lock (`SET NX EX 120`) in `reconcile_orphaned_runs` (commit `55142f6`); regression test added.
+
+**Env note:** deploy host has `docker compose` v2 only (no `docker-compose` v1). After recreating `api`, `nginx` must be restarted to re-resolve the upstream IP (stale-upstream 502 — hit and fixed live).
+
+## [2026-06-24] update | Copy run with a new reference photo
+
+Extended `POST /api/v2/runs/{id}/copy` (was resolution-only) so a run can be copied with a **new reference photo** (`reference_files` / `reference_urls`) — the "project as a template" workflow: tune a run once, re-run it on a new face of the same type. New photo **replaces the photo everywhere** (run-level refs + per-segment reference overrides dropped; per-segment prompt overrides kept). Resolution is now optional (defaults to the source run's). Copy form in `run_detail.html` gained a photo URL + upload field. Tests: 4 added to `TestCopyRun` (11 total pass). Branch `feat/copy-run-new-reference`. See [[decisions/v2-project-runs]] → "Run operations".

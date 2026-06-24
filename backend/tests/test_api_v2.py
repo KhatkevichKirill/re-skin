@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
+from app.config import settings
 from app.db import Base, get_db
 from app.models import Run, RunSegment, SegmentDef, VideoProject
 from app.state_machine import ProjectStatus, RunStatus, SegmentStatus
@@ -1641,6 +1642,109 @@ class TestCopyRun:
         assert len(new_refs) == 1
         assert new_refs[0] != str(ref)       # copied into the new run's dir
         assert os.path.exists(new_refs[0])   # and the copy is on disk
+
+    def test_copy_with_new_reference_url_replaces_refs(self, spy_client, SessionFactory):
+        """A new reference URL on copy replaces the run-level references."""
+        client, spy = spy_client
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        run = _make_run(
+            s, project.id, resolution="480p", status=RunStatus.done,
+            reference_image_urls=["https://old.example/face1.jpg"],
+        )
+        rid = run.id
+        s.close()
+
+        resp = client.post(
+            f"/api/v2/runs/{rid}/copy",
+            data={"reference_urls": "https://new.example/newface.jpg"},
+        )
+        assert resp.status_code == 201, resp.text
+        new_id = resp.json()["run_id"]
+        assert new_id in spy["process_run"]
+
+        s = SessionFactory()
+        nr = s.get(Run, new_id)
+        refs = list(nr.reference_image_urls)
+        res = nr.resolution
+        s.close()
+        assert refs == ["https://new.example/newface.jpg"]
+        # resolution omitted → defaults to the source run's resolution
+        assert res == "480p"
+
+    def test_copy_new_ref_drops_segment_photo_override_keeps_prompt(
+        self, spy_client, SessionFactory
+    ):
+        """With a new photo, per-segment photo overrides are dropped (so every
+        segment uses the new photo) but per-segment prompt tweaks are kept."""
+        client, spy = spy_client
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        sd = _make_segment_def(s, project.id, 0)
+        run = _make_run(
+            s, project.id, resolution="480p", status=RunStatus.done,
+            reference_image_urls=["https://old.example/face.jpg"],
+        )
+        _make_run_segment(
+            s, run.id, sd.id, status=SegmentStatus.completed,
+            prompt_override="tuned segment prompt",
+            reference_image_urls_override=["https://old.example/seg-specific.jpg"],
+        )
+        rid = run.id
+        s.close()
+
+        resp = client.post(
+            f"/api/v2/runs/{rid}/copy",
+            data={"reference_urls": "https://new.example/newface.jpg"},
+        )
+        assert resp.status_code == 201, resp.text
+        new_id = resp.json()["run_id"]
+
+        s = SessionFactory()
+        nr = s.get(Run, new_id)
+        segs = list(nr.run_segments)
+        run_refs = list(nr.reference_image_urls)
+        s.close()
+        assert run_refs == ["https://new.example/newface.jpg"]
+        assert len(segs) == 1
+        # prompt tweak preserved, photo override dropped (segment now inherits the
+        # new run-level photo).
+        assert segs[0].prompt_override == "tuned segment prompt"
+        assert not segs[0].reference_image_urls_override
+
+    def test_copy_no_resolution_no_ref_clones_same_resolution(
+        self, spy_client, SessionFactory
+    ):
+        """Backward-compat: copy with neither resolution nor photo clones as-is."""
+        client, spy = spy_client
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        run = _make_run(
+            s, project.id, resolution="720p", status=RunStatus.done,
+            reference_image_urls=["https://old.example/face.jpg"],
+        )
+        rid = run.id
+        s.close()
+
+        resp = client.post(f"/api/v2/runs/{rid}/copy", data={})
+        assert resp.status_code == 201, resp.text
+        s = SessionFactory()
+        nr = s.get(Run, resp.json()["run_id"])
+        res = nr.resolution
+        refs = list(nr.reference_image_urls)
+        s.close()
+        assert res == "720p"
+        assert refs == ["https://old.example/face.jpg"]
+
+    def test_copy_too_many_new_refs_is_400(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        run = _make_run(db_session, project.id, resolution="480p", status=RunStatus.done)
+        many = ",".join(f"https://e/{i}.jpg" for i in range(settings.MAX_REFERENCE_IMAGES + 1))
+        resp = client.post(
+            f"/api/v2/runs/{run.id}/copy", data={"reference_urls": many}
+        )
+        assert resp.status_code == 400
+        assert "reference images" in resp.json()["detail"].lower()
 
     def test_copy_invalid_resolution_for_model_is_400(self, client, db_session):
         project = _make_project(db_session, status=ProjectStatus.ready)
