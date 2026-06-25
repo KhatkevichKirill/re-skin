@@ -158,20 +158,17 @@ class GDriveClient:
             from google.oauth2 import service_account
             from googleapiclient.discovery import build
 
-            import google_auth_httplib2
-            import httplib2
-
             creds = service_account.Credentials.from_service_account_file(
                 sa_file, scopes=self._SCOPES
             )
-            # Build with an explicit socket timeout so large chunk reads don't
-            # trip the short httplib2 default (see _HTTP_TIMEOUT_SEC). Passing a
-            # pre-authorized http means we must NOT also pass credentials=.
-            authed_http = google_auth_httplib2.AuthorizedHttp(
-                creds, http=httplib2.Http(timeout=_HTTP_TIMEOUT_SEC)
-            )
+            # Use the default (google-built) http transport: it handles the
+            # resumable-upload 308 "Resume Incomplete" responses correctly.
+            # Wrapping a raw httplib2.Http() here breaks that — httplib2 treats
+            # 308 as a redirect and raises RedirectMissingLocation. The socket
+            # read timeout is instead widened around the upload itself
+            # (see upload_file). cache_discovery=False silences a noisy warning.
             self._service = build(
-                "drive", "v3", http=authed_http, cache_discovery=False
+                "drive", "v3", credentials=creds, cache_discovery=False
             )
         except Exception as exc:
             raise GDriveAuthError(
@@ -275,6 +272,16 @@ class GDriveClient:
         log.info(
             "Uploading %s -> Drive folder %s as %r", local_path, folder_id, name
         )
+        import socket
+
+        # Widen the socket read timeout for the duration of THIS upload only.
+        # A 5 MB chunk on a slow uplink can exceed the short httplib2 default and
+        # raise "read operation timed out". Scoped via getdefaulttimeout/restore
+        # so it never affects the worker's redis/DB sockets (used between jobs),
+        # and applied to the http transport WITHOUT replacing it (a custom
+        # httplib2.Http breaks the resumable-upload 308 handling).
+        _prev_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(_HTTP_TIMEOUT_SEC)
         try:
             body: dict = {"name": name}
             if folder_id:
@@ -296,8 +303,6 @@ class GDriveClient:
             # HttpError 5xx via num_retries; socket READ timeouts are not covered
             # by that, so we catch them here and re-call next_chunk — a resumable
             # upload resumes from the last confirmed byte, so no work is lost.
-            import socket
-
             result = None
             timeout_retries = 0
             while result is None:
@@ -320,5 +325,7 @@ class GDriveClient:
             raise GDriveUploadError(
                 f"Failed to upload {local_path!r} to folder {folder_id!r}: {exc}"
             ) from exc
+        finally:
+            socket.setdefaulttimeout(_prev_timeout)
 
         return {"id": result.get("id"), "webViewLink": result.get("webViewLink")}
