@@ -33,6 +33,7 @@ Called once per Run after submission.
 2. **Bounded submit**: For each swap RunSegment, cut clip from source (`media.cut_clip()`) → upload to kie.ai (`kie_client.upload()`) → create Seedance/Gemini task.
    - Fresh submissions run through a bounded `ThreadPoolExecutor` controlled by `SUBMIT_CONCURRENCY` (default 2).
    - Each submit worker opens its own DB session; `process_run` commits newly created `RunSegment` rows before starting submit threads so the independent sessions can see them.
+   - In production submit threads also create their own `KieClient` instances, avoiding shared HTTP client state across concurrent uploads/task creates. Injected test clients are preserved for deterministic tests.
    - Existing `seedance_task_id` resume/no-rebill handling stays serial before the fresh-submit pool so an in-progress external task is never duplicated.
 3. **Concurrent poll**: Round-robin poll all submitted tasks every `RUN_POLL_INTERVAL_SEC` (default 15s):
    - Done → download result → `local_result_path`

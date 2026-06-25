@@ -169,7 +169,6 @@ def run_process_run(run_id: str) -> None:
     Creates real :class:`KieClient` and :class:`GDriveClient` instances using
     the configured API keys / service-account file.
     """
-    from .kie_client import KieClient
     from .gdrive_client import GDriveClient
     from .pipeline_v2 import process_run
 
@@ -188,7 +187,7 @@ def run_process_run(run_id: str) -> None:
 
     log.info("run_process_run: run_id=%s (lock acquired)", run_id)
     try:
-        process_run(run_id, kie=KieClient(), gdrive=GDriveClient())
+        process_run(run_id, gdrive=GDriveClient())
     finally:
         released = conn.eval(_RELEASE_LOCK_LUA, 1, lock_key, lock_token)
         if released:

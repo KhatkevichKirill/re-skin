@@ -27,7 +27,7 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from typing import Callable, Optional
 
 from . import media as media_mod
 from . import face as face_mod
@@ -233,6 +233,7 @@ def _submit_swap_segment_isolated(
     ref_urls: list,
     prompt_override: Optional[str],
     kie: KieClient,
+    kie_factory: Optional[Callable[[], KieClient]] = None,
 ) -> str:
     """Cut, upload, then create_task for one swap segment.
 
@@ -241,6 +242,7 @@ def _submit_swap_segment_isolated(
     Logs per-segment timing for observability.
     """
     t0 = time.monotonic()
+    thread_kie = kie_factory() if kie_factory is not None else kie
 
     # Recompute clip bounds from primitive data (mirrors _clip_bounds logic).
     clip_start = max(0.0, sd_start_sec - sd_pre_roll_sec)
@@ -259,7 +261,7 @@ def _submit_swap_segment_isolated(
         transition(rs, SegmentStatus.uploading)
         session.commit()
 
-    clip_url = kie.upload_file(clip_dst, "charswap/segments")
+    clip_url = thread_kie.upload_file(clip_dst, "charswap/segments")
     t_upload = time.monotonic()
 
     with get_session() as session:
@@ -272,7 +274,7 @@ def _submit_swap_segment_isolated(
 
     if run_model == "gemini-omni":
         trim_end = round(min(clip_end - clip_start, 10.0), 2)
-        task_id = kie.create_omni_task(
+        task_id = thread_kie.create_omni_task(
             prompt=effective_prompt,
             image_urls=ref_urls,
             video_url=clip_url,
@@ -285,7 +287,7 @@ def _submit_swap_segment_isolated(
     else:
         aspect = _map_aspect(project_aspect_ratio)
         clip_duration = _clamp_duration(clip_start, clip_end)
-        task_id = kie.create_task(
+        task_id = thread_kie.create_task(
             prompt=effective_prompt,
             reference_image_urls=ref_urls,
             reference_video_urls=[clip_url],
@@ -352,6 +354,7 @@ def process_run(
     t_run_start = time.monotonic()
     log.info("process_run start: run_id=%s", run_id)
 
+    external_kie = kie is not None
     if kie is None:
         kie = _default_kie()
 
@@ -593,9 +596,17 @@ def process_run(
                 )
                 with ThreadPoolExecutor(max_workers=SUBMIT_CONCURRENCY) as pool:
                     submit_futures = [
-                        (work, pool.submit(
-                            _submit_swap_segment_isolated, **work, kie=kie
-                        ))
+                        (
+                            work,
+                            pool.submit(
+                                _submit_swap_segment_isolated,
+                                **work,
+                                kie=kie,
+                                kie_factory=(
+                                    None if external_kie else _default_kie
+                                ),
+                            ),
+                        )
                         for work in submit_work
                     ]
                 # Collect results; re-raise on first failure (preserves existing
