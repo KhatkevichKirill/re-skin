@@ -14,7 +14,8 @@
 - Use `docker-compose` (v1.29.2) — NOT `docker compose` v2 plugin
 - `gh` CLI is NOT installed — use `git` directly, push via SSH as KhatkevichKirill
 - Tests: `cd backend && pytest tests/` (~350 tests)
-- Deploy: `docker-compose up -d --build`
+- Deploy: `docker-compose up -d --build --scale worker=2` — **always pass `--scale worker=2`**. Prod runs 2 workers; a plain `up` (without the flag) silently scales down to 1 and removes `re-skin-worker-2`.
+- **Code is baked into the image** (only `./data` and `./secrets` are bind-mounted, not the app code). Editing files on the host does NOT affect running containers — you MUST rebuild (`--build`) and restart for changes to take effect. Verify a deploy landed with e.g. `docker exec re-skin-worker-1 grep -c <new-symbol> /app/app/<file>.py`.
 - **Never commit**: `.env`, `secrets/gdrive-sa.json`, `data/`
 - Task tracker: `tasks/todo.md` — sprint-level task tracking lives there, not in the wiki
 

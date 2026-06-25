@@ -38,6 +38,7 @@ from .kie_client import KieClient
 from .models import Run, RunSegment, SegmentDef, VideoProject
 from .pipeline import (
     MIN_SWAP_VIDEO_SEC,
+    OMNI_MAX_CLIP_SECONDS,
     _clamp_duration,
     _map_aspect,
     _map_omni_aspect,
@@ -138,10 +139,20 @@ def analyze_project(project_id: str, *, detector=None) -> None:
             session.commit()
 
             # Propose segments — create SegmentDef rows.
+            #
+            # The model is chosen per-Run (a project's segmentation is reused
+            # across runs), so we cap segments at the MOST restrictive model
+            # limit: every swap segment must fit both Seedance (<=15s) and Gemini
+            # Omni (<=10s). Capping here means any run on this project is valid
+            # regardless of which model it picks. Bump OMNI_MAX_CLIP_SECONDS if
+            # Gemini ever lifts the 10s ceiling.
+            max_segment_sec = min(
+                float(settings.SEGMENT_MAX_SECONDS), OMNI_MAX_CLIP_SECONDS
+            )
             proposed = face_mod.propose_segments(
                 local,
                 duration_sec=info.duration_sec,
-                max_segment_sec=float(settings.SEGMENT_MAX_SECONDS),
+                max_segment_sec=max_segment_sec,
                 detector=detector,
             )
             log.info("propose_segments returned %d segments", len(proposed))
@@ -192,17 +203,6 @@ def analyze_project(project_id: str, *, detector=None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _clip_bounds(sd: SegmentDef, duration_sec: float) -> tuple[float, float]:
-    """Cut bounds for a swap segment: sd range ± rolls, padded to Seedance's min."""
-    start = max(0.0, sd.start_sec - sd.pre_roll_sec)
-    end = min(duration_sec, sd.end_sec + sd.post_roll_sec)
-    if end - start < MIN_SWAP_VIDEO_SEC:
-        end = min(duration_sec, start + MIN_SWAP_VIDEO_SEC)
-        if end - start < MIN_SWAP_VIDEO_SEC:
-            start = max(0.0, end - MIN_SWAP_VIDEO_SEC)
-    return start, end
-
-
 def _parse_result_url(data: dict) -> Optional[str]:
     """Extract resultUrls[0] from a recordInfo 'data' dict (resultJson is a string)."""
     raw = data.get("resultJson") or "{}"
@@ -234,15 +234,18 @@ def _submit_swap_segment_isolated(
     prompt_override: Optional[str],
     kie: KieClient,
     kie_factory: Optional[Callable[[], KieClient]] = None,
-) -> str:
+) -> Optional[str]:
     """Cut, upload, then create_task for one swap segment.
 
     Opens its own DB session so this function is safe to call from a thread pool
-    (no shared SQLAlchemy Session across threads).  Returns the Seedance task_id.
+    (no shared SQLAlchemy Session across threads).  Returns the Seedance/Omni
+    task_id, or ``None`` when the segment was skipped (marked failed → the run
+    falls back to the original clip during stitch).
     Logs per-segment timing for observability.
     """
     t0 = time.monotonic()
     thread_kie = kie_factory() if kie_factory is not None else kie
+    is_omni = run_model == "gemini-omni"
 
     # Recompute clip bounds from primitive data (mirrors _clip_bounds logic).
     clip_start = max(0.0, sd_start_sec - sd_pre_roll_sec)
@@ -252,7 +255,36 @@ def _submit_swap_segment_isolated(
         if clip_end - clip_start < MIN_SWAP_VIDEO_SEC:
             clip_start = max(0.0, clip_end - MIN_SWAP_VIDEO_SEC)
 
-    media_mod.cut_clip(source, clip_start, clip_end, clip_dst)
+    if is_omni:
+        # Gemini Omni rejects clips longer than 10s. Project segmentation already
+        # caps swap segments at <=10s, but pre/post-roll can push the cut past the
+        # limit — trim the clip back to 10s so we never upload an over-long video.
+        # If the *segment itself* exceeds 10s (e.g. a stale segmentation built with
+        # a larger cap), skip the swap entirely and fall back to the original clip
+        # rather than swapping only its first 10s and desyncing the timeline.
+        if (sd_end_sec - sd_start_sec) > OMNI_MAX_CLIP_SECONDS + 0.05:
+            with get_session() as session:
+                rs = session.get(RunSegment, rs_id)
+                _skip_segment(
+                    rs,
+                    f"segment {sd_index} is {sd_end_sec - sd_start_sec:.1f}s > "
+                    f"{OMNI_MAX_CLIP_SECONDS:.0f}s Gemini Omni limit — using "
+                    "original clip",
+                    session,
+                )
+            log.warning(
+                "segment idx=%d (%.1fs) exceeds Gemini Omni %.0fs limit — "
+                "skipping swap, using original clip",
+                sd_index, sd_end_sec - sd_start_sec, OMNI_MAX_CLIP_SECONDS,
+            )
+            return None
+        if clip_end - clip_start > OMNI_MAX_CLIP_SECONDS:
+            clip_end = clip_start + OMNI_MAX_CLIP_SECONDS
+
+    # Gemini Omni fails when its reference clip carries an audio track; send it
+    # video-only (the original audio is re-applied during stitch via the
+    # "original" audio_mode). Seedance clips keep their audio.
+    media_mod.cut_clip(source, clip_start, clip_end, clip_dst, include_audio=not is_omni)
     t_cut = time.monotonic()
 
     with get_session() as session:
@@ -272,8 +304,10 @@ def _submit_swap_segment_isolated(
 
     effective_prompt = prompt_override if prompt_override else (run_prompt or "")
 
-    if run_model == "gemini-omni":
-        trim_end = round(min(clip_end - clip_start, 10.0), 2)
+    if is_omni:
+        # clip is already trimmed to <= OMNI_MAX_CLIP_SECONDS above; send its
+        # full (video-only) length as the trim range.
+        trim_end = round(clip_end - clip_start, 2)
         task_id = thread_kie.create_omni_task(
             prompt=effective_prompt,
             image_urls=ref_urls,
@@ -684,6 +718,11 @@ def process_run(
                 # serial semantics: any submit failure fails the whole run).
                 for work, fut in submit_futures:
                     task_id = fut.result()
+                    if task_id is None:
+                        # Segment skipped at submit time (e.g. a Gemini segment
+                        # over the 10s limit). It was already marked failed; the
+                        # stitch phase falls back to the original clip.
+                        continue
                     pending[task_id] = {
                         "rs_id": work["rs_id"],
                         "index": work["sd_index"],
@@ -817,6 +856,11 @@ def process_run(
                 log.info("Stitching %d clips → %s (%dx%d @ %.2ffps)",
                          len(clip_paths), final_dst, width, height, fps)
                 audio_mode = run.audio_mode if run.audio_mode else "original"
+                # Gemini Omni clips are sent video-only and produce no audio, so
+                # the only sensible track is the original source audio overlaid
+                # on top. Force "original" even if the run requested "seedance".
+                if run.model == "gemini-omni":
+                    audio_mode = "original"
                 media_mod.stitch(
                     clip_paths, audio_source=source, dst=final_dst,
                     width=width, height=height, fps=fps,
@@ -880,64 +924,3 @@ def _skip_segment(rs: RunSegment, reason: str, session) -> None:
         except Exception:
             rs.status = SegmentStatus.failed
     session.commit()
-
-
-def _submit_swap_segment(
-    *,
-    rs: RunSegment,
-    sd: SegmentDef,
-    run: Run,
-    project: VideoProject,
-    source: str,
-    duration_sec: float,
-    clip_dst: str,
-    ref_urls: list[str],
-    kie: KieClient,
-    session,
-) -> str:
-    """Cut → upload → create_task for one swap segment. Returns the Seedance task id."""
-    clip_start, clip_end = _clip_bounds(sd, duration_sec)
-
-    media_mod.cut_clip(source, clip_start, clip_end, clip_dst)
-    rs.local_clip_path = clip_dst
-    transition(rs, SegmentStatus.uploading)
-    session.commit()
-
-    clip_url = kie.upload_file(clip_dst, "charswap/segments")
-    rs.kie_upload_url = clip_url
-    transition(rs, SegmentStatus.submitted)
-    session.commit()
-
-    effective_prompt = rs.prompt_override if rs.prompt_override else (run.prompt or "")
-
-    if run.model == "gemini-omni":
-        # Gemini takes the clip via video_list (trim <= 10s) and a fixed-set
-        # output duration; segments longer than 10s are truncated to 10s.
-        trim_end = round(min(clip_end - clip_start, 10.0), 2)
-        task_id = kie.create_omni_task(
-            prompt=effective_prompt,
-            image_urls=ref_urls,
-            video_url=clip_url,
-            video_start=0,
-            video_end=trim_end,
-            resolution=_omni_resolution(run.resolution),
-            aspect_ratio=_map_omni_aspect(
-                project.aspect_ratio, project.width, project.height
-            ),
-            duration=_snap_omni_duration(clip_start, clip_end),
-        )
-    else:
-        aspect = _map_aspect(project.aspect_ratio)
-        clip_duration = _clamp_duration(clip_start, clip_end)
-        task_id = kie.create_task(
-            prompt=effective_prompt,
-            reference_image_urls=ref_urls,
-            reference_video_urls=[clip_url],
-            resolution=run.resolution or settings.DEFAULT_RESOLUTION,
-            aspect_ratio=aspect,
-            duration=clip_duration,
-        )
-    rs.seedance_task_id = task_id
-    transition(rs, SegmentStatus.generating)
-    session.commit()
-    return task_id

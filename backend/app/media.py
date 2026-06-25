@@ -145,7 +145,14 @@ def probe(path: str) -> MediaInfo:
     return info
 
 
-def cut_clip(src: str, start_sec: float, end_sec: float, dst: str) -> None:
+def cut_clip(
+    src: str,
+    start_sec: float,
+    end_sec: float,
+    dst: str,
+    *,
+    include_audio: bool = True,
+) -> None:
     """
     Cut *src* from *start_sec* to *end_sec* into *dst*.
 
@@ -154,6 +161,14 @@ def cut_clip(src: str, start_sec: float, end_sec: float, dst: str) -> None:
 
     Note: ``-ss`` is placed *before* ``-i`` for fast seeking; ``-to`` is the
     duration relative to the seek point (= end_sec - start_sec).
+
+    Parameters
+    ----------
+    include_audio:
+        ``True`` (default) keeps the source audio track (re-encoded to AAC).
+        ``False`` drops audio entirely (``-an``) — used for the reference clip
+        sent to Gemini Omni, which fails when its input carries an audio track;
+        the original audio is re-applied later during ``stitch``.
     """
     duration = end_sec - start_sec
     if duration <= 0:
@@ -172,11 +187,16 @@ def cut_clip(src: str, start_sec: float, end_sec: float, dst: str) -> None:
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "18",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        dst,
     ]
-    log.info("cut_clip: %s [%.3f, %.3f] -> %s", src, start_sec, end_sec, dst)
+    if include_audio:
+        cmd += ["-c:a", "aac", "-b:a", "192k"]
+    else:
+        cmd += ["-an"]
+    cmd += [dst]
+    log.info(
+        "cut_clip: %s [%.3f, %.3f] -> %s (audio=%s)",
+        src, start_sec, end_sec, dst, include_audio,
+    )
     _run(cmd)
 
 

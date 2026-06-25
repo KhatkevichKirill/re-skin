@@ -644,7 +644,7 @@ class TestProcessRun:
         monkeypatch.setattr(
             pipeline_v2_mod.media_mod,
             "cut_clip",
-            lambda _src, _start, _end, dst: (os.makedirs(os.path.dirname(dst), exist_ok=True), open(dst, "wb").write(b"clip")),
+            lambda _src, _start, _end, dst, **_kw: (os.makedirs(os.path.dirname(dst), exist_ok=True), open(dst, "wb").write(b"clip")),
         )
         monkeypatch.setattr(
             pipeline_v2_mod.media_mod,
@@ -1177,6 +1177,227 @@ class TestModelRouting:
 
 
 # ---------------------------------------------------------------------------
+# Tests: Gemini Omni video-only clips + 10s limit
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiOmniAudioAndLimit:
+    """Gemini Omni clips are uploaded video-only (it fails on an audio track),
+    capped at 10s, and always stitched with the original source audio.
+
+    Media (probe / cut_clip / stitch) is fully mocked so these run without
+    ffmpeg.
+    """
+
+    @staticmethod
+    def _mock_media(monkeypatch, *, duration_sec, cut_calls, stitch_calls):
+        from app.media import MediaInfo
+        import app.pipeline_v2 as pv2
+
+        monkeypatch.setattr(
+            pv2.media_mod, "probe",
+            lambda _p: MediaInfo(
+                duration_sec=duration_sec, width=320, height=240,
+                fps=25.0, aspect_ratio="4:3", has_audio=True,
+            ),
+        )
+
+        def spy_cut_clip(_src, _start, _end, dst, *, include_audio=True):
+            cut_calls.append({"dst": dst, "include_audio": include_audio})
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "wb") as fh:
+                fh.write(b"clip")
+
+        monkeypatch.setattr(pv2.media_mod, "cut_clip", spy_cut_clip)
+
+        def spy_stitch(_clips, audio_source, dst, **kw):
+            stitch_calls.append(kw)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "wb") as fh:
+                fh.write(b"final")
+
+        monkeypatch.setattr(pv2.media_mod, "stitch", spy_stitch)
+
+    @staticmethod
+    def _make_run(db_session, project_id, *, model, audio_mode="original"):
+        run = Run(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            name="t",
+            prompt="Replace the character",
+            reference_image_urls=[],
+            model=model,
+            resolution="720p" if model == "gemini-omni" else "480p",
+            audio_mode=audio_mode,
+            status=RunStatus.queued,
+        )
+        db_session.add(run)
+        db_session.commit()
+        return run.id
+
+    def _two_swaps(self, db_session, project_id):
+        # Two adjacent swap segments, no keep gap → every cut_clip call during
+        # the run is a swap-submit cut.
+        db_session.add_all([
+            SegmentDef(project_id=project_id, index=0, start_sec=0.0, end_sec=5.0,
+                       has_face=True, action="swap"),
+            SegmentDef(project_id=project_id, index=1, start_sec=5.0, end_sec=10.0,
+                       has_face=True, action="swap"),
+        ])
+        db_session.commit()
+
+    def test_gemini_clip_sent_without_audio(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """Every clip uploaded to Gemini Omni is cut with include_audio=False."""
+        from app.pipeline_v2 import process_run
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(db_session, str(source), status=ProjectStatus.ready)
+        self._two_swaps(db_session, project_id)
+        run_id = self._make_run(db_session, project_id, model="gemini-omni")
+
+        cut_calls: list[dict] = []
+        stitch_calls: list[dict] = []
+        self._mock_media(monkeypatch, duration_sec=10.0,
+                         cut_calls=cut_calls, stitch_calls=stitch_calls)
+
+        fake_kie = FakeKieClient(str(source))
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert len(fake_kie.create_omni_records) == 2
+        assert cut_calls, "expected at least one clip cut"
+        assert all(c["include_audio"] is False for c in cut_calls), (
+            f"Gemini clips must be video-only: {cut_calls}"
+        )
+        # Gemini always overlays the original source audio.
+        assert stitch_calls and stitch_calls[0].get("audio_mode") == "original"
+
+    def test_seedance_clip_keeps_audio(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """Seedance clips are still cut WITH their audio track."""
+        from app.pipeline_v2 import process_run
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(db_session, str(source), status=ProjectStatus.ready)
+        self._two_swaps(db_session, project_id)
+        run_id = self._make_run(db_session, project_id, model="seedance")
+
+        cut_calls: list[dict] = []
+        stitch_calls: list[dict] = []
+        self._mock_media(monkeypatch, duration_sec=10.0,
+                         cut_calls=cut_calls, stitch_calls=stitch_calls)
+
+        fake_kie = FakeKieClient(str(source))
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert len(fake_kie.create_task_records) == 2
+        assert cut_calls and all(c["include_audio"] is True for c in cut_calls)
+
+    def test_gemini_forces_original_audio_over_requested_seedance(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """A Gemini run requesting audio_mode='seedance' still stitches 'original'."""
+        from app.pipeline_v2 import process_run
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(db_session, str(source), status=ProjectStatus.ready)
+        self._two_swaps(db_session, project_id)
+        run_id = self._make_run(
+            db_session, project_id, model="gemini-omni", audio_mode="seedance"
+        )
+
+        cut_calls: list[dict] = []
+        stitch_calls: list[dict] = []
+        self._mock_media(monkeypatch, duration_sec=10.0,
+                         cut_calls=cut_calls, stitch_calls=stitch_calls)
+
+        fake_kie = FakeKieClient(str(source))
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert stitch_calls and stitch_calls[0].get("audio_mode") == "original"
+
+    def test_gemini_segment_over_10s_is_skipped(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """A >10s swap segment is skipped for Gemini → falls back to the original
+        clip; create_omni_task is never called and the run still completes."""
+        from app.pipeline_v2 import process_run
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(db_session, str(source), status=ProjectStatus.ready)
+        db_session.add(
+            SegmentDef(project_id=project_id, index=0, start_sec=0.0, end_sec=12.0,
+                       has_face=True, action="swap")
+        )
+        db_session.commit()
+        run_id = self._make_run(db_session, project_id, model="gemini-omni")
+
+        cut_calls: list[dict] = []
+        stitch_calls: list[dict] = []
+        self._mock_media(monkeypatch, duration_sec=12.0,
+                         cut_calls=cut_calls, stitch_calls=stitch_calls)
+
+        fake_kie = FakeKieClient(str(source))
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        # No Gemini task created for the over-long segment.
+        assert len(fake_kie.create_omni_records) == 0
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            run = s.get(Run, run_id)
+            assert run.status == RunStatus.done
+            rs = (
+                s.query(RunSegment)
+                .filter(RunSegment.run_id == run_id)
+                .one()
+            )
+            assert rs.status == SegmentStatus.failed
+            assert "limit" in (rs.error_message or "")
+
+
+class TestAnalyzeSegmentCap:
+    """analyze_project caps segmentation at the most restrictive model limit."""
+
+    def test_analyze_caps_segment_at_omni_limit(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """propose_segments is invoked with max_segment_sec == min(cfg, 10)."""
+        from app.media import MediaInfo
+        import app.pipeline_v2 as pv2
+        from app.pipeline_v2 import analyze_project
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(db_session, str(source))
+
+        monkeypatch.setattr(
+            pv2.media_mod, "probe",
+            lambda _p: MediaInfo(duration_sec=30.0, width=320, height=240,
+                                 fps=25.0, aspect_ratio="4:3", has_audio=True),
+        )
+        captured: dict = {}
+
+        def spy_propose(_path, **kw):
+            captured.update(kw)
+            return []
+
+        monkeypatch.setattr(pv2.face_mod, "propose_segments", spy_propose)
+
+        analyze_project(project_id)
+
+        from app.config import settings
+        expected = min(float(settings.SEGMENT_MAX_SECONDS), 10.0)
+        assert captured.get("max_segment_sec") == expected
+        assert captured["max_segment_sec"] <= 10.0
+
+
+# ---------------------------------------------------------------------------
 # Tests: TR7 audio_mode forwarding
 # ---------------------------------------------------------------------------
 
@@ -1459,11 +1680,11 @@ class TestStitchCutConcurrency:
         call_count = {"n": 0}
         real_cut_clip = pv2.media_mod.cut_clip
 
-        def failing_cut_clip(src, start, end, dst):
+        def failing_cut_clip(src, start, end, dst, **kw):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise RuntimeError("simulated cut_clip failure in stitch")
-            return real_cut_clip(src, start, end, dst)
+            return real_cut_clip(src, start, end, dst, **kw)
 
         monkeypatch.setattr(pv2.media_mod, "cut_clip", failing_cut_clip)
 
