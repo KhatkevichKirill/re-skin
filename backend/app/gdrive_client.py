@@ -20,7 +20,17 @@ log = logging.getLogger(__name__)
 # read timeout. Upload in bounded chunks and let next_chunk retry transient
 # failures so delivery is robust regardless of file size / link quality.
 _UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024  # 5 MB per request
-_UPLOAD_NUM_RETRIES = 5  # per-chunk retries with exponential backoff
+_UPLOAD_NUM_RETRIES = 5  # per-chunk retries with exponential backoff (HttpError 5xx)
+
+# Socket timeout for the Drive HTTP transport. The httplib2 default is short and
+# a single 5 MB chunk on a slow uplink reads past it → `TimeoutError: The read
+# operation timed out`, which `next_chunk(num_retries=...)` does NOT retry (it
+# only retries HttpError 5xx). 1080p deliveries (~45 MB) hit this repeatedly.
+# Give each chunk a generous read window; tunable via env.
+_HTTP_TIMEOUT_SEC = int(os.getenv("GDRIVE_HTTP_TIMEOUT_SEC", "300"))
+# On top of next_chunk's own retries, retry a chunk that still raises a socket
+# read timeout — resumable uploads resume from the last confirmed byte.
+_UPLOAD_TIMEOUT_RETRIES = int(os.getenv("GDRIVE_UPLOAD_TIMEOUT_RETRIES", "8"))
 
 
 # ---------------------------------------------------------------------------
@@ -148,10 +158,21 @@ class GDriveClient:
             from google.oauth2 import service_account
             from googleapiclient.discovery import build
 
+            import google_auth_httplib2
+            import httplib2
+
             creds = service_account.Credentials.from_service_account_file(
                 sa_file, scopes=self._SCOPES
             )
-            self._service = build("drive", "v3", credentials=creds)
+            # Build with an explicit socket timeout so large chunk reads don't
+            # trip the short httplib2 default (see _HTTP_TIMEOUT_SEC). Passing a
+            # pre-authorized http means we must NOT also pass credentials=.
+            authed_http = google_auth_httplib2.AuthorizedHttp(
+                creds, http=httplib2.Http(timeout=_HTTP_TIMEOUT_SEC)
+            )
+            self._service = build(
+                "drive", "v3", http=authed_http, cache_discovery=False
+            )
         except Exception as exc:
             raise GDriveAuthError(
                 f"Failed to build Drive service from {sa_file!r}: {exc}"
@@ -271,11 +292,26 @@ class GDriveClient:
                 fields="id,webViewLink",
                 supportsAllDrives=True,
             )
-            # Drive the resumable upload chunk-by-chunk; each next_chunk retries
-            # transient errors (incl. socket timeouts) with exponential backoff.
+            # Drive the resumable upload chunk-by-chunk. next_chunk retries
+            # HttpError 5xx via num_retries; socket READ timeouts are not covered
+            # by that, so we catch them here and re-call next_chunk — a resumable
+            # upload resumes from the last confirmed byte, so no work is lost.
+            import socket
+
             result = None
+            timeout_retries = 0
             while result is None:
-                status, result = request.next_chunk(num_retries=_UPLOAD_NUM_RETRIES)
+                try:
+                    status, result = request.next_chunk(num_retries=_UPLOAD_NUM_RETRIES)
+                except (socket.timeout, TimeoutError, ConnectionError) as exc:
+                    timeout_retries += 1
+                    if timeout_retries > _UPLOAD_TIMEOUT_RETRIES:
+                        raise
+                    log.warning(
+                        "Drive chunk timed out (%s), resuming (%d/%d)",
+                        exc, timeout_retries, _UPLOAD_TIMEOUT_RETRIES,
+                    )
+                    continue
                 if status:
                     log.debug("Upload progress: %.0f%%", status.progress() * 100)
         except GDriveAuthError:
