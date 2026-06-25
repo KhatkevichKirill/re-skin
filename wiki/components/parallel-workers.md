@@ -2,7 +2,7 @@
 title: "Parallel Workers for Throughput"
 tags: [workers, rq, throughput, scaling, stitch, pipeline, postgres]
 sources: [backend/app/pipeline_v2.py, docker-compose.yml, wiki/decisions/postgres-migration.md, backend/app/recovery.py]
-updated: 2026-06-24
+updated: 2026-06-25
 ---
 
 # Parallel Workers for Throughput
@@ -18,7 +18,9 @@ use it. Two bottlenecks were identified:
 1. **Serialization across runs** — one worker, one job at a time.
 2. **Serial `cut_clip` loop in stitch** — keep/fallback segments cut one at a
    time even though they are independent.
-3. **Worker held during Seedance poll** — the worker blocks for up to 2 hours
+3. **Serial fresh-submit prep within a run** — swap segments were cut, uploaded,
+   and submitted one by one before the poll loop could begin.
+4. **Worker held during Seedance poll** — the worker blocks for up to 2 hours
    sleeping in a poll loop waiting for external AI results (see below: Proposed
    Decoupling).
 
@@ -126,6 +128,29 @@ unlikely in normal operation (most runs finish in <15 min). The blocking case
 (both workers stuck) is a future optimization, not a blocker for the 2-worker
 improvement.
 ```
+
+### 4. Fresh submit phase within a run (FIXED)
+
+**Root cause:** Even after process-level worker scaling, one `process_run` still
+prepared fresh swap segments serially: cut clip → upload clip → create external
+AI task, then move to the next segment. For four 1080x1920 segments this could
+cost several minutes before the final task was even submitted.
+
+**Fix:** Fresh submissions now use a bounded `ThreadPoolExecutor` controlled by
+`SUBMIT_CONCURRENCY` (default 2). This overlaps independent ffmpeg cuts and
+network uploads without unbounded CPU/RAM pressure. Each submit thread opens its
+own DB session; the parent `process_run` commits newly created `RunSegment` rows
+before threads start so there is no cross-session visibility bug.
+
+**Safety:** Existing `seedance_task_id` no-rebill resume logic still runs before
+fresh submission. Duplicate RQ jobs are guarded by a Redis per-run lock in
+`run_process_run`, so two workers cannot submit paid AI tasks for the same run.
+
+**Operational knobs:**
+- `SUBMIT_CONCURRENCY=2` — fresh swap cut/upload/create parallelism.
+- `STITCH_CUT_CONCURRENCY=2` — keep/fallback cut parallelism during stitch.
+- `PROCESS_JOB_TIMEOUT=10800` — RQ process timeout and run-lock TTL basis.
+- `MAX_UPLOAD_SIZE_MB=1024` — API upload cap, aligned with nginx 1 GiB body limit.
 
 ---
 

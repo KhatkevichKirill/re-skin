@@ -48,11 +48,44 @@ def _get_job_or_404(job_id: str, db: Session) -> Job:
     return job
 
 
-def _save_upload(upload: UploadFile, dest: str) -> None:
-    """Write an UploadFile to a local path."""
+def _safe_filename(name: str) -> str:
+    """Sanitize an uploaded filename: keep only the basename, strip leading dots."""
+    base = os.path.basename(name.replace("\\", "/"))
+    base = base.lstrip(".")
+    return base or "upload"
+
+
+def _save_upload(upload: UploadFile, dest: str, max_bytes: int | None = None) -> None:
+    """Write an UploadFile to *dest* using streaming 1-MiB chunks.
+
+    Raises HTTPException(413) when *max_bytes* is set and the upload exceeds it.
+    The partial file is removed before raising.
+    """
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with open(dest, "wb") as fh:
-        fh.write(upload.file.read())
+    _CHUNK = 1 << 20  # 1 MiB
+    written = 0
+    try:
+        with open(dest, "wb") as fh:
+            while True:
+                chunk = upload.file.read(_CHUNK)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if max_bytes is not None and written > max_bytes:
+                    fh.close()
+                    os.unlink(dest)
+                    limit_mb = max_bytes >> 20
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Upload too large: limit is {limit_mb} MiB",
+                    )
+                fh.write(chunk)
+    except HTTPException:
+        raise
+    except Exception:
+        if os.path.exists(dest):
+            os.unlink(dest)
+        raise
 
 
 def _renumber_segments(segments: list) -> None:
@@ -124,11 +157,12 @@ def create_job(
     resolved_folder_id = gdrive_folder_id or settings.GDRIVE_DEFAULT_FOLDER_ID or None
 
     # Handle source
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB << 20
     if has_file:
         filename = video_file.filename or "source.mp4"
-        ext = os.path.splitext(filename)[-1].lstrip(".") or "mp4"
+        ext = os.path.splitext(_safe_filename(filename))[-1].lstrip(".") or "mp4"
         src_path = source_path(job_id, ext)
-        _save_upload(video_file, src_path)
+        _save_upload(video_file, src_path, max_bytes=max_bytes)
 
         job = Job(
             id=job_id,
@@ -160,8 +194,9 @@ def create_job(
     refs_dir = os.path.join(jdir, "references")
     os.makedirs(refs_dir, exist_ok=True)
     for rf in ref_files:
-        dest = os.path.join(refs_dir, rf.filename or f"ref_{len(saved_ref_paths)}.jpg")
-        _save_upload(rf, dest)
+        safe = _safe_filename(rf.filename or f"ref_{len(saved_ref_paths)}.jpg")
+        dest = os.path.join(refs_dir, safe)
+        _save_upload(rf, dest, max_bytes=max_bytes)
         saved_ref_paths.append(dest)
 
     # Combine saved paths + provided URLs

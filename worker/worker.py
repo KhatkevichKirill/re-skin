@@ -17,6 +17,7 @@ Startup sequence
 
 import os
 import logging
+import re
 
 from redis import Redis
 from rq import Worker, Queue
@@ -48,8 +49,13 @@ redis_conn = Redis.from_url(redis_url)
 # Create the default queue object.
 queue = Queue(connection=redis_conn)
 
+def _mask_redis_url(url: str) -> str:
+    """Replace password in redis://:pass@host or redis://user:pass@host with ***."""
+    return re.sub(r"(?<=://)[^@]*:[^@]*(?=@)", "***:***", url)
+
+
 if __name__ == "__main__":
-    logger.info("Starting RQ worker, connecting to %s", redis_url)
+    logger.info("Starting RQ worker, connecting to %s", _mask_redis_url(redis_url))
     logger.info("Listening on queue: default")
 
     # --- Startup reconciliation (TR5b) ---
