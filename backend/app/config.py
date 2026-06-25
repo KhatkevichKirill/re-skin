@@ -88,5 +88,10 @@ class Settings:
     MAX_REFERENCE_IMAGES: int = int(os.getenv("MAX_REFERENCE_IMAGES", "2"))
     SEGMENT_MAX_SECONDS: int = int(os.getenv("SEGMENT_MAX_SECONDS", "15"))
 
+    # Upload size cap (MiB).  Applies to source video and reference image uploads.
+    # Set high enough for 1080p source videos (several hundred MB typical).
+    # Nginx client_max_body_size must be >= this value.
+    MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "1024"))
+
 
 settings = Settings()

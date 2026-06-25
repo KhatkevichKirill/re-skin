@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid as _uuid_mod
 
 from redis import Redis
 from rq import Queue
@@ -135,10 +136,36 @@ def run_analyze_project(project_id: str) -> None:
     analyze_project(project_id)
 
 
+# Per-run processing lock: prevents two RQ jobs from processing the same run
+# at the same time (e.g. a duplicate enqueue from a race in recovery or retry).
+# TTL is slightly larger than the max job timeout so the lock auto-expires if the
+# holder crashes without releasing it.  Token-based release prevents a timed-out
+# lock from being deleted by a different job.
+#
+# Env: PROCESS_JOB_TIMEOUT controls the RQ job timeout and therefore the
+# maximum lock lifetime. Default is 10800s (3h); override with
+# PROCESS_JOB_TIMEOUT=<seconds> in the environment.
+_RUN_LOCK_TTL_SEC = PROCESS_JOB_TIMEOUT + 300
+
+# Lua script for atomic token-checked lock release.
+# Compares the stored token with ARGV[1]; only DELetes if they match.
+# Prevents a lock held by job A from being deleted by a later job B
+# after job A's lock TTL expired and B acquired the lock.
+_RELEASE_LOCK_LUA = """\
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+else
+    return 0
+end
+"""
+
+
 def run_process_run(run_id: str) -> None:
     """
     RQ-callable wrapper for :func:`pipeline_v2.process_run`.
 
+    Acquires a Redis per-run lock before calling process_run to prevent two
+    workers from processing the same run concurrently (duplicate RQ jobs).
     Creates real :class:`KieClient` and :class:`GDriveClient` instances using
     the configured API keys / service-account file.
     """
@@ -146,8 +173,26 @@ def run_process_run(run_id: str) -> None:
     from .gdrive_client import GDriveClient
     from .pipeline_v2 import process_run
 
-    log.info("run_process_run: run_id=%s", run_id)
-    process_run(run_id, kie=KieClient(), gdrive=GDriveClient())
+    lock_key = f"reskin:run:lock:{run_id}"
+    lock_token = _uuid_mod.uuid4().hex
+    conn = Redis.from_url(settings.REDIS_URL)
+
+    acquired = conn.set(lock_key, lock_token, nx=True, ex=_RUN_LOCK_TTL_SEC)
+    if not acquired:
+        log.warning(
+            "run_process_run: run %s is already being processed (lock held) - "
+            "skipping this duplicate job to avoid double AI submission",
+            run_id,
+        )
+        return
+
+    log.info("run_process_run: run_id=%s (lock acquired)", run_id)
+    try:
+        process_run(run_id, kie=KieClient(), gdrive=GDriveClient())
+    finally:
+        released = conn.eval(_RELEASE_LOCK_LUA, 1, lock_key, lock_token)
+        if released:
+            log.debug("run_process_run: lock released for run_id=%s", run_id)
 
 
 # ---------------------------------------------------------------------------

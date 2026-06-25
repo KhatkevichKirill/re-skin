@@ -73,6 +73,11 @@ RUN_DELIVER_BACKOFF_SEC = float(os.getenv("RUN_DELIVER_BACKOFF_SEC", "10"))
 # Set to 1 to disable parallelism (equivalent to the old serial loop).
 STITCH_CUT_CONCURRENCY = int(os.getenv("STITCH_CUT_CONCURRENCY", "2"))
 
+# Submit-phase parallelism: max concurrent cut/upload/create-task calls during
+# the submit phase.  Each thread opens its own DB session.  Default 2 keeps I/O
+# pressure low on a single-core VPS; raise to 4-6 if upload bandwidth allows.
+SUBMIT_CONCURRENCY = int(os.getenv("SUBMIT_CONCURRENCY", "2"))
+
 
 def _default_kie() -> KieClient:
     return KieClient()
@@ -208,6 +213,105 @@ def _parse_result_url(data: dict) -> Optional[str]:
     return urls[0] if urls else None
 
 
+def _submit_swap_segment_isolated(
+    *,
+    rs_id: str,
+    sd_start_sec: float,
+    sd_end_sec: float,
+    sd_pre_roll_sec: float,
+    sd_post_roll_sec: float,
+    sd_index: int,
+    run_model: str,
+    run_prompt: Optional[str],
+    run_resolution: Optional[str],
+    project_aspect_ratio: Optional[str],
+    project_width: Optional[int],
+    project_height: Optional[int],
+    source: str,
+    duration_sec: float,
+    clip_dst: str,
+    ref_urls: list,
+    prompt_override: Optional[str],
+    kie: KieClient,
+) -> str:
+    """Cut, upload, then create_task for one swap segment.
+
+    Opens its own DB session so this function is safe to call from a thread pool
+    (no shared SQLAlchemy Session across threads).  Returns the Seedance task_id.
+    Logs per-segment timing for observability.
+    """
+    t0 = time.monotonic()
+
+    # Recompute clip bounds from primitive data (mirrors _clip_bounds logic).
+    clip_start = max(0.0, sd_start_sec - sd_pre_roll_sec)
+    clip_end = min(duration_sec, sd_end_sec + sd_post_roll_sec)
+    if clip_end - clip_start < MIN_SWAP_VIDEO_SEC:
+        clip_end = min(duration_sec, clip_start + MIN_SWAP_VIDEO_SEC)
+        if clip_end - clip_start < MIN_SWAP_VIDEO_SEC:
+            clip_start = max(0.0, clip_end - MIN_SWAP_VIDEO_SEC)
+
+    media_mod.cut_clip(source, clip_start, clip_end, clip_dst)
+    t_cut = time.monotonic()
+
+    with get_session() as session:
+        rs = session.get(RunSegment, rs_id)
+        rs.local_clip_path = clip_dst
+        transition(rs, SegmentStatus.uploading)
+        session.commit()
+
+    clip_url = kie.upload_file(clip_dst, "charswap/segments")
+    t_upload = time.monotonic()
+
+    with get_session() as session:
+        rs = session.get(RunSegment, rs_id)
+        rs.kie_upload_url = clip_url
+        transition(rs, SegmentStatus.submitted)
+        session.commit()
+
+    effective_prompt = prompt_override if prompt_override else (run_prompt or "")
+
+    if run_model == "gemini-omni":
+        trim_end = round(min(clip_end - clip_start, 10.0), 2)
+        task_id = kie.create_omni_task(
+            prompt=effective_prompt,
+            image_urls=ref_urls,
+            video_url=clip_url,
+            video_start=0,
+            video_end=trim_end,
+            resolution=_omni_resolution(run_resolution),
+            aspect_ratio=_map_omni_aspect(project_aspect_ratio, project_width, project_height),
+            duration=_snap_omni_duration(clip_start, clip_end),
+        )
+    else:
+        aspect = _map_aspect(project_aspect_ratio)
+        clip_duration = _clamp_duration(clip_start, clip_end)
+        task_id = kie.create_task(
+            prompt=effective_prompt,
+            reference_image_urls=ref_urls,
+            reference_video_urls=[clip_url],
+            resolution=run_resolution or settings.DEFAULT_RESOLUTION,
+            aspect_ratio=aspect,
+            duration=clip_duration,
+        )
+
+    with get_session() as session:
+        rs = session.get(RunSegment, rs_id)
+        rs.seedance_task_id = task_id
+        transition(rs, SegmentStatus.generating)
+        session.commit()
+
+    t_done = time.monotonic()
+    log.info(
+        "segment idx=%d submitted task=%s cut=%.1fs upload=%.1fs create=%.1fs total=%.1fs",
+        sd_index, task_id,
+        t_cut - t0,
+        t_upload - t_cut,
+        t_done - t_upload,
+        t_done - t0,
+    )
+    return task_id
+
+
 def _deliver_with_retry(gdrive: GDriveClient, path: str, folder_id: str, run_id: str) -> dict:
     """Upload the final video to Drive, retrying the whole upload on failure.
 
@@ -237,13 +341,15 @@ def process_run(
     gdrive: Optional[GDriveClient] = None,
 ) -> None:
     """
-    Process all swap segments for a Run (parallel submit + concurrent poll) and
+    Process all swap segments for a Run (concurrent submit + concurrent poll) and
     stitch the final video.
 
     Transitions: queued → processing → stitching → delivering → done.
     A swap segment that fails or times out is skipped (original clip used); only
     fatal errors (missing source, stitch failure) fail the whole run.
+    Phase durations are logged for observability.
     """
+    t_run_start = time.monotonic()
     log.info("process_run start: run_id=%s", run_id)
 
     if kie is None:
@@ -312,17 +418,26 @@ def process_run(
             c_dir = run_clips_dir(run_id, run.project_id)
             r_dir = run_results_dir(run_id, run.project_id)
 
-            # Resolve reference images ONCE for the whole run (same character).
+            # ---------------------------------------------------------------
+            # Reference resolution
+            # ---------------------------------------------------------------
+            t_ref_start = time.monotonic()
             run_ref_urls = resolve_reference_urls(
                 list(run.reference_image_urls or []), kie, gdrive=gdrive
             )
             # Cache per-segment override resolutions to avoid duplicate uploads.
             _override_ref_cache: dict[str, list[str]] = {}
+            log.info(
+                "run_id=%s ref_resolution=%.1fs refs=%d",
+                run_id, time.monotonic() - t_ref_start, len(run_ref_urls),
+            )
 
             # ---------------------------------------------------------------
-            # Submit phase — fire every swap task to Seedance up front.
+            # Submit phase — prepare work items (serial) then submit concurrently.
             # ---------------------------------------------------------------
             pending: dict[str, dict] = {}  # task_id -> {rs_id, index, deadline}
+            submit_work: list[dict] = []   # segments queued for concurrent submit
+
             for sd in seg_defs:
                 if sd.action != "swap":
                     continue
@@ -440,17 +555,64 @@ def process_run(
                 else:
                     effective_ref_urls = run_ref_urls
 
-                clip_dst = os.path.join(c_dir, f"clip_{sd.index:04d}.mp4")
-                task_id = _submit_swap_segment(
-                    rs=rs, sd=sd, run=run, project=project, source=source,
-                    duration_sec=duration_sec, clip_dst=clip_dst,
-                    ref_urls=effective_ref_urls, kie=kie, session=session,
-                )
-                pending[task_id] = {
+                # Queue work item for concurrent submit (primitive data only —
+                # no ORM objects, safe to pass across thread boundaries).
+                submit_work.append({
                     "rs_id": rs.id,
-                    "index": sd.index,
-                    "deadline": time.monotonic() + RUN_SKIP_TIMEOUT_SEC,
-                }
+                    "sd_start_sec": sd.start_sec,
+                    "sd_end_sec": sd.end_sec,
+                    "sd_pre_roll_sec": sd.pre_roll_sec,
+                    "sd_post_roll_sec": sd.post_roll_sec,
+                    "sd_index": sd.index,
+                    "run_model": run.model or "seedance",
+                    "run_prompt": run.prompt,
+                    "run_resolution": run.resolution,
+                    "project_aspect_ratio": project.aspect_ratio,
+                    "project_width": project.width,
+                    "project_height": project.height,
+                    "source": source,
+                    "duration_sec": duration_sec,
+                    "clip_dst": os.path.join(c_dir, f"clip_{sd.index:04d}.mp4"),
+                    "ref_urls": list(effective_ref_urls),
+                    "prompt_override": rs.prompt_override,
+                })
+
+            # Commit so that newly created RunSegment rows are visible to the
+            # independent DB sessions opened by each submit thread.
+            # (flush() only writes within the current transaction; other sessions
+            # cannot see uncommitted rows.)
+            session.commit()
+
+            # Concurrent submit via thread pool.
+            t_submit_start = time.monotonic()
+            if submit_work:
+                log.info(
+                    "run_id=%s submit_phase: submitting %d segment(s) "
+                    "concurrency=%d",
+                    run_id, len(submit_work), SUBMIT_CONCURRENCY,
+                )
+                with ThreadPoolExecutor(max_workers=SUBMIT_CONCURRENCY) as pool:
+                    submit_futures = [
+                        (work, pool.submit(
+                            _submit_swap_segment_isolated, **work, kie=kie
+                        ))
+                        for work in submit_work
+                    ]
+                # Collect results; re-raise on first failure (preserves existing
+                # serial semantics: any submit failure fails the whole run).
+                for work, fut in submit_futures:
+                    task_id = fut.result()
+                    pending[task_id] = {
+                        "rs_id": work["rs_id"],
+                        "index": work["sd_index"],
+                        "deadline": time.monotonic() + RUN_SKIP_TIMEOUT_SEC,
+                    }
+
+            log.info(
+                "run_id=%s submit_phase_total=%.1fs segments_submitted=%d",
+                run_id, time.monotonic() - t_submit_start, len(submit_work),
+            )
+
             # Did we (re)submit anything this run? If not, and a final video
             # already exists, this is a delivery-only retry → skip the re-stitch.
             did_submit = bool(pending)
@@ -460,6 +622,7 @@ def process_run(
             # ---------------------------------------------------------------
             # Poll phase — round-robin over all pending tasks, act per task.
             # ---------------------------------------------------------------
+            t_poll_start = time.monotonic()
             while pending:
                 for task_id in list(pending):
                     meta = pending[task_id]
@@ -504,6 +667,11 @@ def process_run(
                 if pending:
                     time.sleep(RUN_POLL_INTERVAL_SEC)
 
+            log.info(
+                "run_id=%s poll_phase_total=%.1fs",
+                run_id, time.monotonic() - t_poll_start,
+            )
+
             # ---------------------------------------------------------------
             # Stitch — unless this is a delivery-only retry: when nothing was
             # (re)processed this run AND a final video already exists on disk,
@@ -511,6 +679,7 @@ def process_run(
             # Drive upload timed out). We still pass through the `stitching`
             # state so the run's state-machine path stays valid.
             # ---------------------------------------------------------------
+            t_stitch_start = time.monotonic()
             transition(run, RunStatus.stitching)
             session.commit()
             final_dst = os.path.join(r_dir, "final.mp4")
@@ -594,9 +763,15 @@ def process_run(
                 run.result_local_path = final_dst
             session.flush()
 
+            log.info(
+                "run_id=%s stitch_phase_total=%.1fs reuse=%s",
+                run_id, time.monotonic() - t_stitch_start, reuse_final,
+            )
+
             # ---------------------------------------------------------------
             # Deliver
             # ---------------------------------------------------------------
+            t_deliver_start = time.monotonic()
             transition(run, RunStatus.delivering)
             session.commit()
             folder_id = run.gdrive_folder_id or settings.GDRIVE_DEFAULT_FOLDER_ID
@@ -605,12 +780,19 @@ def process_run(
                     gdrive = _default_gdrive()
                 result = _deliver_with_retry(gdrive, final_dst, folder_id, run_id)
                 run.result_gdrive_file_id = result.get("id")
-                log.info("Uploaded final video to Drive: %s", result.get("webViewLink"))
+                log.info(
+                    "run_id=%s deliver_phase=%.1fs gdrive_file=%s",
+                    run_id, time.monotonic() - t_deliver_start, result.get("id"),
+                )
                 session.flush()
 
             transition(run, RunStatus.done)
             session.commit()
-            log.info("process_run done: run_id=%s", run_id)
+            t_total = time.monotonic() - t_run_start
+            log.info(
+                "process_run done: run_id=%s total=%.1fs",
+                run_id, t_total,
+            )
 
         except Exception as exc:
             if run.status not in (RunStatus.done, RunStatus.failed):

@@ -508,6 +508,84 @@ class TestProcessRun:
         assert len(fake_kie.create_task_calls) == 2
         assert len(fake_kie.poll_calls) == 2
 
+    def test_threaded_submit_sees_new_run_segments_without_ffmpeg(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """Fresh RunSegments are committed before submit threads open sessions."""
+        from app.media import MediaInfo
+        import app.pipeline_v2 as pipeline_v2_mod
+        from app.pipeline_v2 import process_run
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"source")
+
+        project_id = _create_project(
+            db_session,
+            str(source),
+            status=ProjectStatus.ready,
+        )
+        segs = [
+            SegmentDef(
+                project_id=project_id,
+                index=0,
+                start_sec=0.0,
+                end_sec=5.0,
+                has_face=True,
+                action="swap",
+            ),
+            SegmentDef(
+                project_id=project_id,
+                index=1,
+                start_sec=5.0,
+                end_sec=10.0,
+                has_face=True,
+                action="swap",
+            ),
+        ]
+        db_session.add_all(segs)
+        run_id = _create_run(db_session, project_id)
+
+        monkeypatch.setattr(
+            pipeline_v2_mod.media_mod,
+            "probe",
+            lambda _path: MediaInfo(
+                duration_sec=10.0,
+                width=320,
+                height=240,
+                fps=25.0,
+                aspect_ratio="4:3",
+                has_audio=True,
+            ),
+        )
+        monkeypatch.setattr(
+            pipeline_v2_mod.media_mod,
+            "cut_clip",
+            lambda _src, _start, _end, dst: (os.makedirs(os.path.dirname(dst), exist_ok=True), open(dst, "wb").write(b"clip")),
+        )
+        monkeypatch.setattr(
+            pipeline_v2_mod.media_mod,
+            "stitch",
+            lambda _clips, audio_source, dst, **_kw: (os.makedirs(os.path.dirname(dst), exist_ok=True), open(dst, "wb").write(b"final")),
+        )
+
+        fake_kie = FakeKieClient(str(source))
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            run = s.get(Run, run_id)
+            assert run.status == RunStatus.done
+            run_segments = (
+                s.query(RunSegment)
+                .filter(RunSegment.run_id == run_id)
+                .order_by(RunSegment.index)
+                .all()
+            )
+            assert len(run_segments) == 2
+            assert all(rs.status == SegmentStatus.completed for rs in run_segments)
+
+        assert len(fake_kie.create_task_calls) == 2
+
     def test_process_gdrive_upload_called_when_folder_set(
         self, db_engine, db_session, synthetic_video, patch_propose
     ):

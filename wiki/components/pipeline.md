@@ -2,7 +2,7 @@
 title: "Pipeline (v2)"
 tags: [pipeline, worker, rq, seedance, v2]
 sources: [backend/app/pipeline_v2.py, backend/app/tasks.py, backend/app/recovery.py]
-updated: 2026-06-24
+updated: 2026-06-25
 ---
 
 # Pipeline (v2)
@@ -30,8 +30,10 @@ Key parameters:
 Called once per Run after submission.
 
 1. Load Project SegmentDefs + Run config (prompt, refs, model, resolution, audio_mode)
-2. **Parallel upload**: For each swap RunSegment, cut clip from source (`media.cut_clip()`) → upload to kie.ai (`kie_client.upload()`) → create Seedance task (`kie_client.create_task()`)
-   - All uploads and task creates happen concurrently via `asyncio.gather()`
+2. **Bounded submit**: For each swap RunSegment, cut clip from source (`media.cut_clip()`) → upload to kie.ai (`kie_client.upload()`) → create Seedance/Gemini task.
+   - Fresh submissions run through a bounded `ThreadPoolExecutor` controlled by `SUBMIT_CONCURRENCY` (default 2).
+   - Each submit worker opens its own DB session; `process_run` commits newly created `RunSegment` rows before starting submit threads so the independent sessions can see them.
+   - Existing `seedance_task_id` resume/no-rebill handling stays serial before the fresh-submit pool so an in-progress external task is never duplicated.
 3. **Concurrent poll**: Round-robin poll all submitted tasks every `RUN_POLL_INTERVAL_SEC` (default 15s):
    - Done → download result → `local_result_path`
    - Failed → log error, use original clip (segment: `failed → skipped`)
@@ -74,7 +76,34 @@ All pipeline functions are wrapped in `tasks.py` for RQ:
 - `enqueue_analyze_project(project_id)` — enqueues `analyze_project`
 - `enqueue_process_run(run_id)` — enqueues `process_run`
 
-Both set `job_timeout=7200` (2h) to prevent RQ from killing long-running workers.
+Both set long `job_timeout` values (`PROCESS_JOB_TIMEOUT` defaults to 10800s / 3h)
+to prevent RQ from killing long-running workers. `run_process_run` also takes a
+Redis per-run lock (`reskin:run:lock:{run_id}`) before calling `process_run`; a
+duplicate RQ job that cannot acquire the lock exits before any external AI
+submission. Lock release is token-checked atomically in Redis.
+
+## Observability
+
+`process_run` logs phase timings without prompts, secret URLs, or reference URL
+values:
+
+- reference resolution
+- submit phase total and per-segment cut/upload/create timings
+- poll total
+- stitch total
+- delivery total and final file id
+- total run time
+
+These Docker logs are the first place to check before changing worker count or
+ffmpeg settings. If submit time dominates, tune `SUBMIT_CONCURRENCY` carefully;
+if stitch dominates, tune `STITCH_CUT_CONCURRENCY`/ffmpeg settings instead.
+
+## Upload Limits
+
+API uploads are streamed in bounded chunks rather than read into memory. The
+limit is `MAX_UPLOAD_SIZE_MB` (default 1024 MiB) and must stay aligned with
+nginx `client_max_body_size`. Oversized uploads return HTTP 413 and partial
+files are removed.
 
 ## Known Production Constraints
 

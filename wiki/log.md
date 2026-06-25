@@ -136,3 +136,15 @@ Extended `POST /api/v2/runs/{id}/copy` (was resolution-only) so a run can be cop
 ## [2026-06-25] update | Fix: Google Drive delivery timeout on 1080p (+ regression)
 
 Large 1080p deliveries (~45-75 MB) failed with socket read timeouts; `next_chunk(num_retries=)` doesn't retry those. Fixed `gdrive_client.upload_file` to widen the socket timeout (scoped `setdefaulttimeout`, `GDRIVE_HTTP_TIMEOUT_SEC=300`) + manual chunk-timeout retry. First attempt regressed (custom `httplib2.Http` broke resumable 308 handling → `RedirectMissingLocation`); corrected to keep the default google transport. Verified in production: runs `3b9eec36`, `52516f5a`, `915f97ed`, `288e6c17`, `23bd462a` all delivered to `done`. Commits `92d5159` (initial), `a2be146` (regression fix). See [[production-gotchas]] → "Google Drive delivery".
+
+## [2026-06-25] update | Reliability-first v2 throughput controls
+
+Implemented bounded v2 fresh-submit concurrency and operational guardrails:
+`SUBMIT_CONCURRENCY` overlaps swap-segment cut/upload/create-task work while
+keeping per-worker resource pressure bounded; `run_process_run` now uses a
+Redis per-run lock to prevent duplicate RQ jobs from double-submitting paid AI
+tasks; worker startup masks Redis credentials in logs; API uploads stream to
+disk with `MAX_UPLOAD_SIZE_MB` aligned to nginx's 1 GiB body limit. `process_run`
+now logs phase timings for reference resolution, submit, poll, stitch, delivery,
+and total runtime. See [[components/pipeline]], [[components/parallel-workers]],
+and [[production-gotchas]].

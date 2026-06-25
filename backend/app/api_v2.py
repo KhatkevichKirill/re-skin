@@ -84,11 +84,44 @@ def _get_run_or_404(run_id: str, db: Session) -> Run:
     return run
 
 
-def _save_upload(upload: UploadFile, dest: str) -> None:
-    """Write an UploadFile to a local path."""
+def _safe_filename(name: str) -> str:
+    """Sanitize an uploaded filename: keep only the basename, strip leading dots."""
+    base = os.path.basename(name.replace("\\", "/"))
+    base = base.lstrip(".")
+    return base or "upload"
+
+
+def _save_upload(upload: UploadFile, dest: str, max_bytes: int | None = None) -> None:
+    """Write an UploadFile to *dest* using streaming 1-MiB chunks.
+
+    Raises HTTPException(413) when *max_bytes* is set and the upload exceeds it.
+    The partial file is removed before raising.
+    """
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with open(dest, "wb") as fh:
-        fh.write(upload.file.read())
+    _CHUNK = 1 << 20  # 1 MiB
+    written = 0
+    try:
+        with open(dest, "wb") as fh:
+            while True:
+                chunk = upload.file.read(_CHUNK)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if max_bytes is not None and written > max_bytes:
+                    fh.close()
+                    os.unlink(dest)
+                    limit_mb = max_bytes >> 20
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Upload too large: limit is {limit_mb} MiB",
+                    )
+                fh.write(chunk)
+    except HTTPException:
+        raise
+    except Exception:
+        if os.path.exists(dest):
+            os.unlink(dest)
+        raise
 
 
 def _normalize_partition(segments: list, duration: float, db: Session) -> None:
@@ -169,11 +202,12 @@ def create_project(
 
     project_id = str(uuid.uuid4())
 
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB << 20
     if has_file:
-        filename = video_file.filename or "source.mp4"
+        filename = _safe_filename(video_file.filename or "source.mp4")
         ext = os.path.splitext(filename)[-1].lstrip(".") or "mp4"
         src_path = project_source_path(project_id, ext)
-        _save_upload(video_file, src_path)
+        _save_upload(video_file, src_path, max_bytes=max_bytes)
 
         project = VideoProject(
             id=project_id,
@@ -573,14 +607,14 @@ def create_run(
     db.flush()  # persist id before saving reference files
 
     # Save reference files into project/run dir
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB << 20
     saved_ref_paths: list[str] = []
     refs_dir = os.path.join(project_dir(pid), "runs", run_id, "references")
     os.makedirs(refs_dir, exist_ok=True)
     for rf in ref_files:
-        dest = os.path.join(
-            refs_dir, rf.filename or f"ref_{len(saved_ref_paths)}.jpg"
-        )
-        _save_upload(rf, dest)
+        safe = _safe_filename(rf.filename or f"ref_{len(saved_ref_paths)}.jpg")
+        dest = os.path.join(refs_dir, safe)
+        _save_upload(rf, dest, max_bytes=max_bytes)
         saved_ref_paths.append(dest)
 
     run.reference_image_urls = saved_ref_paths + list(ref_urls)
@@ -762,10 +796,12 @@ def _apply_segment_override(rs, run, rid, rsid, prompt, reference_files, referen
             project_dir(run.project_id), "runs", rid, "segment_refs", rsid
         )
         os.makedirs(refs_dir, exist_ok=True)
+        max_bytes = settings.MAX_UPLOAD_SIZE_MB << 20
         saved_paths: list[str] = []
         for rf in ref_files:
-            dest = os.path.join(refs_dir, rf.filename or f"ref_{len(saved_paths)}.jpg")
-            _save_upload(rf, dest)
+            safe = _safe_filename(rf.filename or f"ref_{len(saved_paths)}.jpg")
+            dest = os.path.join(refs_dir, safe)
+            _save_upload(rf, dest, max_bytes=max_bytes)
             saved_paths.append(dest)
         rs.reference_image_urls_override = saved_paths + parsed_urls
 
@@ -1047,14 +1083,14 @@ def copy_run(
     refs_dir = os.path.join(project_dir(src.project_id), "runs", new_id, "references")
     if has_new_refs:
         # Use the supplied photo as the new run-level reference.
+        _max_bytes = settings.MAX_UPLOAD_SIZE_MB << 20
         saved_ref_paths: list[str] = []
         if new_ref_files:
             os.makedirs(refs_dir, exist_ok=True)
             for rf in new_ref_files:
-                dest = os.path.join(
-                    refs_dir, rf.filename or f"ref_{len(saved_ref_paths)}.jpg"
-                )
-                _save_upload(rf, dest)
+                safe = _safe_filename(rf.filename or f"ref_{len(saved_ref_paths)}.jpg")
+                dest = os.path.join(refs_dir, safe)
+                _save_upload(rf, dest, max_bytes=_max_bytes)
                 saved_ref_paths.append(dest)
         new_run.reference_image_urls = saved_ref_paths + new_ref_urls
     else:

@@ -2,12 +2,42 @@
 title: "Production Gotchas & Lessons Learned"
 tags: [lessons, production, ops, ffmpeg, docker, postgres, alembic, rq, recovery]
 sources: [tasks/todo.md, git log, deploy/postgres-cutover.md, backend/app/recovery.py]
-updated: 2026-06-24
+updated: 2026-06-25
 ---
 
 # Production Gotchas & Lessons Learned
 
 Learnings from building and running re-skin in production. Add entries as they're discovered.
+
+## Worker / Queue Safety
+
+### Duplicate RQ jobs can double-submit paid AI tasks
+
+**Problem**: RQ guarantees that one queued job is popped by one worker, but it
+does not prevent the same logical `run_id` from being enqueued twice by a retry,
+operator action, or recovery race. Without a per-run guard, two workers can
+process the same run concurrently and submit duplicate paid Seedance/Gemini
+tasks.
+
+**Fix**: `run_process_run` now acquires a Redis lock
+`reskin:run:lock:{run_id}` before constructing external clients or calling
+`process_run`. The lock uses a random token and atomic token-checked release.
+If the lock is already held, the duplicate job exits before any AI submission.
+
+**Lesson**: RQ job uniqueness and business-object uniqueness are different.
+Use a lock keyed by the business object (`run_id`) around paid/idempotency-risk
+work.
+
+### Never log connection URLs with embedded secrets
+
+**Problem**: `worker.py` logged the full Redis URL at startup. In production
+that URL includes the Redis password.
+
+**Fix**: Startup logging now masks credentials in Redis URLs before writing to
+Docker logs.
+
+**Lesson**: Treat URLs as secret-bearing values by default. Log host/service
+context, not raw connection strings.
 
 ## FFmpeg & Video Processing
 
@@ -182,9 +212,9 @@ See [[decisions/postgres-migration]] for the full ADR.
 
 ### RQ job timeout
 
-**Problem**: RQ's default job timeout is short. Long Seedance tasks (up to 2h total for a run) were killed mid-processing.
+**Problem**: RQ's default job timeout is short. Long AI-dependent runs can be killed mid-processing while external tasks keep running.
 
-**Fix**: Set `job_timeout=7200` (2h) on all RQ job enqueues in `tasks.py`.
+**Fix**: Set explicit long RQ timeouts in `tasks.py` (`PROCESS_JOB_TIMEOUT=10800` / 3h by default). The per-segment external task skip timeout remains `RUN_SKIP_TIMEOUT_SEC=7200` / 2h.
 
 **Lesson**: Always set explicit long timeouts for AI-dependent jobs. The default is for fast jobs.
 

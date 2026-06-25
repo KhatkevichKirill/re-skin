@@ -35,6 +35,7 @@ from app.config import settings
 from app.db import Base, get_db
 from app.models import Run, RunSegment, SegmentDef, VideoProject
 from app.state_machine import ProjectStatus, RunStatus, SegmentStatus
+import app.api_v2 as api_v2_module
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +169,30 @@ def spy_client(engine, SessionFactory, enqueue_spy):
 def _tiny_video_bytes() -> bytes:
     """Return a few bytes that pass as a video upload (storage test only)."""
     return b"\x00\x01\x02\x03" * 16
+
+
+class _UploadStub:
+    def __init__(self, data: bytes):
+        self.file = io.BytesIO(data)
+
+
+def test_safe_filename_strips_path_and_leading_dots():
+    assert api_v2_module._safe_filename("../../evil.mp4") == "evil.mp4"
+    assert api_v2_module._safe_filename("..\\..\\evil.jpg") == "evil.jpg"
+    assert api_v2_module._safe_filename(".hidden") == "hidden"
+    assert api_v2_module._safe_filename("...") == "upload"
+
+
+def test_save_upload_streams_and_rejects_oversize(tmp_path):
+    ok_path = tmp_path / "ok.bin"
+    api_v2_module._save_upload(_UploadStub(b"abcd"), str(ok_path), max_bytes=4)
+    assert ok_path.read_bytes() == b"abcd"
+
+    too_large = tmp_path / "too-large.bin"
+    with pytest.raises(Exception) as excinfo:
+        api_v2_module._save_upload(_UploadStub(b"abcde"), str(too_large), max_bytes=4)
+    assert getattr(excinfo.value, "status_code", None) == 413
+    assert not too_large.exists()
 
 
 def _make_project(session, **kwargs) -> VideoProject:
