@@ -99,6 +99,16 @@ These Docker logs are the first place to check before changing worker count or
 ffmpeg settings. If submit time dominates, tune `SUBMIT_CONCURRENCY` carefully;
 if stitch dominates, tune `STITCH_CUT_CONCURRENCY`/ffmpeg settings instead.
 
+## Poll / DB Session Scope
+
+The v2 poll phase can wait on external AI tasks for up to
+`RUN_SKIP_TIMEOUT_SEC` (default 2h). It must not hold a SQLAlchemy transaction
+or DB connection while sleeping between poll rounds. `process_run` now commits
+and closes its setup session before entering the poll wait loop; terminal task
+states are recorded through short-lived sessions opened only around the
+corresponding `RunSegment` update. This keeps the web UI and retry/recovery
+writers from being blocked by a sleeping worker.
+
 ## Upload Limits
 
 API uploads are streamed in bounded chunks rather than read into memory. The

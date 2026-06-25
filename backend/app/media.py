@@ -304,13 +304,17 @@ def stitch(
     # audio_mode == "seedance" — use each clip's own audio.
     # Clips without an audio stream get synthesised silence.
     # ------------------------------------------------------------------
-    # Probe each clip once to know which ones have audio.
+    # Probe each clip once to know which ones have audio and, for audio-less
+    # clips, how long the synthesized silence should be.
+    clip_infos: List[MediaInfo | None] = []
     clip_has_audio: List[bool] = []
     for clip in clips:
         try:
             info = probe(clip)
+            clip_infos.append(info)
             clip_has_audio.append(info.has_audio)
         except MediaError:
+            clip_infos.append(None)
             clip_has_audio.append(False)
 
     # Count clips that need a silence source input.
@@ -360,13 +364,10 @@ def stitch(
                 f"[a{i}]"
             )
         else:
-            # Silence: use anullsrc input, probe the clip duration to trim it
-            # so the audio matches the video length (avoids duration mismatch).
-            try:
-                info = probe(clip)
-                clip_dur = info.duration_sec
-            except MediaError:
-                clip_dur = 5.0  # safe fallback
+            # Silence: use anullsrc input, trimming to the already-probed clip
+            # duration so the audio matches the video length.
+            info = clip_infos[i]
+            clip_dur = info.duration_sec if info is not None else 5.0
 
             silence_idx = silence_input_indices[silence_ptr]
             silence_ptr += 1

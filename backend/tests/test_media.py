@@ -344,6 +344,40 @@ class TestStitchSeedanceMode:
         assert os.path.exists(dst)
         assert os.path.getsize(dst) > 0
 
+    def test_seedance_mode_probes_each_clip_once(self, tmp_path, monkeypatch):
+        """No-audio clip duration reuses the initial probe result."""
+        import app.media as media_mod
+
+        calls: list[str] = []
+
+        def fake_probe(path: str) -> MediaInfo:
+            calls.append(path)
+            return MediaInfo(
+                duration_sec=1.0,
+                width=320,
+                height=240,
+                fps=30.0,
+                aspect_ratio="4:3",
+                has_audio=path.endswith("with-audio.mp4"),
+            )
+
+        monkeypatch.setattr(media_mod, "probe", fake_probe)
+        monkeypatch.setattr(media_mod, "_run", lambda _cmd: None)
+
+        with_audio = str(tmp_path / "with-audio.mp4")
+        no_audio = str(tmp_path / "no-audio.mp4")
+        stitch(
+            clips=[with_audio, no_audio],
+            audio_source=with_audio,
+            dst=str(tmp_path / "out.mp4"),
+            width=320,
+            height=240,
+            fps=30.0,
+            audio_mode="seedance",
+        )
+
+        assert calls == [with_audio, no_audio]
+
 
 # ---------------------------------------------------------------------------
 # get_default_target() tests

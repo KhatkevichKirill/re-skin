@@ -336,6 +336,77 @@ def _deliver_with_retry(gdrive: GDriveClient, path: str, folder_id: str, run_id:
     raise last_exc  # type: ignore[misc]
 
 
+def _poll_pending_tasks(
+    *,
+    pending: dict[str, dict],
+    kie: KieClient,
+    results_dir: str,
+) -> None:
+    """Poll external AI tasks without holding a DB session while sleeping.
+
+    The pending map stores only primitive ids/metadata. Network calls and sleeps
+    run outside SQLAlchemy sessions; short sessions are opened only to record a
+    terminal segment state.
+    """
+    while pending:
+        for task_id in list(pending):
+            meta = pending[task_id]
+            try:
+                data = kie.get_task(task_id)
+            except Exception as exc:  # transient - retry next round
+                log.warning("get_task(%s) transient error: %s", task_id, exc)
+                continue
+
+            state = (data.get("state") or "").lower()
+
+            if state == "success":
+                url = _parse_result_url(data)
+                if not url:
+                    with get_session() as poll_session:
+                        rs = poll_session.get(RunSegment, meta["rs_id"])
+                        _skip_segment(rs, "success but no result url", poll_session)
+                    del pending[task_id]
+                    continue
+
+                result_dst = os.path.join(results_dir, f"result_{meta['index']:04d}.mp4")
+                kie.download_result(url, result_dst)
+                with get_session() as poll_session:
+                    rs = poll_session.get(RunSegment, meta["rs_id"])
+                    rs.seedance_result_url = url
+                    rs.local_result_path = result_dst
+                    transition(rs, SegmentStatus.completed)
+                    poll_session.commit()
+                log.info("RunSegment idx %d completed", meta["index"])
+                del pending[task_id]
+            elif state == "fail":
+                msg = data.get("failMsg") or data.get("failCode") or "unknown"
+                with get_session() as poll_session:
+                    rs = poll_session.get(RunSegment, meta["rs_id"])
+                    _skip_segment(rs, f"Seedance failed: {msg}", poll_session)
+                log.warning(
+                    "task %s (seg %d) failed: %s - using original clip",
+                    task_id, meta["index"], msg,
+                )
+                del pending[task_id]
+            elif time.monotonic() > meta["deadline"]:
+                with get_session() as poll_session:
+                    rs = poll_session.get(RunSegment, meta["rs_id"])
+                    _skip_segment(
+                        rs,
+                        f"timed out after {RUN_SKIP_TIMEOUT_SEC:.0f}s (last state={state!r})",
+                        poll_session,
+                    )
+                log.warning(
+                    "task %s (seg %d) timed out - using original clip",
+                    task_id, meta["index"],
+                )
+                del pending[task_id]
+            # else: still waiting/queuing/generating - leave pending
+
+        if pending:
+            time.sleep(RUN_POLL_INTERVAL_SEC)
+
+
 def process_run(
     run_id: str,
     *,
@@ -634,49 +705,29 @@ def process_run(
             # Poll phase — round-robin over all pending tasks, act per task.
             # ---------------------------------------------------------------
             t_poll_start = time.monotonic()
-            while pending:
-                for task_id in list(pending):
-                    meta = pending[task_id]
-                    try:
-                        data = kie.get_task(task_id)
-                    except Exception as exc:  # transient — retry next round
-                        log.warning("get_task(%s) transient error: %s", task_id, exc)
-                        continue
-                    state = (data.get("state") or "").lower()
-                    rs = session.get(RunSegment, meta["rs_id"])
-
-                    if state == "success":
-                        url = _parse_result_url(data)
-                        if not url:
-                            _skip_segment(rs, "success but no result url", session)
-                            del pending[task_id]
-                            continue
-                        result_dst = os.path.join(r_dir, f"result_{meta['index']:04d}.mp4")
-                        kie.download_result(url, result_dst)
-                        rs.seedance_result_url = url
-                        rs.local_result_path = result_dst
-                        transition(rs, SegmentStatus.completed)
-                        session.commit()
-                        log.info("RunSegment idx %d completed", meta["index"])
-                        del pending[task_id]
-                    elif state == "fail":
-                        msg = data.get("failMsg") or data.get("failCode") or "unknown"
-                        _skip_segment(rs, f"Seedance failed: {msg}", session)
-                        log.warning("task %s (seg %d) failed: %s — using original clip",
-                                    task_id, meta["index"], msg)
-                        del pending[task_id]
-                    elif time.monotonic() > meta["deadline"]:
-                        _skip_segment(
-                            rs,
-                            f"timed out after {RUN_SKIP_TIMEOUT_SEC:.0f}s (last state={state!r})",
-                            session,
-                        )
-                        log.warning("task %s (seg %d) timed out — using original clip",
-                                    task_id, meta["index"])
-                        del pending[task_id]
-                    # else: still waiting/queuing/generating → leave pending
-                if pending:
-                    time.sleep(RUN_POLL_INTERVAL_SEC)
+            session.commit()
+            session.close()
+            try:
+                _poll_pending_tasks(pending=pending, kie=kie, results_dir=r_dir)
+            except Exception as exc:
+                with get_session() as fail_session:
+                    failed_run = fail_session.get(Run, run_id)
+                    if failed_run and failed_run.status not in (
+                        RunStatus.done,
+                        RunStatus.failed,
+                    ):
+                        try:
+                            transition(failed_run, RunStatus.failed)
+                        except Exception:
+                            failed_run.status = RunStatus.failed
+                    if failed_run and not failed_run.error_message:
+                        failed_run.error_message = str(exc)
+                    fail_session.commit()
+                raise
+            run = session.get(Run, run_id)
+            project = session.get(VideoProject, run.project_id)
+            seg_defs = list(project.segments)
+            rs_map = {rs.segment_def_id: rs for rs in run.run_segments}
 
             log.info(
                 "run_id=%s poll_phase_total=%.1fs",
