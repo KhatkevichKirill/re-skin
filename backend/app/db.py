@@ -26,6 +26,17 @@ def _ensure_data_dir(database_url: str) -> None:
 
 _ensure_data_dir(settings.DATABASE_URL)
 
+
+def _apply_sqlite_pragmas(dbapi_conn) -> None:  # noqa: ANN001
+    """Apply SQLite connection pragmas used by local/dev deployments."""
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 # SQLite-specific: enable WAL mode and foreign keys via connection event
 _is_sqlite = settings.DATABASE_URL.startswith("sqlite")
 
@@ -52,10 +63,7 @@ engine = create_engine(
 if _is_sqlite:
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragmas(dbapi_conn, connection_record):  # noqa: ANN001
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+        _apply_sqlite_pragmas(dbapi_conn)
 
 
 SessionLocal = sessionmaker(

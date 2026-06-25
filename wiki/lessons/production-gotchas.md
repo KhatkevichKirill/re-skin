@@ -41,6 +41,20 @@ context, not raw connection strings.
 
 ## FFmpeg & Video Processing
 
+### Stream-copy cuts are not a blanket replacement for `cut_clip`
+
+**Problem**: Keep/fallback segments are currently cut to intermediate files and
+then re-encoded again during final stitch. Stream-copy cutting (`-c copy`) looks
+attractive because it can avoid the first encode pass.
+
+**Caution**: `cut_clip` is also used for AI submit clips where frame-accurate
+segment boundaries matter. Stream-copy cuts can snap to keyframes and include
+extra frames around non-keyframe boundaries. Do not globally replace `cut_clip`.
+
+**Follow-up**: If optimizing keep/fallback stitch cuts, add a separate opt-in
+helper for those paths only and test timeline/duration tolerance against
+non-keyframe boundaries. Accuracy wins over speed here.
+
 ### OOM kill on 1080p stitch (rc=-9)
 
 **Problem**: FFmpeg stitch was killed by the kernel (OOM) on 1080p content. 60fps → 3MB per frame in RAM, filling the 8g worker limit fast.

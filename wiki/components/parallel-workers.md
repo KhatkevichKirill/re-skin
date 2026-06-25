@@ -152,6 +152,26 @@ fresh submission. Duplicate RQ jobs are guarded by a Redis per-run lock in
 - `PROCESS_JOB_TIMEOUT=10800` — RQ process timeout and run-lock TTL basis.
 - `MAX_UPLOAD_SIZE_MB=1024` — API upload cap, aligned with nginx 1 GiB body limit.
 
+### 5. Poll wait no longer holds a DB session (FIXED)
+
+**Root cause:** `process_run` used to keep one SQLAlchemy session open through
+the whole round-robin external-task poll loop. A sleeping worker waiting on
+Seedance/Gemini could therefore keep a connection/transaction around for a long
+time, increasing lock pressure and making UI writes less predictable.
+
+**Fix:** The poll loop now stores only primitive pending-task metadata and opens
+short-lived DB sessions only when a task reaches a terminal state. Network polls,
+downloads, and `time.sleep()` run outside DB sessions.
+
+### 6. Analyze decode work (FIXED)
+
+**Root cause:** face detection sampled at a low FPS but decoded every native
+video frame via `cap.read()`. A 30fps input sampled at 2fps decoded roughly 15x
+more frames than it scored.
+
+**Fix:** `detect_timeline` advances skipped frames with `cap.grab()` and only
+calls `cap.retrieve()` on sampled frames.
+
 ---
 
 ## Implementation Details

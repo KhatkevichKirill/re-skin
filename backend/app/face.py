@@ -123,10 +123,12 @@ def detect_timeline(
         frame_idx = 0
 
         while True:
-            ret, bgr = cap.read()
-            if not ret:
+            if not cap.grab():
                 break
             if frame_idx % frame_interval == 0:
+                ret, bgr = cap.retrieve()
+                if not ret:
+                    break
                 t_sec = frame_idx / native_fps
                 faces_raw = detector.get(bgr)
                 faces = [

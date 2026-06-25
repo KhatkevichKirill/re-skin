@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import os
+import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -443,6 +444,66 @@ def test_propose_segments_contiguous_and_complete(monkeypatch):
 # ---------------------------------------------------------------------------
 # Integration smoke test (requires InsightFace model + ffmpeg)
 # ---------------------------------------------------------------------------
+
+
+def test_detect_timeline_grabs_skipped_frames_without_retrieving(monkeypatch):
+    """Sampled frames are retrieved/decoded; skipped frames are only grabbed."""
+
+    class _FakeCapture:
+        def __init__(self):
+            self.frame_count = 31
+            self.current = -1
+            self.grab_calls = 0
+            self.retrieve_calls = 0
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            if prop == 5:  # cv2.CAP_PROP_FPS
+                return 30.0
+            if prop == 7:  # cv2.CAP_PROP_FRAME_COUNT
+                return self.frame_count
+            return 0
+
+        def grab(self):
+            if self.current + 1 >= self.frame_count:
+                return False
+            self.current += 1
+            self.grab_calls += 1
+            return True
+
+        def retrieve(self):
+            self.retrieve_calls += 1
+            return True, f"frame-{self.current}"
+
+        def release(self):
+            pass
+
+    fake_cap = _FakeCapture()
+    fake_cv2 = types.SimpleNamespace(
+        CAP_PROP_FPS=5,
+        CAP_PROP_FRAME_COUNT=7,
+        VideoCapture=lambda _path: fake_cap,
+    )
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+
+    class _Detector:
+        def __init__(self):
+            self.frames = []
+
+        def get(self, frame):
+            self.frames.append(frame)
+            return []
+
+    detector = _Detector()
+
+    frames = detect_timeline("fake.mp4", sample_fps=2.0, detector=detector)
+
+    assert fake_cap.grab_calls == 31
+    assert fake_cap.retrieve_calls == 3
+    assert detector.frames == ["frame-0", "frame-15", "frame-30"]
+    assert [fd.t_sec for fd in frames] == [0.0, 0.5, 1.0]
 
 
 def test_detect_timeline_integration(tmp_path):

@@ -300,6 +300,90 @@ class FakeGDriveClient:
         }
 
 
+def test_poll_pending_tasks_does_not_hold_session_while_sleeping(monkeypatch, tmp_path):
+    """The poll wait loop must not keep a DB session/transaction open."""
+    import app.pipeline_v2 as pv2
+
+    active_sessions = {"count": 0}
+    slept = {"called": False}
+
+    class _FakeRunSegment:
+        def __init__(self):
+            self.status = SegmentStatus.generating
+            self.seedance_result_url = None
+            self.local_result_path = None
+
+    fake_rs = _FakeRunSegment()
+
+    class _FakeSession:
+        def get(self, _model, _id):
+            return fake_rs
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    @contextmanager
+    def fake_get_session():
+        active_sessions["count"] += 1
+        try:
+            yield _FakeSession()
+        finally:
+            active_sessions["count"] -= 1
+
+    class _SlowThenDoneKie:
+        def __init__(self):
+            self.calls = 0
+
+        def get_task(self, _task_id):
+            self.calls += 1
+            if self.calls == 1:
+                return {"state": "processing"}
+            return {
+                "state": "success",
+                "resultJson": json.dumps({"resultUrls": ["https://fake/result.mp4"]}),
+            }
+
+        def download_result(self, _url, dst_path):
+            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+            with open(dst_path, "wb") as fh:
+                fh.write(b"result")
+
+    def fake_sleep(_seconds):
+        slept["called"] = True
+        assert active_sessions["count"] == 0
+
+    monkeypatch.setattr(pv2, "get_session", fake_get_session)
+    monkeypatch.setattr(pv2.time, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        pv2, "transition", lambda obj, status: setattr(obj, "status", status)
+    )
+
+    pending = {
+        "task-1": {
+            "rs_id": "rs-1",
+            "index": 0,
+            "deadline": pv2.time.monotonic() + 60,
+        }
+    }
+
+    pv2._poll_pending_tasks(
+        pending=pending,
+        kie=_SlowThenDoneKie(),
+        results_dir=str(tmp_path),
+    )
+
+    assert slept["called"] is True
+    assert pending == {}
+    assert fake_rs.status == SegmentStatus.completed
+    assert fake_rs.seedance_result_url == "https://fake/result.mp4"
+
+
 # ---------------------------------------------------------------------------
 # Helper: create a VideoProject row and return its id.
 # ---------------------------------------------------------------------------

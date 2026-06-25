@@ -148,3 +148,16 @@ disk with `MAX_UPLOAD_SIZE_MB` aligned to nginx's 1 GiB body limit. `process_run
 now logs phase timings for reference resolution, submit, poll, stitch, delivery,
 and total runtime. See [[components/pipeline]], [[components/parallel-workers]],
 and [[production-gotchas]].
+
+## [2026-06-25] update | Analyze/poll/stitch micro-optimizations
+
+Implemented low-risk service-speed fixes without changing AI semantics:
+`detect_timeline` now uses OpenCV `grab()` for skipped frames and `retrieve()`
+only for sampled frames; the v2 poll loop no longer holds a DB session while
+sleeping between external task polls; `stitch(audio_mode="seedance")` reuses
+the first `ffprobe` result for no-audio clip silence duration; SQLite
+connections now set `synchronous=NORMAL` and `busy_timeout=5000` alongside WAL
+and foreign keys. Stream-copy keep/fallback cuts were left as a documented
+follow-up because global `-c copy` risks non-frame-accurate boundaries. See
+[[components/pipeline]], [[components/parallel-workers]], and
+[[production-gotchas]].
