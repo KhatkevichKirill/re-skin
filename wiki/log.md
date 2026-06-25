@@ -132,3 +132,7 @@ Deployed the stacked work (Postgres → parallel workers → TR5b) to the live h
 ## [2026-06-24] update | Copy run with a new reference photo
 
 Extended `POST /api/v2/runs/{id}/copy` (was resolution-only) so a run can be copied with a **new reference photo** (`reference_files` / `reference_urls`) — the "project as a template" workflow: tune a run once, re-run it on a new face of the same type. New photo **replaces the photo everywhere** (run-level refs + per-segment reference overrides dropped; per-segment prompt overrides kept). Resolution is now optional (defaults to the source run's). Copy form in `run_detail.html` gained a photo URL + upload field. Tests: 4 added to `TestCopyRun` (11 total pass). Branch `feat/copy-run-new-reference`. See [[decisions/v2-project-runs]] → "Run operations".
+
+## [2026-06-25] update | Fix: Google Drive delivery timeout on 1080p (+ regression)
+
+Large 1080p deliveries (~45-75 MB) failed with socket read timeouts; `next_chunk(num_retries=)` doesn't retry those. Fixed `gdrive_client.upload_file` to widen the socket timeout (scoped `setdefaulttimeout`, `GDRIVE_HTTP_TIMEOUT_SEC=300`) + manual chunk-timeout retry. First attempt regressed (custom `httplib2.Http` broke resumable 308 handling → `RedirectMissingLocation`); corrected to keep the default google transport. Verified in production: runs `3b9eec36`, `52516f5a`, `915f97ed`, `288e6c17`, `23bd462a` all delivered to `done`. Commits `92d5159` (initial), `a2be146` (regression fix). See [[production-gotchas]] → "Google Drive delivery".

@@ -135,6 +135,23 @@ if k in BOOLEAN_COLUMNS and isinstance(v, int):
 
 See [[decisions/postgres-migration]] for the full ADR.
 
+## Google Drive delivery
+
+### Large 1080p uploads fail with socket read timeout — and the wrong fix breaks them worse (2026-06-25)
+
+**Problem**: 1080p `final.mp4` deliveries (~45-75 MB) repeatedly failed with `TimeoutError: The read operation timed out`. A 5 MB resumable chunk on a slow uplink to Google exceeds httplib2's short default socket timeout, and `next_chunk(num_retries=...)` only retries HttpError 5xx — NOT socket read timeouts — so the whole delivery failed even though generation + stitch succeeded. Multiple runs (`3b9eec36`, `52516f5a`, `915f97ed`, `288e6c17`, `23bd462a`) hit it.
+
+**REGRESSION — do not "fix" by replacing the http transport**: The first fix attempt built the Drive service with a custom `google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=300))`. This made it WORSE: a raw `httplib2.Http` mishandles the resumable-upload **308 "Resume Incomplete"** response (treats it as a redirect, finds no `Location` header) → every upload failed with `RedirectMissingLocation: Redirected but the response is missing a Location: header`. The google-built default transport handles 308 correctly; a hand-rolled Http does not.
+
+**Correct fix** (`gdrive_client.upload_file`, verified in production on 44-75 MB runs):
+- Keep the **default** service build: `build("drive","v3", credentials=creds, cache_discovery=False)`.
+- Widen the socket read timeout ONLY around the upload: `socket.setdefaulttimeout(GDRIVE_HTTP_TIMEOUT_SEC)` then restore the previous value in a `finally`. Scoped to the upload call so it never affects the worker's redis/DB sockets (those are used between jobs, not during an upload).
+- Wrap `next_chunk` in a manual retry that catches socket read timeouts and re-calls it — a resumable upload resumes from the last confirmed byte, so no work is lost.
+
+**Recovery without re-billing**: a delivery-only failure leaves `final.mp4` on disk. `process_run` is delivery-only-idempotent (`reuse_final` skips re-stitch when nothing was reprocessed), so a plain retry re-delivers without re-generating or re-stitching. Used to recover all the failed runs above.
+
+**Lesson**: For Google resumable uploads, set timeouts via `socket.setdefaulttimeout` (scoped) — never by swapping the http transport. Always verify an upload-path change against a real large file in production before pushing; unit tests mock the transport and cannot catch the 308/redirect regression.
+
 ## Seedance / kie.ai
 
 ### Minimum segment duration (~1.8s)
