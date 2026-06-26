@@ -41,20 +41,39 @@ re-skin supports two AI face-swap models, selectable per Run.
 
 ## Gemini Omni (Google)
 
-**Alternative model.** Per-run selectable via `model=gemini-omni` in the Run creation payload.
+**Alternative model.** Per-run selectable via `model=gemini-omni` in the Run creation payload (accessed through the same kie.ai jobs API, `model=gemini-omni-video`).
 
-### Status
+### How It Works
 
-Integrated and working. Some differences vs Seedance:
-- Different resolution handling (aspect-ratio mapping differs)
-- Different audio handling
-- Different generation time characteristics
+Unlike Seedance, Gemini takes its reference clip via `video_list` (`{url, start, ends}`, trim ≤10s) plus reference images via `image_urls`, and returns a fixed-length output (one of 4/6/8/10s). Submitted by `KieClient.create_omni_task`.
+
+### Known Constraints
+
+| Constraint | Value | Notes |
+|-----------|-------|-------|
+| **Max clip / output duration** | **10s** (hard) | `OMNI_MAX_CLIP_SECONDS` in `pipeline.py`. Trim range and output duration must both be ≤10s. |
+| **Output durations** | 4, 6, 8, 10s | Fixed enum; clip length is snapped to the nearest via `_snap_omni_duration`. |
+| **Audio** | **None** — must upload video-only | Gemini **fails when its reference clip carries an audio track**. Clips are cut with `include_audio=False` (`-an`); the original audio is re-applied at stitch. |
+| **Resolutions** | 720p, 1080p, 4k | No 480p (unlike Seedance). |
+| **Aspect ratios** | 16:9 or 9:16 only | `_map_omni_aspect` maps by orientation. |
+
+### Audio handling (important)
+
+Gemini produces **no audio**. The pipeline therefore:
+1. Cuts each swap clip **video-only** before upload (`media.cut_clip(..., include_audio=False)`).
+2. **Forces `audio_mode="original"`** for Gemini runs (in `process_run` and at Run creation) so the continuous source soundtrack is muxed over the final stitch. A requested `audio_mode="seedance"` is ignored for Gemini.
+
+### 10s limit enforcement
+
+The model is chosen **per-Run**, but a Project's segmentation is shared across all runs, so `analyze_project` caps segments at `min(SEGMENT_MAX_SECONDS, OMNI_MAX_CLIP_SECONDS)` = **10s** — every swap segment fits both Seedance (≤15s) and Gemini (≤10s) regardless of which model a run picks. At submit time:
+- Pre/post-roll that pushes a clip past 10s → the clip is **trimmed back to 10s**.
+- A *segment* (without rolls) longer than 10s — only possible from a stale segmentation built with a larger cap — is **skipped** (marked failed → the original un-swapped clip is used) rather than swapping only its first 10s and desyncing the timeline.
 
 ### Configuration
 
-Set `model=gemini-omni` when creating a Run via the API or UI.
+Set `model=gemini-omni` when creating a Run via the API or UI. The UI rebuilds the resolution dropdown and locks the audio control to "original" when Gemini is selected.
 
-_This section needs expansion as production experience accumulates. Add learnings to [[lessons/model-quality]]._
+_Add quality learnings to [[lessons/model-quality]]._
 
 ## Choosing Between Models
 
@@ -63,7 +82,7 @@ _Fill in as production experience develops._
 | Scenario | Recommended Model | Reason |
 |----------|------------------|--------|
 | Short clips (<5s) | Seedance | More consistent at short durations |
-| Long clips (>10s) | TBD | Need more data |
+| Long clips (>10s) | Seedance | Gemini Omni's hard 10s cap means longer segments would be skipped (original clip used) |
 | High-res (1080p) | TBD | Memory/quality tradeoffs unclear |
 
 ## Future Models

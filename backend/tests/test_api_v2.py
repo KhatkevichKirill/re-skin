@@ -1214,6 +1214,19 @@ class TestRetryRun:
         assert body["status"] == "queued"
         assert run.id in spy["process_run"]
 
+    def test_retry_incomplete_run_succeeds(self, spy_client, SessionFactory):
+        """/retry must accept an `incomplete` run (re-send the failed segments)."""
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session)
+        run = _make_run(session, project.id, status=RunStatus.incomplete)
+        session.close()
+
+        response = client.post(f"/api/v2/runs/{run.id}/retry")
+        assert response.status_code == 200
+        assert response.json()["status"] == "queued"
+        assert run.id in spy["process_run"]
+
     def test_retry_queued_run_succeeds(self, spy_client, SessionFactory):
         """TR5b: /retry must accept a run stuck in queued (orphan resume)."""
         client, spy = spy_client
@@ -1353,6 +1366,32 @@ class TestRerunSegment:
         session2.close()
         assert rs_fetched.status == SegmentStatus.pending
         assert rs_fetched.seedance_task_id is None
+
+    def test_rerun_failed_segment_from_incomplete_run(self, spy_client, SessionFactory):
+        """An `incomplete` run can re-run its failed segment; run → queued."""
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        sd = _make_segment_def(session, project.id, 0)
+        run = _make_run(session, project.id, status=RunStatus.incomplete)
+        rs = _make_run_segment(
+            session, run.id, sd.id,
+            status=SegmentStatus.failed,
+            seedance_task_id="failed-task-id",
+            error_message="failed after 3 attempt(s): Internal Error",
+        )
+        session.close()
+
+        response = client.post(f"/api/v2/runs/{run.id}/segments/{rs.id}/rerun")
+        assert response.status_code == 200
+        assert response.json()["status"] == "queued"
+        assert spy["process_run"] == [run.id]
+
+        session2 = SessionFactory()
+        rs_fetched = session2.get(RunSegment, rs.id)
+        session2.close()
+        assert rs_fetched.status == SegmentStatus.pending
+        assert rs_fetched.error_message is None
 
     def test_rerun_with_prompt_applies_override(self, spy_client, SessionFactory):
         """Re-run carrying a prompt persists it as the segment override atomically."""

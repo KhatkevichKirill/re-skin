@@ -269,8 +269,10 @@ function copySrcLink(btn) {
             <option value="gemini-omni" {% if default_model == "gemini-omni" %}selected{% endif %}>Gemini Omni — multimodal video generation</option>
           </select>
           <p class="hint" id="model-hint" style="display:none">
-            Gemini Omni caps each segment at 10s of generated output — longer swap segments are truncated to 10s.
+            Gemini Omni caps each segment at 10s of generated output. Swap segments longer than 10s are skipped (the original clip is kept).
           </p>
+          <p class="hint" id="omni-length-warning"
+             style="display:none; color:var(--color-danger,#c0392b); font-weight:600"></p>
         </div>
 
         <!-- Resolution (options depend on the selected model) -->
@@ -294,6 +296,10 @@ function copySrcLink(btn) {
             Original = source soundtrack (best when timing matches, recommended).
             Generated clip audio = audio from each generated clip (use if the original drifts out of sync;
             silent segments fall back to silence).
+          </p>
+          <p class="hint" id="audio-omni-note" style="display:none">
+            Gemini Omni generates video without audio, so the original source
+            soundtrack is always used.
           </p>
         </div>
 
@@ -413,7 +419,68 @@ function onModelChange() {
   else if (values.indexOf(preferred) !== -1) resSel.value = preferred;
   else resSel.value = values[0];
   if (hint) hint.style.display = (model === 'gemini-omni') ? '' : 'none';
+
+  // Gemini Omni produces no audio → lock audio mode to "original".
+  var audioSel = document.getElementById('run-audio-mode');
+  var audioNote = document.getElementById('audio-omni-note');
+  var isOmni = (model === 'gemini-omni');
+  if (audioSel) {
+    if (isOmni) audioSel.value = 'original';
+    audioSel.disabled = isOmni;
+  }
+  if (audioNote) audioNote.style.display = isOmni ? '' : 'none';
+
+  checkOmniSegmentLengths();
 }
+
+// Gemini Omni generates at most 10s per segment (OMNI_MAX_CLIP_SECONDS in the
+// backend). Auto-segmentation already caps at 10s, but an operator can hand-edit
+// a segment longer than that — warn that those swaps will be skipped when Gemini
+// is the selected model.
+var OMNI_MAX_CLIP_SECONDS = 10;
+
+function checkOmniSegmentLengths() {
+  var modelSel = document.getElementById('run-model');
+  var warn = document.getElementById('omni-length-warning');
+  if (!modelSel || !warn) return;
+  if (modelSel.value !== 'gemini-omni') { warn.style.display = 'none'; return; }
+
+  var offending = [];
+  document.querySelectorAll('#seg-tbody .seg-row').forEach(function(row) {
+    var action = row.querySelector('.seg-action');
+    if (!action || action.value !== 'swap') return;
+    var startEl = row.querySelector('.seg-start');
+    var endEl = row.querySelector('.seg-end');
+    if (!startEl || !endEl) return;
+    var dur = parseFloat(endEl.value) - parseFloat(startEl.value);
+    if (isFinite(dur) && dur > OMNI_MAX_CLIP_SECONDS + 0.05) {
+      var idxCell = row.querySelector('.seg-index-cell');
+      var idx = idxCell ? idxCell.textContent.trim() : '?';
+      offending.push('#' + idx + ' (' + dur.toFixed(1) + 's)');
+    }
+  });
+
+  if (offending.length) {
+    warn.textContent =
+      '⚠ Gemini Omni generates at most ' + OMNI_MAX_CLIP_SECONDS + 's per segment. '
+      + 'These swap segments are longer and will be SKIPPED (the original clip is '
+      + 'kept instead): ' + offending.join(', ') + '. Split them to ≤'
+      + OMNI_MAX_CLIP_SECONDS + 's, mark them "keep", or switch to Seedance.';
+    warn.style.display = '';
+  } else {
+    warn.style.display = 'none';
+  }
+}
+
+// Re-check whenever segment timings/actions change (delegated so it also covers
+// rows added after load). Selects fire "change"; number inputs fire "input".
+(function bindOmniLengthCheck() {
+  var tbody = document.getElementById('seg-tbody');
+  if (!tbody || tbody._omniBound) return;
+  tbody._omniBound = true;
+  tbody.addEventListener('input', checkOmniSegmentLengths);
+  tbody.addEventListener('change', checkOmniSegmentLengths);
+})();
 
 document.addEventListener('DOMContentLoaded', onModelChange);
 // Fragment may be swapped in by HTMX after DOMContentLoaded already fired.
@@ -495,6 +562,7 @@ function recomputeStarts() {
     if (startInp) startInp.value = (idx === 0) ? 0 : parseFloat(prevEnd.toFixed(3));
     if (endInp) prevEnd = parseFloat(endInp.value);
   });
+  if (typeof checkOmniSegmentLengths === 'function') checkOmniSegmentLengths();
 }
 
 // Re-apply linked-boundary listeners to all editable end inputs.

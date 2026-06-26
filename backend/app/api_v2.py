@@ -573,6 +573,10 @@ def create_run(
             status_code=400,
             detail=f"audio_mode must be one of {sorted(_VALID_AUDIO_MODES)}",
         )
+    # Gemini Omni clips are generated without audio, so only the original source
+    # track can be overlaid. Force "original" regardless of what was requested.
+    if model == "gemini-omni":
+        audio_mode = "original"
 
     # Validate reference image count
     ref_files = reference_files or []
@@ -866,12 +870,12 @@ def rerun_segment(
     """
     run = _get_run_or_404(rid, db)
     status_val = run.status.value if hasattr(run.status, "value") else str(run.status)
-    if status_val not in ("done", "failed"):
+    if status_val not in ("done", "failed", "incomplete"):
         raise HTTPException(
             status_code=409,
             detail=(
                 f"Cannot re-run segment: run status is {run.status!r}; "
-                "expected 'done' or 'failed'"
+                "expected 'done', 'failed', or 'incomplete'"
             ),
         )
 
@@ -931,6 +935,7 @@ def retry_run(rid: str, db: Session = Depends(get_db)) -> RunResponse:
 
     _RETRYABLE = {
         RunStatus.failed,
+        RunStatus.incomplete,
         RunStatus.queued,
         RunStatus.processing,
         RunStatus.stitching,

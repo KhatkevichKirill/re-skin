@@ -14,7 +14,17 @@
 - Use `docker-compose` (v1.29.2) — NOT `docker compose` v2 plugin
 - `gh` CLI is NOT installed — use `git` directly, push via SSH as KhatkevichKirill
 - Tests: `cd backend && pytest tests/` (~350 tests)
-- Deploy: `docker-compose up -d --build`
+- Deploy: `docker-compose up -d --build --scale worker=2` — **always pass `--scale worker=2`**. Prod runs 2 workers; a plain `up` (without the flag) silently scales down to 1 and removes `re-skin-worker-2`.
+- **Code is baked into the image** (only `./data` and `./secrets` are bind-mounted, not the app code). Editing files on the host does NOT affect running containers — you MUST rebuild (`--build`) and restart for changes to take effect. Verify a deploy landed with e.g. `docker exec re-skin-worker-1 grep -c <new-symbol> /app/app/<file>.py`.
+- **DB migrations are manual and run BEFORE the deploy** (no auto-migrate on startup). Apply a pending Alembic migration first, then rebuild — otherwise new code writing a not-yet-migrated value (e.g. a new enum label) is rejected by Postgres. Two gotchas:
+  - The Dockerfile copies only `app/` and `worker/` — **`alembic/` and `alembic.ini` are NOT in the image**. The host can't reach the `db` hostname (it only resolves on the compose network). So run migrations by copying the files into the running api container (which already has `alembic` installed) and exec'ing there:
+    ```
+    docker cp backend/alembic    re-skin-api:/app/alembic
+    docker cp backend/alembic.ini re-skin-api:/app/alembic.ini
+    docker exec -w /app re-skin-api python3 -m alembic upgrade head
+    ```
+    (The copied files vanish on the next `--build` recreate; that's fine — they're only needed for the one-time upgrade.)
+  - Inspect prod state directly with psql, e.g. `docker exec re-skin-db psql -U reskin -d reskin -c "SELECT version_num FROM alembic_version;"`. Postgres `ALTER TYPE ... ADD VALUE` migrations use `IF NOT EXISTS` so they're idempotent; enum values cannot be removed (downgrade is a no-op).
 - **Never commit**: `.env`, `secrets/gdrive-sa.json`, `data/`
 - Task tracker: `tasks/todo.md` — sprint-level task tracking lives there, not in the wiki
 

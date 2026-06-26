@@ -75,6 +75,11 @@ def _clamp_duration(start: float, end: float) -> int:
 _OMNI_DURATIONS = (4, 6, 8, 10)
 _OMNI_RESOLUTIONS = {"720p", "1080p", "4k"}
 
+# Hard Gemini Omni limit: the reference-clip trim AND the output duration must
+# both be <= 10s. Used to (a) cap project segmentation so any swap segment fits
+# Gemini, and (b) guard/trim at submit time. Bump only if the Gemini API does.
+OMNI_MAX_CLIP_SECONDS = 10.0
+
 
 def _snap_omni_duration(start: float, end: float) -> int:
     """Snap a clip's length to the nearest allowed Gemini Omni duration."""
