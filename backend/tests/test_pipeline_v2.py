@@ -796,7 +796,10 @@ class TestProcessRun:
                 s.add(rs)
             s.commit()
 
-        fake_kie = FakeKieClient(synthetic_video)
+        # The stale task reports `fail` so the resume check resubmits the
+        # segment (exercising the failed→pending reset) rather than recovering it
+        # via the no-rebill path. Its resubmitted task (a new id) then succeeds.
+        fake_kie = FakeKieClient(synthetic_video, fail_task_id="stale-task")
         fake_gdrive = FakeGDriveClient()
 
         # Must not raise InvalidTransition.
@@ -850,21 +853,83 @@ class TestProcessRun:
         assert observed.get("run_status") == RunStatus.processing
         assert len(observed.get("generating", [])) >= 1
 
-    def test_segment_failure_is_skipped_run_completes(
+    def test_segment_permanent_failure_marks_run_incomplete(
         self, db_engine, db_session, synthetic_video, patch_propose
     ):
         """
-        When ONE task fails, that RunSegment is skipped (marked failed, original
-        clip used) but the run still completes 'done' and the other segment
-        succeeds — one bad segment must not block or fail the whole run.
+        When ONE swap segment fails on every attempt (after retries), the run is
+        marked `incomplete` and NOT stitched — we never mix a generated video
+        with the original clip. The other segment still completes, its result is
+        kept for the eventual re-stitch, and result_local_path stays None.
         """
+        from app.pipeline_v2 import analyze_project, process_run
+        import app.pipeline_v2 as pipeline_v2_mod
+
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+        run_id = _create_run(db_session, project_id)
+
+        class FailSegmentZeroKie(FakeKieClient):
+            """Every task generated from segment 0's clip (clip_0000) fails on
+            every attempt; all other segments succeed."""
+
+            def __init__(self, src):
+                super().__init__(src)
+                self._fail_tasks: set[str] = set()
+
+            def create_task(self, *, reference_video_urls, **kw) -> str:
+                task_id = super().create_task(
+                    reference_video_urls=reference_video_urls, **kw
+                )
+                if reference_video_urls and "clip_0000" in reference_video_urls[0]:
+                    self._fail_tasks.add(task_id)
+                return task_id
+
+            def get_task(self, task_id: str, **kw) -> dict:
+                self.poll_calls.append(task_id)
+                if task_id in self._fail_tasks:
+                    return {"state": "fail", "failMsg": "injected failure for test"}
+                url = f"https://fake/results/{task_id}.mp4"
+                return {"state": "success",
+                        "resultJson": json.dumps({"resultUrls": [url]})}
+
+        fake_kie = FailSegmentZeroKie(synthetic_video)
+        fake_gdrive = FakeGDriveClient()
+
+        process_run(run_id, kie=fake_kie, gdrive=fake_gdrive)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            run = s.get(Run, run_id)
+            assert run.status == RunStatus.incomplete
+            assert run.result_local_path is None  # NOT stitched
+            assert "did not complete" in (run.error_message or "")
+
+            failed = [rs for rs in run.run_segments if rs.status == SegmentStatus.failed]
+            completed = [rs for rs in run.run_segments if rs.status == SegmentStatus.completed]
+            assert len(failed) == 1
+            assert len(completed) == 1
+            # The completed segment's result is preserved for the re-stitch.
+            assert completed[0].local_result_path is not None
+
+        # Segment 0 was retried up to the configured attempt cap before failing.
+        assert len(fake_kie._fail_tasks) == pipeline_v2_mod.RUN_TASK_MAX_ATTEMPTS
+
+    def test_transient_failure_retried_then_run_completes(
+        self, db_engine, db_session, synthetic_video, patch_propose
+    ):
+        """A segment whose FIRST task fails transiently is resubmitted; when the
+        retry succeeds the run completes normally (done) with a stitched video."""
         from app.pipeline_v2 import analyze_project, process_run
 
         project_id = _create_project(db_session, synthetic_video)
         analyze_project(project_id)
         run_id = _create_run(db_session, project_id)
 
-        class FailOneKieClient(FakeKieClient):
+        class FailFirstTaskKie(FakeKieClient):
+            """Only the very first task id fails; its resubmission (a new id)
+            succeeds — exercising the retry-recovery path."""
+
             def __init__(self, src):
                 super().__init__(src)
                 self._first_task: str | None = None
@@ -878,29 +943,24 @@ class TestProcessRun:
             def get_task(self, task_id: str, **kw) -> dict:
                 self.poll_calls.append(task_id)
                 if task_id == self._first_task:
-                    return {"state": "fail", "failMsg": "injected failure for test"}
+                    return {"state": "fail", "failMsg": "Internal Error, Please try again later."}
                 url = f"https://fake/results/{task_id}.mp4"
                 return {"state": "success",
                         "resultJson": json.dumps({"resultUrls": [url]})}
 
-        fake_kie = FailOneKieClient(synthetic_video)
-        fake_gdrive = FakeGDriveClient()
-
-        # Must NOT raise — the failed segment is skipped, run completes.
-        process_run(run_id, kie=fake_kie, gdrive=fake_gdrive)
+        fake_kie = FailFirstTaskKie(synthetic_video)
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
 
         Session = sessionmaker(bind=db_engine)
         with Session() as s:
             run = s.get(Run, run_id)
             assert run.status == RunStatus.done
-            assert run.result_local_path is not None
-            assert os.path.exists(run.result_local_path)
-
-            failed = [rs for rs in run.run_segments if rs.status == SegmentStatus.failed]
-            completed = [rs for rs in run.run_segments if rs.status == SegmentStatus.completed]
-            assert len(failed) == 1
-            assert "injected failure" in (failed[0].error_message or "")
-            assert len(completed) == 1
+            assert run.result_local_path and os.path.exists(run.result_local_path)
+            assert all(
+                rs.status == SegmentStatus.completed for rs in run.run_segments
+            )
+        # One extra create_task beyond the 2 segments = the single retry.
+        assert len(fake_kie.create_task_calls) == 3
 
     def test_run_segments_created_idempotently(
         self, db_engine, db_session, synthetic_video, patch_propose
@@ -1324,8 +1384,9 @@ class TestGeminiOmniAudioAndLimit:
     def test_gemini_segment_over_10s_is_skipped(
         self, db_engine, db_session, tmp_path, monkeypatch
     ):
-        """A >10s swap segment is skipped for Gemini → falls back to the original
-        clip; create_omni_task is never called and the run still completes."""
+        """A >10s swap segment is skipped for Gemini (create_omni_task never
+        called). With no completed swap, the run is marked `incomplete` and the
+        video is NOT stitched."""
         from app.pipeline_v2 import process_run
 
         source = tmp_path / "source.mp4"
@@ -1348,10 +1409,13 @@ class TestGeminiOmniAudioAndLimit:
 
         # No Gemini task created for the over-long segment.
         assert len(fake_kie.create_omni_records) == 0
+        # Nothing stitched (mix of original + nothing is never produced).
+        assert stitch_calls == []
         Session = sessionmaker(bind=db_engine)
         with Session() as s:
             run = s.get(Run, run_id)
-            assert run.status == RunStatus.done
+            assert run.status == RunStatus.incomplete
+            assert run.result_local_path is None
             rs = (
                 s.query(RunSegment)
                 .filter(RunSegment.run_id == run_id)

@@ -61,6 +61,12 @@ log = logging.getLogger(__name__)
 RUN_SKIP_TIMEOUT_SEC = float(os.getenv("RUN_SKIP_TIMEOUT_SEC", "7200"))  # 2 hours
 RUN_POLL_INTERVAL_SEC = float(os.getenv("RUN_POLL_INTERVAL_SEC", "15"))
 
+# Total attempts per swap segment before it is marked failed. The AI backends
+# (Seedance/Gemini Omni) intermittently return a task-level "Internal Error,
+# Please try again later." — we resubmit the same (already-uploaded) clip up to
+# this many times. Default 3 = the initial submit + 2 retries.
+RUN_TASK_MAX_ATTEMPTS = int(os.getenv("RUN_TASK_MAX_ATTEMPTS", "3"))
+
 # Delivery (Google Drive upload) retry tuning. The upload itself is chunked with
 # per-chunk retries; this is a whole-upload retry so a fully-failed delivery
 # self-heals without re-generating or re-stitching the video.
@@ -234,13 +240,17 @@ def _submit_swap_segment_isolated(
     prompt_override: Optional[str],
     kie: KieClient,
     kie_factory: Optional[Callable[[], KieClient]] = None,
-) -> Optional[str]:
+) -> Optional[dict]:
     """Cut, upload, then create_task for one swap segment.
 
     Opens its own DB session so this function is safe to call from a thread pool
-    (no shared SQLAlchemy Session across threads).  Returns the Seedance/Omni
-    task_id, or ``None`` when the segment was skipped (marked failed → the run
-    falls back to the original clip during stitch).
+    (no shared SQLAlchemy Session across threads).
+
+    Returns a "resubmit recipe" dict ``{task_id, recipe}`` where ``recipe`` holds
+    everything :func:`_create_swap_task` needs to re-create the task against the
+    same already-uploaded clip (used by the in-poll retry path). Returns ``None``
+    when the segment was skipped (marked failed — e.g. a Gemini segment over the
+    10s limit).
     Logs per-segment timing for observability.
     """
     t0 = time.monotonic()
@@ -304,31 +314,21 @@ def _submit_swap_segment_isolated(
 
     effective_prompt = prompt_override if prompt_override else (run_prompt or "")
 
-    if is_omni:
-        # clip is already trimmed to <= OMNI_MAX_CLIP_SECONDS above; send its
-        # full (video-only) length as the trim range.
-        trim_end = round(clip_end - clip_start, 2)
-        task_id = thread_kie.create_omni_task(
-            prompt=effective_prompt,
-            image_urls=ref_urls,
-            video_url=clip_url,
-            video_start=0,
-            video_end=trim_end,
-            resolution=_omni_resolution(run_resolution),
-            aspect_ratio=_map_omni_aspect(project_aspect_ratio, project_width, project_height),
-            duration=_snap_omni_duration(clip_start, clip_end),
-        )
-    else:
-        aspect = _map_aspect(project_aspect_ratio)
-        clip_duration = _clamp_duration(clip_start, clip_end)
-        task_id = thread_kie.create_task(
-            prompt=effective_prompt,
-            reference_image_urls=ref_urls,
-            reference_video_urls=[clip_url],
-            resolution=run_resolution or settings.DEFAULT_RESOLUTION,
-            aspect_ratio=aspect,
-            duration=clip_duration,
-        )
+    # Bundle everything needed to (re)create the task; the poll loop reuses this
+    # to resubmit the same clip on a transient task failure.
+    recipe = {
+        "run_model": run_model,
+        "effective_prompt": effective_prompt,
+        "ref_urls": list(ref_urls),
+        "clip_url": clip_url,
+        "clip_start": clip_start,
+        "clip_end": clip_end,
+        "run_resolution": run_resolution,
+        "project_aspect_ratio": project_aspect_ratio,
+        "project_width": project_width,
+        "project_height": project_height,
+    }
+    task_id = _create_swap_task(kie=thread_kie, **recipe)
 
     with get_session() as session:
         rs = session.get(RunSegment, rs_id)
@@ -345,7 +345,52 @@ def _submit_swap_segment_isolated(
         t_done - t_upload,
         t_done - t0,
     )
-    return task_id
+    return {"task_id": task_id, "recipe": recipe}
+
+
+def _create_swap_task(
+    *,
+    kie: KieClient,
+    run_model: str,
+    effective_prompt: str,
+    ref_urls: list,
+    clip_url: str,
+    clip_start: float,
+    clip_end: float,
+    run_resolution: Optional[str],
+    project_aspect_ratio: Optional[str],
+    project_width: Optional[int],
+    project_height: Optional[int],
+) -> str:
+    """Create a Seedance/Omni task for an already-uploaded swap clip.
+
+    Shared by the initial submit and the in-poll retry path so both build
+    identical request parameters. Does no DB or file work — pure API call.
+    """
+    if run_model == "gemini-omni":
+        # clip was already trimmed to <= OMNI_MAX_CLIP_SECONDS at cut time; send
+        # its full (video-only) length as the trim range.
+        trim_end = round(clip_end - clip_start, 2)
+        return kie.create_omni_task(
+            prompt=effective_prompt,
+            image_urls=ref_urls,
+            video_url=clip_url,
+            video_start=0,
+            video_end=trim_end,
+            resolution=_omni_resolution(run_resolution),
+            aspect_ratio=_map_omni_aspect(
+                project_aspect_ratio, project_width, project_height
+            ),
+            duration=_snap_omni_duration(clip_start, clip_end),
+        )
+    return kie.create_task(
+        prompt=effective_prompt,
+        reference_image_urls=ref_urls,
+        reference_video_urls=[clip_url],
+        resolution=run_resolution or settings.DEFAULT_RESOLUTION,
+        aspect_ratio=_map_aspect(project_aspect_ratio),
+        duration=_clamp_duration(clip_start, clip_end),
+    )
 
 
 def _deliver_with_retry(gdrive: GDriveClient, path: str, folder_id: str, run_id: str) -> dict:
@@ -408,18 +453,67 @@ def _poll_pending_tasks(
                     rs = poll_session.get(RunSegment, meta["rs_id"])
                     rs.seedance_result_url = url
                     rs.local_result_path = result_dst
+                    # Clear any interim "attempt N failed; retrying" message now
+                    # that the segment has succeeded.
+                    rs.error_message = None
                     transition(rs, SegmentStatus.completed)
                     poll_session.commit()
                 log.info("RunSegment idx %d completed", meta["index"])
                 del pending[task_id]
             elif state == "fail":
                 msg = data.get("failMsg") or data.get("failCode") or "unknown"
+                attempt = meta.get("attempt", 1)
+                recipe = meta.get("recipe")
+
+                # Transient backend failure ("Internal Error, Please try again
+                # later.") → resubmit the same already-uploaded clip up to
+                # RUN_TASK_MAX_ATTEMPTS total attempts before giving up.
+                if recipe and attempt < RUN_TASK_MAX_ATTEMPTS:
+                    try:
+                        new_task_id = _create_swap_task(kie=kie, **recipe)
+                    except Exception as exc:
+                        log.warning(
+                            "resubmit failed for seg %d (attempt %d): %s",
+                            meta["index"], attempt, exc,
+                        )
+                        new_task_id = None
+
+                    if new_task_id:
+                        with get_session() as poll_session:
+                            rs = poll_session.get(RunSegment, meta["rs_id"])
+                            rs.seedance_task_id = new_task_id
+                            rs.error_message = (
+                                f"attempt {attempt}/{RUN_TASK_MAX_ATTEMPTS} "
+                                f"failed ({msg}); retrying"
+                            )
+                            poll_session.commit()
+                        log.warning(
+                            "task %s (seg %d) failed: %s — retry %d/%d as task %s",
+                            task_id, meta["index"], msg,
+                            attempt + 1, RUN_TASK_MAX_ATTEMPTS, new_task_id,
+                        )
+                        del pending[task_id]
+                        new_meta = dict(meta)
+                        new_meta["attempt"] = attempt + 1
+                        new_meta["deadline"] = (
+                            time.monotonic() + RUN_SKIP_TIMEOUT_SEC
+                        )
+                        pending[new_task_id] = new_meta
+                        continue
+
+                # No recipe (resumed orphan) or attempts exhausted → mark failed.
+                # The run will be marked `incomplete` (not stitched) so this
+                # segment can be re-run manually.
                 with get_session() as poll_session:
                     rs = poll_session.get(RunSegment, meta["rs_id"])
-                    _skip_segment(rs, f"Seedance failed: {msg}", poll_session)
+                    _skip_segment(
+                        rs,
+                        f"failed after {attempt} attempt(s): {msg}",
+                        poll_session,
+                    )
                 log.warning(
-                    "task %s (seg %d) failed: %s - using original clip",
-                    task_id, meta["index"], msg,
+                    "task %s (seg %d) failed permanently after %d attempt(s): %s",
+                    task_id, meta["index"], attempt, msg,
                 )
                 del pending[task_id]
             elif time.monotonic() > meta["deadline"]:
@@ -431,7 +525,7 @@ def _poll_pending_tasks(
                         poll_session,
                     )
                 log.warning(
-                    "task %s (seg %d) timed out - using original clip",
+                    "task %s (seg %d) timed out — segment will need a manual re-run",
                     task_id, meta["index"],
                 )
                 del pending[task_id]
@@ -595,6 +689,8 @@ def process_run(
                                 kie.download_result(url, result_dst)
                                 rs.seedance_result_url = url
                                 rs.local_result_path = result_dst
+                                # Clear any stale failure message from a prior run.
+                                rs.error_message = None
                                 try:
                                     transition(rs, SegmentStatus.completed)
                                 except Exception:
@@ -717,16 +813,18 @@ def process_run(
                 # Collect results; re-raise on first failure (preserves existing
                 # serial semantics: any submit failure fails the whole run).
                 for work, fut in submit_futures:
-                    task_id = fut.result()
-                    if task_id is None:
+                    result = fut.result()
+                    if result is None:
                         # Segment skipped at submit time (e.g. a Gemini segment
                         # over the 10s limit). It was already marked failed; the
-                        # stitch phase falls back to the original clip.
+                        # run will be marked incomplete (not stitched).
                         continue
-                    pending[task_id] = {
+                    pending[result["task_id"]] = {
                         "rs_id": work["rs_id"],
                         "index": work["sd_index"],
                         "deadline": time.monotonic() + RUN_SKIP_TIMEOUT_SEC,
+                        "attempt": 1,
+                        "recipe": result["recipe"],
                     }
 
             log.info(
@@ -774,6 +872,39 @@ def process_run(
             )
 
             # ---------------------------------------------------------------
+            # Completeness gate — never stitch a mix of swapped + original clips.
+            # If any swap segment did not complete (failed after retries, timed
+            # out, or was skipped), stop here and mark the run `incomplete`. The
+            # completed segments' results stay on disk; the operator re-runs the
+            # failed segment(s) and the full video is stitched only once every
+            # swap segment is completed.
+            # ---------------------------------------------------------------
+            incomplete_idx: list[int] = []
+            for sd in seg_defs:
+                if sd.action != "swap":
+                    continue
+                rs = rs_map.get(sd.id)
+                if (
+                    rs is None
+                    or rs.status != SegmentStatus.completed
+                    or not rs.local_result_path
+                    or not os.path.exists(rs.local_result_path)
+                ):
+                    incomplete_idx.append(sd.index)
+
+            if incomplete_idx:
+                msg = (
+                    f"{len(incomplete_idx)} swap segment(s) did not complete: "
+                    f"{incomplete_idx}. Re-run them — the full video is stitched "
+                    "only once every segment succeeds."
+                )
+                transition(run, RunStatus.incomplete)
+                run.error_message = msg
+                session.commit()
+                log.warning("run_id=%s incomplete — %s", run_id, msg)
+                return
+
+            # ---------------------------------------------------------------
             # Stitch — unless this is a delivery-only retry: when nothing was
             # (re)processed this run AND a final video already exists on disk,
             # reuse it and skip the expensive re-encode (e.g. a Retry after the
@@ -796,19 +927,18 @@ def process_run(
                     "re-stitch (delivery-only retry): %s", final_dst,
                 )
             else:
-                # Assemble clips in order. Non-completed swaps fall back to the
-                # original (un-swapped) clip so the timeline stays intact.
+                # Assemble clips in order. Keep segments are cut from the source;
+                # swap segments use their completed AI result. The completeness
+                # gate above guarantees every swap segment is completed by now, so
+                # a non-completed swap here is a logic error — raise rather than
+                # silently substitute the original clip (which would produce the
+                # swapped+original mix we explicitly want to avoid).
                 #
-                # PARALLELISM: keep-segment cuts and fallback-original cuts are
-                # independent ffmpeg calls with no shared state.  We run them
-                # concurrently (up to STITCH_CUT_CONCURRENCY) using a thread pool,
-                # then collect results in the original seg_defs order so the stitch
-                # list is always correctly ordered.
-                #
-                # Each worker is a closure that either (a) cuts and returns a path,
-                # or (b) returns the already-computed result path.  Futures are
-                # stored in order so we can re-raise any exception on the main thread
-                # without losing the ordering guarantee.
+                # PARALLELISM: keep-segment cuts are independent ffmpeg calls with
+                # no shared state.  We run them concurrently (up to
+                # STITCH_CUT_CONCURRENCY) using a thread pool, then collect results
+                # in the original seg_defs order so the stitch list is always
+                # correctly ordered.
 
                 def _cut_or_lookup(sd: SegmentDef) -> str:
                     """Return the clip path for this segment (cut if needed)."""
@@ -816,7 +946,7 @@ def process_run(
                         keep_dst = os.path.join(c_dir, f"clip_{sd.index:04d}.mp4")
                         media_mod.cut_clip(source, sd.start_sec, sd.end_sec, keep_dst)
                         return keep_dst
-                    # swap segment
+                    # swap segment — must be completed (guaranteed by the gate)
                     rs = session.get(RunSegment, rs_map[sd.id].id)
                     if (
                         rs.status == SegmentStatus.completed
@@ -824,14 +954,10 @@ def process_run(
                         and os.path.exists(rs.local_result_path)
                     ):
                         return rs.local_result_path
-                    # fallback: use original (un-swapped) clip
-                    log.warning(
-                        "Segment %d not swapped (status=%s) — using original clip",
-                        sd.index, rs.status,
+                    raise RuntimeError(
+                        f"swap segment {sd.index} is not completed at stitch time "
+                        f"(status={rs.status}) — refusing to mix in the original clip"
                     )
-                    orig_dst = os.path.join(c_dir, f"orig_{sd.index:04d}.mp4")
-                    media_mod.cut_clip(source, sd.start_sec, sd.end_sec, orig_dst)
-                    return orig_dst
 
                 # Determine which segments need ffmpeg work (cuts) vs which are
                 # already-available result files.  Only segments that require a

@@ -25,8 +25,8 @@
   </div>
 </div>
 
-{% elif sv in ("done", "failed") %}
-<!-- __ Done/Failed: preview + download + per-segment overrides __ -->
+{% elif sv in ("done", "failed", "incomplete") %}
+<!-- __ Done/Failed/Incomplete: preview/banner + per-segment overrides __ -->
 
 {% if sv == "done" %}
 <div class="card">
@@ -76,6 +76,24 @@ function copyResultLink(btn) {
   }).catch(function () { try { document.execCommand('copy'); } catch (e) {} });
 }
 </script>
+{% elif sv == "incomplete" %}
+<div class="card">
+  <div class="card-header"><h2>Run Incomplete — some segments need re-running</h2></div>
+  <div class="card-body">
+    <div class="alert alert-warning">
+      {% if run.error_message %}
+      <strong>{{ run.error_message }}</strong><br />
+      {% endif %}
+      The final video is <strong>not</strong> stitched yet — we don't mix
+      generated and original clips. Re-run the failed segment(s) below (or retry
+      all at once); once every swap segment succeeds the full video is stitched
+      and delivered automatically.
+    </div>
+    <form method="post" action="/api/v2/runs/{{ run.id }}/retry">
+      <button type="submit" class="btn btn-warning">Retry all failed segments</button>
+    </form>
+  </div>
+</div>
 {% else %}
 <div class="card">
   <div class="card-header"><h2>Run Failed</h2></div>

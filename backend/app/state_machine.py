@@ -51,6 +51,10 @@ class RunStatus(str, enum.Enum):
     delivering = "delivering"
     done = "done"
     failed = "failed"
+    # One or more swap segments could not be generated (after retries). The
+    # final video is intentionally NOT stitched; the operator re-runs the failed
+    # segments and the run resumes from there.
+    incomplete = "incomplete"
 
 
 # Allowed transitions: {current_status -> set of valid next statuses}
@@ -90,11 +94,18 @@ RUN_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
     # processing → queued: allowed so an orphaned run (crash-resumed) can be
     # reset to queued before re-enqueuing.  Only reconcile_orphaned_runs and the
     # /retry endpoint use this edge — normal forward processing never does.
-    RunStatus.processing: {RunStatus.queued, RunStatus.stitching, RunStatus.failed},
+    # processing → incomplete: some swap segments failed after retries; we stop
+    # before stitching so no mixed (swapped + original) video is produced.
+    RunStatus.processing: {
+        RunStatus.queued, RunStatus.stitching, RunStatus.failed,
+        RunStatus.incomplete,
+    },
     RunStatus.stitching:  {RunStatus.delivering, RunStatus.failed},
     RunStatus.delivering: {RunStatus.done, RunStatus.failed},
     RunStatus.done:       {RunStatus.queued},  # allowed for per-segment re-run
     RunStatus.failed:     {RunStatus.queued},
+    # incomplete → queued: operator re-runs the failed segment(s).
+    RunStatus.incomplete: {RunStatus.queued},
 }
 
 

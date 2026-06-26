@@ -25,6 +25,7 @@
   --badge-delivering: #0dcaf0;
   --badge-done: #198754;
   --badge-failed: #dc3545;
+  --badge-incomplete: #fd7e14;
 
   --radius: 6px;
   --shadow: 0 1px 3px rgba(0,0,0,.08);
@@ -123,6 +124,7 @@ a:hover { text-decoration: underline; }
 .badge-delivering{ background: var(--badge-delivering); color: #000; }
 .badge-done      { background: var(--badge-done); }
 .badge-failed    { background: var(--badge-failed); }
+.badge-incomplete{ background: var(--badge-incomplete); color: #000; }
 
 /* ── Tables ── */
 
@@ -359,6 +361,12 @@ textarea { min-height: 80px; resize: vertical; }
   background: #cff4fc;
   border: 1px solid #b6effb;
   color: #055160;
+}
+
+.alert-warning {
+  background: #fff3cd;
+  border: 1px solid #ffe69c;
+  color: #664d03;
 }
 
 /* ── Video preview ── */
