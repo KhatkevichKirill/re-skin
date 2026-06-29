@@ -115,6 +115,10 @@ class RunCreateResponse(BaseModel):
     status: str
 
 
+class RunBatchCopyResponse(BaseModel):
+    runs: list[RunCreateResponse] = []
+
+
 class RunResponse(BaseModel):
     id: str
     project_id: str

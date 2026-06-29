@@ -12,11 +12,22 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -30,6 +41,7 @@ from .schemas_v2 import (
     ProjectListItem,
     ProjectResponse,
     ProjectUpdate,
+    RunBatchCopyResponse,
     RunCreateResponse,
     RunListItem,
     RunResponse,
@@ -61,6 +73,8 @@ _MODEL_RESOLUTIONS = {
     "seedance": {"480p", "720p", "1080p"},
     "gemini-omni": {"720p", "1080p", "4k"},
 }
+# Max number of runs a single batch-copy request may launch at once.
+_MAX_BATCH_COPY_RUNS = 10
 
 
 # ---------------------------------------------------------------------------
@@ -760,6 +774,8 @@ def download_run_result(rid: str, db: Session = Depends(get_db)):
         filename=filename,
         headers={
             "X-GDrive-File-Id": run.result_gdrive_file_id or "",
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
         },
     )
 
@@ -997,44 +1013,35 @@ def _copy_reference_files(items: list, dest_dir: str) -> list:
     return out
 
 
-@router.post(
-    "/runs/{rid}/copy",
-    status_code=status.HTTP_201_CREATED,
-    response_model=RunCreateResponse,
-)
-def copy_run(
-    rid: str,
-    resolution: Optional[str] = Form(None),
-    name: Optional[str] = Form(None),
-    reference_files: List[UploadFile] = File(default=[]),
-    reference_urls: Optional[str] = Form(None),
-    db: Session = Depends(get_db),
-) -> RunCreateResponse:
-    """Duplicate a run — optionally at a new resolution and/or with a new
-    reference photo — and enqueue it.
+def _build_copied_run(
+    src: Run,
+    db: Session,
+    *,
+    resolution: Optional[str],
+    name: Optional[str],
+    ref_files: list,
+    ref_urls: list,
+) -> Run:
+    """Build (add + flush, but do NOT commit or enqueue) a new Run cloned from *src*.
 
     Clones everything that defines the result — prompt, model, audio mode, Drive
-    folder, and any per-segment prompt overrides. Two things can be changed:
+    folder, and any per-segment prompt overrides — and applies the two things a
+    copy may change: *resolution* and the *reference photo*. Returns the new Run;
+    the caller is responsible for committing and enqueueing it.
+
+    Shared by both the single-run copy and the batch copy so the cloning rules
+    stay in one place.
 
     * **resolution** — defaults to the source run's resolution if omitted; pass a
       different one to promote a 480p test to production.
-    * **reference photo** — pass *reference_files* and/or *reference_urls* to swap
-      the character to a new face of the same type. This is the "project as a
-      template" workflow: tune a run once, then re-run it with a new person's
-      photo. When new references are supplied they REPLACE the photo everywhere —
-      both the run-level references AND any per-segment reference overrides are
-      dropped so every swap segment uses the new photo (per-segment *prompt*
-      tweaks are still carried over). When omitted, the source run's references
-      (run-level and per-segment) are cloned unchanged.
+    * **reference photo** — pass *ref_files* (UploadFile list) and/or *ref_urls*
+      (list of url strings) to swap the character to a new face of the same type.
+      When new references are supplied they REPLACE the photo everywhere — both
+      the run-level references AND any per-segment reference overrides are dropped
+      so every swap segment uses the new photo (per-segment *prompt* tweaks are
+      still carried over). When omitted, the source run's references (run-level
+      and per-segment) are cloned unchanged.
     """
-    src = _get_run_or_404(rid, db)
-    project = _get_project_or_404(src.project_id, db)
-    if project.status != ProjectStatus.ready:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot copy run: project status is {project.status!r}, expected 'ready'",
-        )
-
     # Resolution: default to the source run's when not changing it.
     resolution = (resolution or src.resolution).strip()
     allowed = _MODEL_RESOLUTIONS[src.model]
@@ -1049,8 +1056,8 @@ def copy_run(
 
     # New reference photo (optional). When provided it replaces the photo
     # everywhere; when absent we clone the source run's references.
-    new_ref_files = reference_files or []
-    new_ref_urls = [u.strip() for u in (reference_urls or "").split(",") if u.strip()]
+    new_ref_files = ref_files or []
+    new_ref_urls = ref_urls or []
     has_new_refs = bool(new_ref_files or new_ref_urls)
     if has_new_refs:
         total_refs = len(new_ref_files) + len(new_ref_urls)
@@ -1148,12 +1155,159 @@ def copy_run(
     except InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    return new_run
+
+
+@router.post(
+    "/runs/{rid}/copy",
+    status_code=status.HTTP_201_CREATED,
+    response_model=RunCreateResponse,
+)
+def copy_run(
+    rid: str,
+    resolution: Optional[str] = Form(None),
+    name: Optional[str] = Form(None),
+    reference_files: List[UploadFile] = File(default=[]),
+    reference_urls: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+) -> RunCreateResponse:
+    """Duplicate a run — optionally at a new resolution and/or with a new
+    reference photo — and enqueue it. See ``_build_copied_run`` for the cloning
+    rules. To launch several copies (each with its own photo/quality/name) in one
+    request, use ``/runs/{rid}/copy-batch``.
+    """
+    src = _get_run_or_404(rid, db)
+    project = _get_project_or_404(src.project_id, db)
+    if project.status != ProjectStatus.ready:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot copy run: project status is {project.status!r}, expected 'ready'",
+        )
+
+    new_ref_urls = [u.strip() for u in (reference_urls or "").split(",") if u.strip()]
+    new_run = _build_copied_run(
+        src, db,
+        resolution=resolution,
+        name=name,
+        ref_files=reference_files or [],
+        ref_urls=new_ref_urls,
+    )
+    new_id = new_run.id
+
     db.commit()
     enqueue_process_run(new_id)
 
-    log.info(
-        "Copied run %s → %s (resolution=%s, new_refs=%s)",
-        rid, new_id, resolution, has_new_refs,
-    )
+    log.info("Copied run %s → %s (resolution=%s)", rid, new_id, new_run.resolution)
     status_val = new_run.status.value if hasattr(new_run.status, "value") else str(new_run.status)
     return RunCreateResponse(run_id=new_id, status=status_val)
+
+
+# runs[<idx>][<field>] — multipart keys for one batch-copy spec. reference_files
+# may repeat (several photos per run); the rest appear at most once per index.
+_BATCH_KEY_RE = re.compile(
+    r"^runs\[(\d+)\]\[(name|resolution|reference_urls|reference_files)\]$"
+)
+
+
+def _parse_batch_specs(form) -> list[dict]:
+    """Group a multipart form's ``runs[i][...]`` fields into a list of per-run
+    specs, ordered by index. Unknown keys are ignored; empty file slots (a file
+    input submitted with no chosen file) are dropped.
+    """
+    by_index: dict[int, dict] = {}
+    for key, value in form.multi_items():
+        m = _BATCH_KEY_RE.match(key)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        field = m.group(2)
+        spec = by_index.setdefault(
+            idx, {"name": None, "resolution": None, "ref_urls": [], "ref_files": []}
+        )
+        if field == "reference_files":
+            # A multipart UploadFile (has .filename); browsers also send an empty
+            # part when no file is chosen — skip those.
+            if getattr(value, "filename", None):
+                spec["ref_files"].append(value)
+        elif field == "reference_urls":
+            spec["ref_urls"].extend(
+                u.strip() for u in str(value).split(",") if u.strip()
+            )
+        elif field == "name":
+            spec["name"] = str(value).strip() or None
+        elif field == "resolution":
+            spec["resolution"] = str(value).strip() or None
+    return [by_index[i] for i in sorted(by_index)]
+
+
+@router.post(
+    "/runs/{rid}/copy-batch",
+    status_code=status.HTTP_201_CREATED,
+    response_model=RunBatchCopyResponse,
+)
+async def copy_run_batch(
+    rid: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> RunBatchCopyResponse:
+    """Launch up to 10 copies of a run in one request — each with its own
+    reference photo(s), resolution (quality), and name.
+
+    The body is multipart with one group of fields per run, indexed from 0:
+
+    * ``runs[i][resolution]`` — quality for copy *i* (defaults to the source run)
+    * ``runs[i][name]`` — optional name for copy *i*
+    * ``runs[i][reference_urls]`` — optional comma-separated reference photo URLs
+    * ``runs[i][reference_files]`` — optional uploaded reference photo(s); repeat
+      the field for several photos
+
+    All copies are validated and built in a single transaction: if any spec is
+    invalid (bad resolution, too many photos), nothing is created. On success
+    every new run is enqueued and returned in submission order.
+    """
+    src = _get_run_or_404(rid, db)
+    project = _get_project_or_404(src.project_id, db)
+    if project.status != ProjectStatus.ready:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot copy run: project status is {project.status!r}, expected 'ready'",
+        )
+
+    form = await request.form()
+    specs = _parse_batch_specs(form)
+    if not specs:
+        raise HTTPException(status_code=400, detail="No runs specified")
+    if len(specs) > _MAX_BATCH_COPY_RUNS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many runs: got {len(specs)}, max {_MAX_BATCH_COPY_RUNS}",
+        )
+
+    # Build every run first (all validated, added + flushed) before committing,
+    # so a bad spec fails the whole batch instead of leaving half of it queued.
+    new_runs: list[Run] = []
+    for spec in specs:
+        new_runs.append(
+            _build_copied_run(
+                src, db,
+                resolution=spec["resolution"],
+                name=spec["name"],
+                ref_files=spec["ref_files"],
+                ref_urls=spec["ref_urls"],
+            )
+        )
+
+    db.commit()
+    for nr in new_runs:
+        enqueue_process_run(nr.id)
+
+    log.info("Batch-copied run %s → %d new runs %s", rid, len(new_runs), [r.id for r in new_runs])
+    return RunBatchCopyResponse(
+        runs=[
+            RunCreateResponse(
+                run_id=nr.id,
+                status=nr.status.value if hasattr(nr.status, "value") else str(nr.status),
+            )
+            for nr in new_runs
+        ]
+    )

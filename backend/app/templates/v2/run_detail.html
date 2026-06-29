@@ -64,68 +64,125 @@ function deleteThisRun(rid, pid) {
 </div>
 
 {% if status_val in ("done", "failed") %}
-<!-- __ Copy run at a different resolution __ -->
+<!-- __ Copy run: launch 1–10 copies, each with its own photo / quality / name __ -->
 {% set copy_res = ["720p", "1080p", "4k"] if run.model == "gemini-omni" else ["480p", "720p", "1080p"] %}
 <div class="card">
   <div class="card-header"><h2>Copy run</h2></div>
   <div class="card-body">
     <p class="hint" style="margin-top:0">
-      Re-submit this run (prompt, model{% if run.audio_mode %}, audio{% endif %}, and any per-segment prompt tweaks) — optionally at a different resolution and/or with a new reference photo.
-      Leave the photo blank to reuse the same references. Provide a new photo to re-run the tuned settings on a new face of the same type — it replaces the photo in every segment.
+      Re-submit this run (prompt, model{% if run.audio_mode %}, audio{% endif %}, and any per-segment prompt tweaks) as one or more new runs — up to {{ max_copy_runs }} at once.
+      Give each copy its own reference photo, quality, and name. Leave a copy's photo blank to reuse the source run's references; provide a new photo to re-run the tuned settings on a new face of the same type — it replaces the photo in every segment.
     </p>
-    <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap">
-      <div class="form-group" style="margin-bottom:0">
-        <label for="copy-resolution">Resolution</label>
-        <select id="copy-resolution">
-          {% for r in copy_res %}
-          <option value="{{ r }}" {% if r == run.resolution %}selected{% endif %}>{{ r }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-group" style="margin-bottom:0; flex:1; min-width:200px">
-        <label for="copy-ref-url">New reference photo URL (optional)</label>
-        <input type="text" id="copy-ref-url" placeholder="https://… (comma-separated for several)" />
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label for="copy-ref-file">…or upload</label>
-        <input type="file" id="copy-ref-file" accept="image/*" multiple />
-      </div>
-      <div class="form-group" style="margin-bottom:0; flex:1; min-width:160px">
-        <label for="copy-name">New run name (optional)</label>
-        <input type="text" id="copy-name" placeholder="defaults to “{{ run.name or 'run' }} · <resolution|new ref>”" maxlength="255" />
-      </div>
-      <button type="button" class="btn btn-primary" onclick="copyRun('{{ run.id }}')">Copy &amp; run</button>
+
+    <div id="copy-rows"></div>
+
+    <div style="display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap">
+      <button type="button" class="btn btn-secondary" id="copy-add-row" onclick="addCopyRow()">+ Add run</button>
+      <span id="copy-count" class="text-muted" style="font-size:12px"></span>
+      <span style="flex:1"></span>
+      <button type="button" class="btn btn-primary" onclick="copyRuns('{{ run.id }}')">Create runs</button>
       <span id="copy-status" class="text-muted" style="font-size:12px"></span>
     </div>
   </div>
 </div>
 
+<!-- One copy spec. Cloned by JS; uses classes (not ids) so it can repeat. -->
+<template id="copy-row-tpl">
+  <div class="copy-row" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; padding:10px 0; border-top:1px solid #eee">
+    <div class="form-group" style="margin-bottom:0">
+      <label>Quality</label>
+      <select class="copy-resolution">
+        {% for r in copy_res %}
+        <option value="{{ r }}" {% if r == run.resolution %}selected{% endif %}>{{ r }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="margin-bottom:0; flex:1; min-width:200px">
+      <label>Reference photo URL (optional)</label>
+      <input type="text" class="copy-ref-url" placeholder="https://… (comma-separated for several)" />
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label>…or upload</label>
+      <input type="file" class="copy-ref-file" accept="image/*" multiple />
+    </div>
+    <div class="form-group" style="margin-bottom:0; flex:1; min-width:160px">
+      <label>Name (optional)</label>
+      <input type="text" class="copy-name" placeholder="defaults to “{{ run.name or 'run' }} · <quality|new ref>”" maxlength="255" />
+    </div>
+    <button type="button" class="btn btn-secondary copy-remove" onclick="removeCopyRow(this)" title="Remove this run">✕</button>
+  </div>
+</template>
+
 <script>
-function copyRun(rid) {
-  var res = document.getElementById('copy-resolution').value;
-  var name = document.getElementById('copy-name').value;
-  var refUrl = document.getElementById('copy-ref-url').value;
-  var refFileEl = document.getElementById('copy-ref-file');
+var MAX_COPY_RUNS = {{ max_copy_runs }};
+
+function refreshCopyControls() {
+  var rows = document.querySelectorAll('#copy-rows .copy-row');
+  document.getElementById('copy-add-row').disabled = rows.length >= MAX_COPY_RUNS;
+  document.getElementById('copy-count').textContent =
+    rows.length + ' / ' + MAX_COPY_RUNS + ' run' + (rows.length === 1 ? '' : 's');
+  // Hide the remove button when only one row remains (can't go below 1).
+  rows.forEach(function (row) {
+    row.querySelector('.copy-remove').style.visibility = rows.length > 1 ? 'visible' : 'hidden';
+  });
+}
+
+function addCopyRow() {
+  var rows = document.querySelectorAll('#copy-rows .copy-row');
+  if (rows.length >= MAX_COPY_RUNS) return;
+  var tpl = document.getElementById('copy-row-tpl');
+  document.getElementById('copy-rows').appendChild(tpl.content.cloneNode(true));
+  refreshCopyControls();
+}
+
+function removeCopyRow(btn) {
+  var row = btn.closest('.copy-row');
+  if (row) row.remove();
+  refreshCopyControls();
+}
+
+function copyRuns(rid) {
+  var rows = document.querySelectorAll('#copy-rows .copy-row');
   var statusEl = document.getElementById('copy-status');
-  statusEl.textContent = 'Submitting…';
+  if (!rows.length) { statusEl.textContent = 'Add at least one run.'; return; }
+  statusEl.textContent = 'Submitting ' + rows.length + ' run' + (rows.length === 1 ? '' : 's') + '…';
+
   var fd = new FormData();
-  fd.append('resolution', res);
-  if (name && name.trim()) fd.append('name', name.trim());
-  if (refUrl && refUrl.trim()) fd.append('reference_urls', refUrl.trim());
-  if (refFileEl && refFileEl.files) {
-    for (var i = 0; i < refFileEl.files.length; i++) {
-      fd.append('reference_files', refFileEl.files[i]);
+  rows.forEach(function (row, i) {
+    var res = row.querySelector('.copy-resolution').value;
+    var name = row.querySelector('.copy-name').value;
+    var refUrl = row.querySelector('.copy-ref-url').value;
+    var refFileEl = row.querySelector('.copy-ref-file');
+    fd.append('runs[' + i + '][resolution]', res);
+    if (name && name.trim()) fd.append('runs[' + i + '][name]', name.trim());
+    if (refUrl && refUrl.trim()) fd.append('runs[' + i + '][reference_urls]', refUrl.trim());
+    if (refFileEl && refFileEl.files) {
+      for (var j = 0; j < refFileEl.files.length; j++) {
+        fd.append('runs[' + i + '][reference_files]', refFileEl.files[j]);
+      }
     }
-  }
-  fetch('/api/v2/runs/' + encodeURIComponent(rid) + '/copy', { method: 'POST', body: fd })
+  });
+
+  fetch('/api/v2/runs/' + encodeURIComponent(rid) + '/copy-batch', { method: 'POST', body: fd })
     .then(function (r) {
       if (r.status === 201) {
-        return r.json().then(function (d) { window.location.href = '/v2/runs/' + d.run_id; });
+        return r.json().then(function (d) {
+          var runs = d.runs || [];
+          if (runs.length === 1) {
+            window.location.href = '/v2/runs/' + runs[0].run_id;
+          } else {
+            // Several runs created — go to the project to watch them all.
+            window.location.href = '/v2/projects/{{ run.project_id }}';
+          }
+        });
       }
       return r.json().then(function (b) { statusEl.textContent = 'Error: ' + (b.detail || r.status); });
     })
     .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
 }
+
+// Start with a single copy row (mirrors the old one-run default).
+addCopyRow();
 </script>
 {% endif %}
 

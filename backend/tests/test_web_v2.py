@@ -423,7 +423,12 @@ class TestRunDetail:
         resp = client.get(f"/v2/runs/{r.id}")
         html = resp.text
         assert "<video" in html
+        assert f"/api/v2/runs/{r.id}/result?v=" in html
         assert "Download MP4" in html
+        # Multi-run copy UI is present on a done run.
+        assert "copy-batch" in html
+        assert "+ Add run" in html
+        assert "MAX_COPY_RUNS = 10" in html
 
     def test_run_detail_failed_shows_retry(self, client, db_session):
         p = _make_project(db_session, status=ProjectStatus.ready)
@@ -499,6 +504,7 @@ class TestRunStatusFragment:
         resp = client.get(f"/v2/runs/{r.id}/status-fragment")
         assert resp.status_code == 200
         assert "<video" in resp.text
+        assert f"/api/v2/runs/{r.id}/result?v=" in resp.text
 
     def test_run_fragment_unknown_id_404(self, client):
         resp = client.get("/v2/runs/no-such-run/status-fragment")
