@@ -1045,6 +1045,7 @@ class TestRunResult:
         response = client.get(f"/api/v2/runs/{run.id}/result")
         assert response.status_code == 200
         assert response.content == b"\x00VIDEO\xff"
+        assert response.headers["cache-control"] == "no-store, max-age=0"
 
     def test_result_info_on_done_run(self, client, db_session, tmp_path):
         result_file = tmp_path / "output.mp4"
@@ -1832,6 +1833,158 @@ class TestCopyRun:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/v2/runs/{rid}/copy-batch — launch up to 10 copies in one request
+# ---------------------------------------------------------------------------
+
+
+class TestCopyRunBatch:
+    def test_batch_creates_multiple_runs_and_enqueues(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        run = _make_run(
+            s, project.id, name="Base", prompt="hi", model="seedance",
+            resolution="480p", status=RunStatus.done,
+        )
+        pid, rid = project.id, run.id
+        s.close()
+
+        resp = client.post(
+            f"/api/v2/runs/{rid}/copy-batch",
+            data={
+                "runs[0][resolution]": "480p", "runs[0][name]": "First",
+                "runs[1][resolution]": "720p", "runs[1][name]": "Second",
+                "runs[2][resolution]": "1080p",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        runs = resp.json()["runs"]
+        assert len(runs) == 3
+        assert all(r["status"] == "queued" for r in runs)
+        ids = [r["run_id"] for r in runs]
+        assert all(i in spy["process_run"] for i in ids)
+        assert len(set(ids)) == 3 and rid not in ids
+
+        s = SessionFactory()
+        rows = [s.get(Run, i) for i in ids]
+        names = [r.name for r in rows]
+        resolutions = [r.resolution for r in rows]
+        s.close()
+        # Order is preserved (runs[0], runs[1], runs[2]).
+        assert names[0] == "First" and names[1] == "Second"
+        assert resolutions == ["480p", "720p", "1080p"]
+        # Unnamed copy gets the default name suffix.
+        assert names[2].startswith("Base ·")
+
+    def test_batch_per_run_reference_url(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        run = _make_run(
+            s, project.id, resolution="480p", status=RunStatus.done,
+            reference_image_urls=["https://old.example/face.jpg"],
+        )
+        rid = run.id
+        s.close()
+
+        resp = client.post(
+            f"/api/v2/runs/{rid}/copy-batch",
+            data={
+                "runs[0][resolution]": "480p",
+                "runs[0][reference_urls]": "https://new.example/a.jpg",
+                "runs[1][resolution]": "720p",  # no new photo → clones source refs
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        ids = [r["run_id"] for r in resp.json()["runs"]]
+
+        s = SessionFactory()
+        refs0 = list(s.get(Run, ids[0]).reference_image_urls)
+        refs1 = list(s.get(Run, ids[1]).reference_image_urls)
+        s.close()
+        assert refs0 == ["https://new.example/a.jpg"]
+        assert refs1 == ["https://old.example/face.jpg"]
+
+    def test_batch_with_uploaded_file(self, spy_client, SessionFactory):
+        client, spy = spy_client
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        run = _make_run(s, project.id, resolution="480p", status=RunStatus.done)
+        rid = run.id
+        s.close()
+
+        resp = client.post(
+            f"/api/v2/runs/{rid}/copy-batch",
+            data={"runs[0][resolution]": "720p"},
+            files=[("runs[0][reference_files]", ("face.jpg", io.BytesIO(b"img"), "image/jpeg"))],
+        )
+        assert resp.status_code == 201, resp.text
+        new_id = resp.json()["runs"][0]["run_id"]
+
+        s = SessionFactory()
+        refs = list(s.get(Run, new_id).reference_image_urls)
+        s.close()
+        assert len(refs) == 1
+        assert os.path.exists(refs[0])
+
+    def test_batch_empty_is_400(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        run = _make_run(db_session, project.id, resolution="480p", status=RunStatus.done)
+        resp = client.post(f"/api/v2/runs/{run.id}/copy-batch", data={})
+        assert resp.status_code == 400
+        assert "no runs" in resp.json()["detail"].lower()
+
+    def test_batch_too_many_is_400(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        run = _make_run(db_session, project.id, resolution="480p", status=RunStatus.done)
+        data = {f"runs[{i}][resolution]": "480p" for i in range(11)}
+        resp = client.post(f"/api/v2/runs/{run.id}/copy-batch", data=data)
+        assert resp.status_code == 400
+        assert "too many" in resp.json()["detail"].lower()
+
+    def test_batch_invalid_spec_rolls_back_whole_batch(self, spy_client, SessionFactory):
+        """One bad resolution fails the entire batch — no partial runs created."""
+        client, spy = spy_client
+        s = SessionFactory()
+        project = _make_project(s, status=ProjectStatus.ready)
+        run = _make_run(
+            s, project.id, model="seedance", resolution="480p", status=RunStatus.done,
+        )
+        pid, rid = project.id, run.id
+        s.close()
+
+        resp = client.post(
+            f"/api/v2/runs/{rid}/copy-batch",
+            data={
+                "runs[0][resolution]": "720p",   # valid
+                "runs[1][resolution]": "4k",     # invalid for seedance
+            },
+        )
+        assert resp.status_code == 400
+        assert spy["process_run"] == []  # nothing enqueued
+
+        s = SessionFactory()
+        # Only the original run exists; neither copy was committed.
+        count = len([r for r in s.query(Run).filter(Run.project_id == pid).all()])
+        s.close()
+        assert count == 1
+
+    def test_batch_blocked_when_project_not_ready(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.created)
+        run = _make_run(db_session, project.id, resolution="480p", status=RunStatus.done)
+        resp = client.post(
+            f"/api/v2/runs/{run.id}/copy-batch", data={"runs[0][resolution]": "720p"}
+        )
+        assert resp.status_code == 409
+
+    def test_batch_missing_run_is_404(self, client):
+        resp = client.post(
+            "/api/v2/runs/no-such-run/copy-batch", data={"runs[0][resolution]": "720p"}
+        )
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Per-segment prompts supplied at run creation
 # ---------------------------------------------------------------------------
 
@@ -1955,6 +2108,7 @@ class TestPublicResultLink:
         assert r.status_code == 200
         assert r.content == b"resultbytes"
         assert r.headers["content-type"].startswith("video/mp4")
+        assert r.headers["cache-control"] == "no-store, max-age=0"
 
     def test_bad_token_is_403(self, client, db_session, tmp_path):
         out = tmp_path / "final.mp4"

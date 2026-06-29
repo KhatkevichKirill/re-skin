@@ -19,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from .api_v2 import _MAX_BATCH_COPY_RUNS
 from .config import settings
 from .db import get_db
 from .models import Run, RunSegment, SegmentDef, VideoProject
@@ -59,6 +60,18 @@ def _gdrive_link_for_run(run: Run) -> str | None:
     if run.result_gdrive_file_id:
         return f"https://drive.google.com/file/d/{run.result_gdrive_file_id}/view"
     return None
+
+
+def _result_version_for_run(run: Run) -> str:
+    """Return a stable cache-buster for the current on-disk result file."""
+    path = run.result_local_path
+    if path and os.path.exists(path):
+        stat = os.stat(path)
+        return f"{int(stat.st_mtime)}-{stat.st_size}"
+    updated = run.updated_at
+    if updated is not None:
+        return str(int(updated.timestamp()))
+    return "0"
 
 
 def _get_segments(project_id: str, db: Session) -> list[SegmentDef]:
@@ -266,6 +279,8 @@ def run_detail(
             "total_swap": total_swap,
             "completed": completed,
             "result_public_token": make_result_token(rid),
+            "result_version": _result_version_for_run(run),
+            "max_copy_runs": _MAX_BATCH_COPY_RUNS,
         },
     )
 
@@ -312,5 +327,6 @@ def run_status_fragment(
             "completed": completed,
             "generating_seg": generating_seg,
             "result_public_token": make_result_token(rid),
+            "result_version": _result_version_for_run(run),
         },
     )

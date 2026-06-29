@@ -29,15 +29,16 @@
 <!-- __ Done/Failed/Incomplete: preview/banner + per-segment overrides __ -->
 
 {% if sv == "done" %}
+{% set result_url = "/api/v2/runs/" ~ run.id ~ "/result?v=" ~ result_version %}
 <div class="card">
   <div class="card-header"><h2>Result</h2></div>
   <div class="card-body">
     <video class="video-preview" controls>
-      <source src="/api/v2/runs/{{ run.id }}/result" type="video/mp4" />
+      <source src="{{ result_url }}" type="video/mp4" />
       Your browser does not support HTML5 video.
     </video>
     <div class="action-row">
-      <a class="btn btn-success" href="/api/v2/runs/{{ run.id }}/result" download>Download MP4</a>
+      <a class="btn btn-success" href="{{ result_url }}" download>Download MP4</a>
       {% if gdrive_link %}
       <a class="btn btn-secondary" href="{{ gdrive_link }}" target="_blank" rel="noopener">Open in Google Drive</a>
       {% endif %}

@@ -94,4 +94,12 @@ def public_run_result(
         raise HTTPException(status_code=404, detail="Result video not available")
 
     log.info("Public result fetch for run %s", rid)
-    return FileResponse(path, media_type="video/mp4", filename="result.mp4")
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        filename="result.mp4",
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
