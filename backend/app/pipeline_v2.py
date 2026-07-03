@@ -535,6 +535,32 @@ def _poll_pending_tasks(
             time.sleep(RUN_POLL_INTERVAL_SEC)
 
 
+def _final_is_stale(final_path: str, seg_defs, rs_map) -> bool:
+    """True if any completed swap result on disk is newer than the final video.
+
+    Belt-and-suspenders for the delivery-only-retry fast path: a result file
+    with a newer mtime than final.mp4 means the final does not contain it —
+    reusing it would silently deliver the old generation (e.g. after a result
+    file was refreshed without a new submit in the same lifecycle).
+    """
+    try:
+        final_mtime = os.path.getmtime(final_path)
+    except OSError:
+        return True
+    for sd in seg_defs:
+        if sd.action != "swap":
+            continue
+        rs = rs_map.get(sd.id)
+        if (
+            rs is not None
+            and rs.local_result_path
+            and os.path.exists(rs.local_result_path)
+            and os.path.getmtime(rs.local_result_path) > final_mtime
+        ):
+            return True
+    return False
+
+
 def process_run(
     run_id: str,
     *,
@@ -919,6 +945,7 @@ def process_run(
                 not did_submit
                 and run.result_local_path
                 and os.path.exists(run.result_local_path)
+                and not _final_is_stale(run.result_local_path, seg_defs, rs_map)
             )
             if reuse_final:
                 final_dst = run.result_local_path

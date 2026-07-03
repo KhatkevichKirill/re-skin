@@ -1346,7 +1346,10 @@ class TestRerunSegment:
         session = SessionFactory()
         project = _make_project(session, status=ProjectStatus.ready)
         sd = _make_segment_def(session, project.id, 0)
-        run = _make_run(session, project.id, status=RunStatus.done)
+        run = _make_run(
+            session, project.id, status=RunStatus.done,
+            result_local_path="/data/fake/final.mp4",
+        )
         rs = _make_run_segment(
             session, run.id, sd.id,
             status=SegmentStatus.completed,
@@ -1364,9 +1367,13 @@ class TestRerunSegment:
         # Verify the RunSegment was reset
         session2 = SessionFactory()
         rs_fetched = session2.get(RunSegment, rs.id)
+        run_fetched = session2.get(Run, run.id)
         session2.close()
         assert rs_fetched.status == SegmentStatus.pending
         assert rs_fetched.seedance_task_id is None
+        # The stitched final contains the OLD segment result — a rerun must
+        # invalidate it so finalize re-stitches instead of re-delivering it.
+        assert run_fetched.result_local_path is None
 
     def test_rerun_failed_segment_from_incomplete_run(self, spy_client, SessionFactory):
         """An `incomplete` run can re-run its failed segment; run → queued."""

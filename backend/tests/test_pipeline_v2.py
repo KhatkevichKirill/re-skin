@@ -1637,6 +1637,54 @@ class TestDeliveryRetryAndReuse:
         with Session() as s:
             assert s.get(Run, run_id).status == RunStatus.done
 
+    def test_stale_final_is_restitched_when_result_is_newer(
+        self, db_engine, db_session, synthetic_video, patch_propose, monkeypatch
+    ):
+        """Regression (run 7322a091): a segment rerun is already completed by
+        the time finalize runs, so segment state alone looks identical to a
+        delivery-only retry. When a result file is newer than the existing
+        final.mp4, the final is stale and MUST be re-stitched — otherwise the
+        old generation is silently re-delivered."""
+        from app.pipeline_v2 import analyze_project, process_run
+        from app.storage import run_results_dir
+        import app.pipeline_v2 as pv2
+
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+        run_id = _create_run(db_session, project_id, gdrive_folder_id="folder-x")
+
+        Session = sessionmaker(bind=db_engine)
+        r_dir = run_results_dir(run_id, project_id)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            for sd in [d for d in project.segments if d.action == "swap"]:
+                res = os.path.join(r_dir, f"result_{sd.index:04d}.mp4")
+                shutil.copy2(synthetic_video, res)
+                s.add(RunSegment(
+                    run_id=run_id, segment_def_id=sd.id, index=sd.index,
+                    status=SegmentStatus.completed, local_result_path=res,
+                ))
+            run = s.get(Run, run_id)
+            final = os.path.join(r_dir, "final.mp4")
+            shutil.copy2(synthetic_video, final)
+            # Make the final OLDER than the segment results — the on-disk
+            # state after a rerun downloaded a fresh result_XXXX.mp4.
+            old = os.path.getmtime(final) - 100
+            os.utime(final, (old, old))
+            run.result_local_path = final
+            s.commit()
+
+        stitch_calls: list = []
+        monkeypatch.setattr(pv2.media_mod, "stitch", lambda *a, **k: stitch_calls.append(1))
+
+        gd = FakeGDriveClient()
+        process_run(run_id, kie=FakeKieClient(synthetic_video), gdrive=gd)
+
+        assert stitch_calls == [1]         # stale final re-stitched
+        assert len(gd.upload_calls) == 1   # and re-delivered
+        with Session() as s:
+            assert s.get(Run, run_id).status == RunStatus.done
+
 
 # ---------------------------------------------------------------------------
 # Tests: parallel stitch cut_clip (STITCH_CUT_CONCURRENCY)

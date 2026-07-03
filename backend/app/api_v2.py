@@ -910,6 +910,10 @@ def rerun_segment(
     rs.seedance_result_url = None
     rs.local_result_path = None
 
+    # Invalidate the stitched final: it contains this segment's OLD result,
+    # so it must never be reused by the delivery-only-retry fast path.
+    run.result_local_path = None
+
     # Transition run → queued (done→queued or failed→queued both allowed now)
     try:
         transition(run, RunStatus.queued)
