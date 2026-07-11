@@ -266,6 +266,8 @@ function copySrcLink(btn) {
           <label for="run-model">Model</label>
           <select id="run-model" name="model" onchange="onModelChange()">
             <option value="seedance" {% if default_model == "seedance" %}selected{% endif %}>Seedance — video-to-video character swap</option>
+            <option value="seedance-fast" {% if default_model == "seedance-fast" %}selected{% endif %}>Seedance Fast — faster, cheaper character swap</option>
+            <option value="seedance-mini" {% if default_model == "seedance-mini" %}selected{% endif %}>Seedance Mini — lightweight character swap</option>
             <option value="gemini-omni" {% if default_model == "gemini-omni" %}selected{% endif %}>Gemini Omni — multimodal video generation</option>
           </select>
           <p class="hint" id="model-hint" style="display:none">
@@ -393,6 +395,8 @@ function handleRunCreated(event) {
 // the model changes so only valid options are offered.
 var MODEL_RESOLUTIONS = {
   'seedance':    [['480p','480p — cheapest, use for tests'], ['720p','720p — balanced'], ['1080p','1080p — production quality']],
+  'seedance-fast': [['480p','480p — cheapest, use for tests'], ['720p','720p — balanced']],
+  'seedance-mini': [['480p','480p — cheapest, use for tests'], ['720p','720p — balanced']],
   'gemini-omni': [['720p','720p — balanced'], ['1080p','1080p — production quality'], ['4k','4k — maximum quality']]
 };
 

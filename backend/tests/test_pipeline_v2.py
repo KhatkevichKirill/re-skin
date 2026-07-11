@@ -212,6 +212,7 @@ class FakeKieClient:
         resolution,
         aspect_ratio,
         duration,
+        model="bytedance/seedance-2",
     ) -> str:
         task_id = f"fake-task-{uuid.uuid4().hex[:8]}"
         self.create_task_calls.append(task_id)
@@ -219,6 +220,7 @@ class FakeKieClient:
             "task_id": task_id,
             "prompt": prompt,
             "reference_image_urls": list(reference_image_urls),
+            "model": model,
         })
         return task_id
 
@@ -1229,6 +1231,50 @@ class TestModelRouting:
             assert rec["video_start"] == 0
             # Trim never exceeds Gemini's 10s cap.
             assert 0 < rec["video_end"] <= 10.0
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            r = s.get(Run, run.id)
+            assert r.status == RunStatus.done
+
+    @pytest.mark.parametrize(
+        "run_model, expected_kie_model",
+        [
+            ("seedance", "bytedance/seedance-2"),
+            ("seedance-fast", "bytedance/seedance-2-fast"),
+            ("seedance-mini", "bytedance/seedance-2-mini"),
+        ],
+    )
+    def test_seedance_variant_passes_correct_kie_model_id(
+        self, db_engine, db_session, synthetic_video, patch_propose,
+        run_model, expected_kie_model,
+    ):
+        """Each Seedance variant maps to its own kie.ai model id in create_task,
+        while still routing through create_task (not create_omni_task)."""
+        from app.pipeline_v2 import process_run
+
+        project_id = self._setup_ready_project(db_session, synthetic_video, patch_propose)
+
+        run = Run(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            name="Variant Run",
+            prompt="Replace the character",
+            reference_image_urls=[],
+            model=run_model,
+            resolution="720p",
+            status=RunStatus.queued,
+        )
+        db_session.add(run)
+        db_session.commit()
+
+        fake_kie = FakeKieClient(synthetic_video)
+        process_run(run.id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert len(fake_kie.create_omni_records) == 0
+        assert len(fake_kie.create_task_records) == 2
+        for rec in fake_kie.create_task_records:
+            assert rec["model"] == expected_kie_model
 
         Session = sessionmaker(bind=db_engine)
         with Session() as s:

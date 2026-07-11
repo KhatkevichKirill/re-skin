@@ -85,6 +85,15 @@ STITCH_CUT_CONCURRENCY = int(os.getenv("STITCH_CUT_CONCURRENCY", "2"))
 # pressure low on a single-core VPS; raise to 4-6 if upload bandwidth allows.
 SUBMIT_CONCURRENCY = int(os.getenv("SUBMIT_CONCURRENCY", "2"))
 
+# Maps a Run.model value to the kie.ai model id sent in create_task's payload.
+# "seedance-fast" and "seedance-mini" are Seedance 2.0 variants — same
+# createTask input schema as the base model, just a different model id — so
+# they fall through the existing non-omni path everywhere else in this module.
+_SEEDANCE_KIE_MODEL = {
+    "seedance": "bytedance/seedance-2",
+    "seedance-fast": "bytedance/seedance-2-fast",
+    "seedance-mini": "bytedance/seedance-2-mini",
+}
 
 def _default_kie() -> KieClient:
     return KieClient()
@@ -390,6 +399,7 @@ def _create_swap_task(
         resolution=run_resolution or settings.DEFAULT_RESOLUTION,
         aspect_ratio=_map_aspect(project_aspect_ratio),
         duration=_clamp_duration(clip_start, clip_end),
+        model=_SEEDANCE_KIE_MODEL.get(run_model, "bytedance/seedance-2"),
     )
 
 

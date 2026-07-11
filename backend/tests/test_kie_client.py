@@ -194,6 +194,48 @@ class TestCreateTask:
                 duration=9,
             )
 
+    @respx.mock
+    @pytest.mark.parametrize(
+        "model",
+        ["bytedance/seedance-2-fast", "bytedance/seedance-2-mini"],
+    )
+    def test_sends_given_model_id(self, model):
+        """create_task forwards the *model* kwarg verbatim in the payload."""
+        create_url = f"{JOBS_BASE}/api/v1/jobs/createTask"
+        respx.post(create_url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "msg": "success",
+                    "data": {"taskId": "task-variant", "recordId": "rec-variant"},
+                },
+            )
+        )
+
+        client = _make_client()
+        task_id = client.create_task(
+            prompt="swap the character",
+            reference_image_urls=["https://img.test/face.jpg"],
+            reference_video_urls=["https://vid.test/seg.mp4"],
+            duration=9,
+            model=model,
+        )
+        assert task_id == "task-variant"
+
+        req = respx.calls.last.request
+        body = json.loads(req.content)
+        assert body["model"] == model
+
+    def test_model_defaults_to_base_seedance(self):
+        """Omitting *model* keeps the existing bytedance/seedance-2 default."""
+        import inspect
+
+        from app.kie_client import KieClient
+
+        sig = inspect.signature(KieClient.create_task)
+        assert sig.parameters["model"].default == "bytedance/seedance-2"
+
 
 # ---------------------------------------------------------------------------
 # create_omni_task

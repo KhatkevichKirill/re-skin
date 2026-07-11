@@ -338,7 +338,10 @@ class Run(Base):
 
     # Processing options
     model: Mapped[str] = mapped_column(
-        Enum("seedance", "gemini-omni", name="run_model_enum"),
+        Enum(
+            "seedance", "gemini-omni", "seedance-fast", "seedance-mini",
+            name="run_model_enum",
+        ),
         nullable=False,
         default="seedance",
     )

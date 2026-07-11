@@ -59,7 +59,7 @@ router = APIRouter(tags=["v2"])
 
 _VALID_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}
 _VALID_AUDIO_MODES = {"original", "seedance"}
-_VALID_MODELS = {"seedance", "gemini-omni"}
+_VALID_MODELS = {"seedance", "gemini-omni", "seedance-fast", "seedance-mini"}
 # Run states that mean a worker may still be touching the run's files — block
 # deletion while in any of these (delete would race the worker / rmtree live files).
 _ACTIVE_RUN_STATUSES = {
@@ -72,6 +72,8 @@ _ACTIVE_RUN_STATUSES = {
 _MODEL_RESOLUTIONS = {
     "seedance": {"480p", "720p", "1080p"},
     "gemini-omni": {"720p", "1080p", "4k"},
+    "seedance-fast": {"480p", "720p"},
+    "seedance-mini": {"480p", "720p"},
 }
 # Max number of runs a single batch-copy request may launch at once.
 _MAX_BATCH_COPY_RUNS = 10

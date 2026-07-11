@@ -894,6 +894,39 @@ class TestModelSelection:
         assert response.status_code == 400
         assert "resolution" in response.json()["detail"].lower()
 
+    @pytest.mark.parametrize("variant", ["seedance-fast", "seedance-mini"])
+    @pytest.mark.parametrize("resolution", ["480p", "720p"])
+    def test_seedance_variant_accepts_480p_and_720p(
+        self, spy_client, SessionFactory, variant, resolution
+    ):
+        """seedance-fast/seedance-mini accept both of their supported resolutions."""
+        client, spy = spy_client
+        session = SessionFactory()
+        project = _make_project(session, status=ProjectStatus.ready)
+        session.close()
+
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap", "model": variant, "resolution": resolution},
+        )
+        assert response.status_code == 201
+        run_id = response.json()["run_id"]
+
+        get_resp = client.get(f"/api/v2/runs/{run_id}")
+        assert get_resp.json()["model"] == variant
+        assert get_resp.json()["resolution"] == resolution
+
+    @pytest.mark.parametrize("variant", ["seedance-fast", "seedance-mini"])
+    def test_seedance_variant_rejects_1080p(self, client, db_session, variant):
+        """seedance-fast/seedance-mini do not support 1080p (or 4k)."""
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        response = client.post(
+            f"/api/v2/projects/{project.id}/runs",
+            data={"prompt": "swap", "model": variant, "resolution": "1080p"},
+        )
+        assert response.status_code == 400
+        assert "resolution" in response.json()["detail"].lower()
+
 
 # ---------------------------------------------------------------------------
 # TR7: audio_mode field on Run creation and RunResponse

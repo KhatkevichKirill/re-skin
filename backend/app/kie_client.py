@@ -200,6 +200,7 @@ class KieClient:
         resolution: str = "480p",
         aspect_ratio: str = "9:16",
         duration: int,
+        model: str = "bytedance/seedance-2",
     ) -> str:
         """
         Create a Seedance task on the jobs API.
@@ -211,6 +212,9 @@ class KieClient:
             resolution: ``480p``, ``720p``, or ``1080p``.
             aspect_ratio: One of ``1:1|4:3|16:9|9:16|21:9|adaptive``.
             duration: Integer seconds in the range [4, 15].
+            model: kie.ai model id, e.g. ``bytedance/seedance-2``,
+                ``bytedance/seedance-2-fast``, or ``bytedance/seedance-2-mini``.
+                Defaults to the base Seedance 2.0 model.
 
         Returns:
             The ``taskId`` string.
@@ -226,7 +230,7 @@ class KieClient:
 
         url = f"{self._jobs_base}/api/v1/jobs/createTask"
         payload = {
-            "model": "bytedance/seedance-2",
+            "model": model,
             "input": {
                 "prompt": prompt,
                 "reference_image_urls": reference_image_urls,
