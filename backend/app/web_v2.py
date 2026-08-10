@@ -19,11 +19,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from . import ai_models
 from .api_v2 import _MAX_BATCH_COPY_RUNS
 from .config import settings
 from .db import get_db
 from .models import Run, RunSegment, SegmentDef, VideoProject
 from sqlalchemy.orm import selectinload
+from .pipeline_v2 import effective_segment_cap_sec
 from .public import make_result_token, make_source_token
 from .state_machine import ProjectStatus, RunStatus, SegmentStatus
 
@@ -33,6 +35,11 @@ router = APIRouter(tags=["web_v2"])
 
 _TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates", "v2")
 templates = Jinja2Templates(directory=_TEMPLATES_DIR)
+
+# Every template that names a model renders it through this filter rather than a
+# ternary chain, so a new entry in app/ai_models.py is labelled everywhere at
+# once.
+templates.env.filters["model_label"] = ai_models.label_for
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +54,56 @@ def _get_project_or_404(project_id: str, db: Session) -> VideoProject:
             status_code=404, detail=f"Project {project_id!r} not found"
         )
     return project
+
+
+def _new_run_defaults(project: VideoProject) -> dict:
+    """New Run form pre-fill: the AI model registry the `<select>` and JS use.
+
+    The ``model*`` keys all come from app/ai_models.py so the model dropdown, the
+    model→resolution options map and the per-model clip-length/audio limits derive
+    from one table instead of hand-kept copies in the template.
+
+    Shared by the full page render and the HTMX status fragment, which both render
+    partials/project_status_content.html — keep them in one helper so the two can
+    never drift.
+    """
+    # The project's segmentation cap decides which models can actually generate
+    # its segments. Pre-selecting one that cannot is a trap: over-long segments
+    # are skipped and the run delivers original footage where a swap was paid
+    # for. So when the registry default can't cover the cap, fall back to the
+    # first model that can — registry order is cheapest-first within a family, so
+    # "first compatible" is also the least-surprising spend.
+    #
+    # This only ever *widens* what the operator sees pre-filled — every model
+    # stays selectable, and `models_over_cap` lets the template mark the ones
+    # that would fall back rather than hiding them.
+    cap = effective_segment_cap_sec(project.max_segment_sec)
+    compatible = ai_models.models_supporting_segment_len(cap)
+
+    default_model = ai_models.DEFAULT_MODEL
+    if compatible and default_model not in compatible:
+        default_model = compatible[0]
+        log.info(
+            "project %s cap=%.1fs excludes the default model %r — New Run form "
+            "defaults to %r instead",
+            project.id, cap, ai_models.DEFAULT_MODEL, default_model,
+        )
+
+    return {
+        "default_model": default_model,
+        # Effective segmentation cap and the models that cannot honour it, so the
+        # <option> list can label them instead of silently offering a run that
+        # delivers un-swapped footage.
+        "segment_cap_sec": cap,
+        "models_over_cap": ai_models.models_excluded_by_segment_len(cap),
+        # {model: [[value, label], ...]} — rebuilds the resolution dropdown.
+        "model_resolutions_json": ai_models.resolution_choices_json(),
+        # {model: {max_clip_sec, produces_audio, label}} — drives the "segments
+        # too long for this model" warning and the audio lock.
+        "model_limits_json": ai_models.model_limits_json(),
+        # The specs themselves, to loop over when building the <option> list.
+        "ai_models": ai_models.AI_MODELS,
+    }
 
 
 def _get_run_or_404(run_id: str, db: Session) -> Run:
@@ -203,12 +260,12 @@ def project_detail(
             "status_val": status_val,
             "segments": segments,
             "runs": runs,
-            "default_model": "seedance",
             "default_resolution": settings.DEFAULT_RESOLUTION,
             "source_public_token": make_source_token(pid),
             "max_refs": settings.MAX_REFERENCE_IMAGES,
             "gdrive_folder_id": settings.GDRIVE_DEFAULT_FOLDER_ID or "",
             "default_prompt": _DEFAULT_PROMPT,
+            **_new_run_defaults(project),
         },
     )
 
@@ -235,12 +292,12 @@ def project_status_fragment(
             "status_val": status_val,
             "segments": segments,
             "runs": runs,
-            "default_model": "seedance",
             "default_resolution": settings.DEFAULT_RESOLUTION,
             "source_public_token": make_source_token(pid),
             "max_refs": settings.MAX_REFERENCE_IMAGES,
             "gdrive_folder_id": settings.GDRIVE_DEFAULT_FOLDER_ID or "",
             "default_prompt": _DEFAULT_PROMPT,
+            **_new_run_defaults(project),
         },
     )
 
@@ -281,6 +338,9 @@ def run_detail(
             "result_public_token": make_result_token(rid),
             "result_version": _result_version_for_run(run),
             "max_copy_runs": _MAX_BATCH_COPY_RUNS,
+            # The copy control's resolution list is built from the run's model's
+            # own supported set, so it can never offer a tier create_run rejects.
+            "ai_models": ai_models.AI_MODELS,
         },
     )
 

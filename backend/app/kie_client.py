@@ -25,6 +25,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from app import ai_models
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,14 @@ _JOBS_BASE = "https://api.kie.ai"
 
 # Gemini Omni Video accepts only a fixed set of output durations (seconds).
 _OMNI_DURATIONS = (4, 6, 8, 10)
+
+# Reverse index kie model id -> registry key, so create_task can validate its
+# `duration` / `generate_audio` arguments against the right AIModelSpec. Callers
+# pass the kie id (that is what the API wants); the capability table is keyed by
+# the run_model_enum label.
+_KEY_BY_KIE_ID: dict[str, str] = {
+    spec.kie_model_id: key for key, spec in ai_models.AI_MODELS.items()
+}
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +210,7 @@ class KieClient:
         aspect_ratio: str = "9:16",
         duration: int,
         model: str = "bytedance/seedance-2",
+        generate_audio: bool | None = None,
     ) -> str:
         """
         Create a Seedance task on the jobs API.
@@ -208,25 +218,57 @@ class KieClient:
         Args:
             prompt: Text prompt for the generation.
             reference_image_urls: Up to 9 image URLs.
-            reference_video_urls: Up to 3 video URLs (2-15 s each, mp4/mov).
-            resolution: ``480p``, ``720p``, or ``1080p``.
-            aspect_ratio: One of ``1:1|4:3|16:9|9:16|21:9|adaptive``.
-            duration: Integer seconds in the range [4, 15].
+            reference_video_urls: Up to 3 video URLs (mp4/mov), each no longer
+                than the model's per-clip ceiling — 15 s for Seedance 2.0,
+                30 s for Seedance 2.5.
+            resolution: ``480p``, ``720p``, or ``1080p``. Seedance 2.5 tops out
+                at ``720p`` (see :mod:`app.ai_models`).
+            aspect_ratio: One of ``1:1|4:3|16:9|9:16|21:9|adaptive``. Seedance
+                2.5 accepts ONLY ``adaptive``.
+            duration: Integer output seconds. The accepted value is per-model:
+                [4, 15] for the Seedance 2.0 family, and ``-1`` ("match the
+                input video") for Seedance 2.5, which rejects anything else.
             model: kie.ai model id, e.g. ``bytedance/seedance-2``,
-                ``bytedance/seedance-2-fast``, or ``bytedance/seedance-2-mini``.
-                Defaults to the base Seedance 2.0 model.
+                ``bytedance/seedance-2-fast``, ``bytedance/seedance-2-mini``, or
+                ``bytedance/seedance-2-5``. Defaults to the base Seedance 2.0
+                model.
+            generate_audio: Seedance 2.5 only — ask the model to generate (True)
+                or suppress (False) an audio track. Left as ``None`` the key is
+                omitted from the payload entirely, which is required for the 2.0
+                family: those models reject the field.
 
         Returns:
             The ``taskId`` string.
 
         Raises:
-            ValueError: If *duration* is outside [4, 15].
+            ValueError: If *duration* is not a value this *model* accepts, or if
+                *generate_audio* is passed for a model whose spec does not
+                support it.
             KieTaskError: On HTTP or API errors.
         """
-        if not (4 <= duration <= 15):
-            raise ValueError(
-                f"duration must be between 4 and 15 inclusive, got {duration}"
-            )
+        # Validate against the registry entry behind this kie id rather than a
+        # hardcoded range — 2.0 and 2.5 disagree on the ceiling, and 2.5 wants
+        # the -1 sentinel.
+        model_key = _KEY_BY_KIE_ID.get(model)
+        ai_models.validate_duration(model_key, duration)
+
+        # Enforce the audio-switch capability at the boundary rather than
+        # trusting every caller to check spec.supports_generate_audio first.
+        # The 2.0 family rejects the field outright, so a caller that passes it
+        # has a bug we want to see as a ValueError here — not as an opaque kie.ai
+        # 4xx after the clip has already been cut and uploaded. `None` means "not
+        # passed" (the default) and is always fine.
+        if generate_audio is not None:
+            spec = ai_models.spec_for(model_key)
+            if not spec.supports_generate_audio:
+                supported = sorted(
+                    k for k, s in ai_models.AI_MODELS.items()
+                    if s.supports_generate_audio
+                )
+                raise ValueError(
+                    f"generate_audio is not supported by model {model!r} "
+                    f"({spec.key}); only {supported} accept it"
+                )
 
         url = f"{self._jobs_base}/api/v1/jobs/createTask"
         payload = {
@@ -240,8 +282,14 @@ class KieClient:
                 "duration": duration,
             },
         }
+        # Only send the switch when the caller asked for it: a 2.0 request must
+        # stay byte-identical to what it has always been.
+        if generate_audio is not None:
+            payload["input"]["generate_audio"] = bool(generate_audio)
         logger.info(
-            "Creating Seedance task (resolution=%s, duration=%ds)", resolution, duration
+            "Creating Seedance task (model=%s, resolution=%s, duration=%ds, "
+            "generate_audio=%s)",
+            model, resolution, duration, generate_audio,
         )
 
         try:

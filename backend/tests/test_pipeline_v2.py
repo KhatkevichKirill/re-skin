@@ -213,6 +213,10 @@ class FakeKieClient:
         aspect_ratio,
         duration,
         model="bytedance/seedance-2",
+        # `generate_audio` is only sent for models whose spec supports it
+        # (Seedance 2.5); its ABSENCE from a 2.0 request is itself part of the
+        # contract, so the sentinel has to be distinguishable from False.
+        generate_audio=None,
     ) -> str:
         task_id = f"fake-task-{uuid.uuid4().hex[:8]}"
         self.create_task_calls.append(task_id)
@@ -221,6 +225,10 @@ class FakeKieClient:
             "prompt": prompt,
             "reference_image_urls": list(reference_image_urls),
             "model": model,
+            "resolution": resolution,
+            "aspect_ratio": aspect_ratio,
+            "duration": duration,
+            "generate_audio": generate_audio,
         })
         return task_id
 
@@ -1427,12 +1435,17 @@ class TestGeminiOmniAudioAndLimit:
 
         assert stitch_calls and stitch_calls[0].get("audio_mode") == "original"
 
-    def test_gemini_segment_over_10s_is_skipped(
+    def test_gemini_segment_over_10s_falls_back_to_source(
         self, db_engine, db_session, tmp_path, monkeypatch
     ):
         """A >10s swap segment is skipped for Gemini (create_omni_task never
-        called). With no completed swap, the run is marked `incomplete` and the
-        video is NOT stitched."""
+        called), but the failure is DETERMINISTIC — no retry can make a 12s
+        segment generatable on a 10s model — so the run is not blocked: the
+        segment is marked source_fallback, the completeness gate lets the run
+        through, and the stitch substitutes the segment's ORIGINAL footage.
+
+        This is the counterpart to the transient-failure tests, which still leave
+        the run `incomplete` with no video."""
         from app.pipeline_v2 import process_run
 
         source = tmp_path / "source.mp4"
@@ -1453,38 +1466,41 @@ class TestGeminiOmniAudioAndLimit:
         fake_kie = FakeKieClient(str(source))
         process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
 
-        # No Gemini task created for the over-long segment.
+        # No Gemini task created for the over-long segment — nothing was billed.
         assert len(fake_kie.create_omni_records) == 0
-        # Nothing stitched (mix of original + nothing is never produced).
-        assert stitch_calls == []
+        # But the run still delivered, with the original footage in its place.
+        assert len(stitch_calls) == 1
         Session = sessionmaker(bind=db_engine)
         with Session() as s:
             run = s.get(Run, run_id)
-            assert run.status == RunStatus.incomplete
-            assert run.result_local_path is None
+            assert run.status == RunStatus.done
+            assert run.result_local_path is not None
+            assert run.source_fallback_segments == 1
             rs = (
                 s.query(RunSegment)
                 .filter(RunSegment.run_id == run_id)
                 .one()
             )
+            # The swap genuinely did not happen, so the segment stays `failed`;
+            # source_fallback is what tells the gate and the UI why.
             assert rs.status == SegmentStatus.failed
+            assert rs.source_fallback is True
             assert "limit" in (rs.error_message or "")
 
 
 class TestAnalyzeSegmentCap:
-    """analyze_project caps segmentation at the most restrictive model limit."""
+    """analyze_project takes its segmentation cap from the PROJECT.
 
-    def test_analyze_caps_segment_at_omni_limit(
-        self, db_engine, db_session, tmp_path, monkeypatch
-    ):
-        """propose_segments is invoked with max_segment_sec == min(cfg, 10)."""
+    NULL resolves to ai_models.UNIVERSAL_MAX_SEGMENT_SEC — the smallest per-clip
+    ceiling across every model — so a project cut that way is runnable on any
+    backend, which is the behaviour every project had before the column existed.
+    """
+
+    @staticmethod
+    def _capture_cap(project_id, monkeypatch) -> dict:
         from app.media import MediaInfo
         import app.pipeline_v2 as pv2
         from app.pipeline_v2 import analyze_project
-
-        source = tmp_path / "source.mp4"
-        source.write_bytes(b"src")
-        project_id = _create_project(db_session, str(source))
 
         monkeypatch.setattr(
             pv2.media_mod, "probe",
@@ -1498,13 +1514,62 @@ class TestAnalyzeSegmentCap:
             return []
 
         monkeypatch.setattr(pv2.face_mod, "propose_segments", spy_propose)
-
         analyze_project(project_id)
+        return captured
 
-        from app.config import settings
-        expected = min(float(settings.SEGMENT_MAX_SECONDS), 10.0)
-        assert captured.get("max_segment_sec") == expected
-        assert captured["max_segment_sec"] <= 10.0
+    def test_null_cap_uses_universal_default(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """No project setting → the cap every model can honour (10s today)."""
+        from app import ai_models
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(db_session, str(source))
+
+        captured = self._capture_cap(project_id, monkeypatch)
+
+        assert captured["max_segment_sec"] == ai_models.UNIVERSAL_MAX_SEGMENT_SEC
+        # Every model can generate a clip this long — that is the whole point.
+        assert ai_models.models_excluded_by_segment_len(
+            captured["max_segment_sec"]
+        ) == []
+
+    def test_project_cap_is_honoured(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """A project set to 30s is cut at 30s — the Seedance 2.5 use case."""
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(db_session, str(source))
+        project = db_session.get(VideoProject, project_id)
+        project.max_segment_sec = 30.0
+        db_session.commit()
+
+        captured = self._capture_cap(project_id, monkeypatch)
+
+        assert captured["max_segment_sec"] == 30.0
+
+    def test_cap_is_clamped_to_the_longest_model(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """A cap no model could generate is clamped, not passed through.
+
+        Reachable only by a direct DB write — the API rejects it — but analysis
+        must not propose segments nothing can generate.
+        """
+        from app import ai_models
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(db_session, str(source))
+        project = db_session.get(VideoProject, project_id)
+        project.max_segment_sec = 600.0
+        db_session.commit()
+
+        captured = self._capture_cap(project_id, monkeypatch)
+
+        assert captured["max_segment_sec"] == ai_models.ABSOLUTE_MAX_SEGMENT_SEC
 
 
 # ---------------------------------------------------------------------------
@@ -1967,3 +2032,262 @@ class TestParallelStitchOrdering:
 
         results = [fut.result() for fut in ordered_futures]
         assert results == inputs
+
+
+# ---------------------------------------------------------------------------
+# Tests: Seedance 2.5 — the payload rules that differ from the 2.0 family
+# ---------------------------------------------------------------------------
+
+
+class TestSeedance25Payload:
+    """Seedance 2.5 differs from 2.0 in three ways that all reach the wire.
+
+    1. It classifies our submissions as video editing (we always attach a
+       reference video), and in that mode it derives BOTH the output ratio and
+       duration from the input clip — rejecting the request with a 500 unless
+       told `aspect_ratio="adaptive"` and `duration=-1`, even when the ratio
+       matches the source.
+    2. Its input clip must be 4-30s, so short segments are padded further than
+       the 2.0 family needs.
+    3. It exposes `generate_audio`; the 2.0 family rejects the field, so the key
+       must be absent from their payloads entirely.
+    """
+
+    @staticmethod
+    def _mock_media(monkeypatch, *, duration_sec):
+        from app.media import MediaInfo
+        import app.pipeline_v2 as pv2
+
+        monkeypatch.setattr(
+            pv2.media_mod, "probe",
+            lambda _p: MediaInfo(
+                duration_sec=duration_sec, width=1080, height=1920,
+                fps=25.0, aspect_ratio="9:16", has_audio=True,
+            ),
+        )
+        cut_calls: list[dict] = []
+
+        def spy_cut_clip(_src, start, end, dst, *, include_audio=True):
+            cut_calls.append({"start": start, "end": end, "dst": dst})
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "wb") as fh:
+                fh.write(b"clip")
+
+        monkeypatch.setattr(pv2.media_mod, "cut_clip", spy_cut_clip)
+
+        def spy_stitch(_clips, audio_source, dst, **kw):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, "wb") as fh:
+                fh.write(b"final")
+
+        monkeypatch.setattr(pv2.media_mod, "stitch", spy_stitch)
+        return cut_calls
+
+    @staticmethod
+    def _make_run(db_session, project_id, *, model, audio_mode="original",
+                  resolution="720p"):
+        run = Run(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            name="t",
+            prompt="Replace the character",
+            reference_image_urls=[],
+            model=model,
+            resolution=resolution,
+            audio_mode=audio_mode,
+            status=RunStatus.queued,
+        )
+        db_session.add(run)
+        db_session.commit()
+        return run.id
+
+    @staticmethod
+    def _one_swap(db_session, project_id, *, start=0.0, end=20.0):
+        db_session.add(
+            SegmentDef(project_id=project_id, index=0, start_sec=start,
+                       end_sec=end, has_face=True, action="swap")
+        )
+        db_session.commit()
+
+    def _run_one(self, db_session, tmp_path, monkeypatch, *, model,
+                 seg_end=20.0, duration=20.0, audio_mode="original",
+                 resolution="720p"):
+        from app.pipeline_v2 import process_run
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(
+            db_session, str(source), status=ProjectStatus.ready
+        )
+        # A 20s swap segment only survives submit on a 30s model; give the
+        # project a matching cap so the fixture mirrors real usage. The aspect
+        # ratio is normally written by analyze_project (which these tests skip),
+        # and it is the value the submit path forwards — so set it here, or the
+        # "2.0 sends the real ratio" assertion has no ratio to send.
+        project = db_session.get(VideoProject, project_id)
+        project.max_segment_sec = 30.0
+        project.aspect_ratio = "9:16"
+        db_session.commit()
+        self._one_swap(db_session, project_id, end=seg_end)
+        run_id = self._make_run(
+            db_session, project_id, model=model, audio_mode=audio_mode,
+            resolution=resolution,
+        )
+        cut_calls = self._mock_media(monkeypatch, duration_sec=duration)
+        fake_kie = FakeKieClient(str(source))
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+        return fake_kie, cut_calls, run_id
+
+    def test_sends_adaptive_and_follow_input_duration(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """The pair that a real prod run 500'd on before this was fixed."""
+        fake_kie, _cuts, _rid = self._run_one(
+            db_session, tmp_path, monkeypatch, model="seedance-2-5"
+        )
+
+        assert len(fake_kie.create_task_records) == 1
+        rec = fake_kie.create_task_records[0]
+        assert rec["model"] == "bytedance/seedance-2-5"
+        # "adaptive" even though the source genuinely is 9:16.
+        assert rec["aspect_ratio"] == "adaptive"
+        assert rec["duration"] == -1
+
+    def test_seedance_2_0_still_sends_concrete_geometry(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """The 2.0 family is untouched: real ratio, rounded whole-second length."""
+        fake_kie, _cuts, _rid = self._run_one(
+            db_session, tmp_path, monkeypatch, model="seedance",
+            seg_end=8.0, duration=8.0, resolution="480p",
+        )
+
+        rec = fake_kie.create_task_records[0]
+        assert rec["model"] == "bytedance/seedance-2"
+        assert rec["aspect_ratio"] == "9:16"
+        assert rec["duration"] == 8
+
+    def test_generate_audio_omitted_for_the_2_0_family(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """2.0 rejects the field outright, so the key must never be sent."""
+        fake_kie, _cuts, _rid = self._run_one(
+            db_session, tmp_path, monkeypatch, model="seedance",
+            seg_end=8.0, duration=8.0, resolution="480p",
+        )
+
+        assert fake_kie.create_task_records[0]["generate_audio"] is None
+
+    def test_generate_audio_false_when_the_source_track_is_overlaid(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """audio_mode="original" overlays the source track at stitch time, so
+        generated audio would be paid for and thrown away."""
+        fake_kie, _cuts, _rid = self._run_one(
+            db_session, tmp_path, monkeypatch, model="seedance-2-5",
+            audio_mode="original",
+        )
+
+        assert fake_kie.create_task_records[0]["generate_audio"] is False
+
+    def test_generate_audio_true_when_clip_audio_is_delivered(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """audio_mode="seedance" keeps each clip's own audio, so it must exist."""
+        fake_kie, _cuts, _rid = self._run_one(
+            db_session, tmp_path, monkeypatch, model="seedance-2-5",
+            audio_mode="seedance",
+        )
+
+        assert fake_kie.create_task_records[0]["generate_audio"] is True
+
+    def test_unsupported_resolution_is_coerced_not_downgraded_to_cheapest(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """A 1080p run on 2.5 (720p max) submits 720p — not 480p."""
+        fake_kie, _cuts, _rid = self._run_one(
+            db_session, tmp_path, monkeypatch, model="seedance-2-5",
+            resolution="1080p",
+        )
+
+        assert fake_kie.create_task_records[0]["resolution"] == "720p"
+
+    def test_short_segment_is_padded_to_the_models_own_floor(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """2.5 rejects an input clip under 4s, where 2.0 accepts ~2s."""
+        _kie, cuts, _rid = self._run_one(
+            db_session, tmp_path, monkeypatch, model="seedance-2-5",
+            seg_end=2.5, duration=30.0,
+        )
+
+        assert cuts, "expected a clip cut"
+        clip_len = cuts[0]["end"] - cuts[0]["start"]
+        assert clip_len >= 4.0 - 0.05, clip_len
+
+    def test_source_shorter_than_the_models_floor_falls_back(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """Nothing to pad to — deterministic, so the original footage is used
+        and the run still delivers rather than blocking forever."""
+        _kie, _cuts, run_id = self._run_one(
+            db_session, tmp_path, monkeypatch, model="seedance-2-5",
+            seg_end=2.0, duration=2.0,
+        )
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            run = s.get(Run, run_id)
+            assert run.status == RunStatus.done
+            assert run.source_fallback_segments == 1
+            rs = s.query(RunSegment).filter(RunSegment.run_id == run_id).one()
+            assert rs.source_fallback is True
+            assert "minimum" in (rs.error_message or "")
+
+
+class TestClipTrimGivesBackRollContextFirst:
+    """When pre/post-roll pushes a clip over the model's ceiling, the roll
+    context is what gets trimmed — never the operator's own segment.
+
+    The naive `clip_end = clip_start + max_clip` spends the whole budget on
+    pre-roll and drops real segment footage off the tail, which both swaps
+    footage nobody marked and leaves marked footage un-swapped.
+    """
+
+    def test_segment_survives_intact_when_the_clip_is_over_the_ceiling(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        from app.pipeline_v2 import process_run
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(
+            db_session, str(source), status=ProjectStatus.ready
+        )
+        # 9.5s segment + 2.0 pre-roll + 0.5 post-roll = a 12s clip on a 10s model.
+        db_session.add(
+            SegmentDef(project_id=project_id, index=0, start_sec=2.0,
+                       end_sec=11.5, has_face=True, action="swap",
+                       pre_roll_sec=2.0, post_roll_sec=0.5)
+        )
+        db_session.commit()
+        run = Run(
+            id=str(uuid.uuid4()), project_id=project_id, name="t",
+            prompt="p", reference_image_urls=[], model="gemini-omni",
+            resolution="720p", audio_mode="original", status=RunStatus.queued,
+        )
+        db_session.add(run)
+        db_session.commit()
+        run_id = run.id
+
+        cuts = TestSeedance25Payload._mock_media(monkeypatch, duration_sec=30.0)
+        process_run(run_id, kie=FakeKieClient(str(source)),
+                    gdrive=FakeGDriveClient())
+
+        assert cuts, "expected a clip cut"
+        start, end = cuts[0]["start"], cuts[0]["end"]
+        # Trimmed to the ceiling…
+        assert end - start <= 10.0 + 1e-6
+        # …but the segment's own [2.0, 11.5] is fully inside the clip.
+        assert start <= 2.0 + 1e-6
+        assert end >= 11.5 - 1e-6

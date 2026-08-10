@@ -264,26 +264,38 @@ function copySrcLink(btn) {
         <!-- Model -->
         <div class="form-group">
           <label for="run-model">Model</label>
+          {# Options come from app/ai_models.py — add a model there, not here.
+             Models whose per-clip ceiling is below this project's segmentation
+             cap are still selectable (the operator may have hand-edited the
+             segments shorter), but they are labelled: picking one without
+             splitting the long segments first delivers the ORIGINAL, un-swapped
+             footage for those segments. `default_model` is already narrowed to a
+             compatible model by web_v2._new_run_defaults. #}
           <select id="run-model" name="model" onchange="onModelChange()">
-            <option value="seedance" {% if default_model == "seedance" %}selected{% endif %}>Seedance — video-to-video character swap</option>
-            <option value="seedance-fast" {% if default_model == "seedance-fast" %}selected{% endif %}>Seedance Fast — faster, cheaper character swap</option>
-            <option value="seedance-mini" {% if default_model == "seedance-mini" %}selected{% endif %}>Seedance Mini — lightweight character swap</option>
-            <option value="gemini-omni" {% if default_model == "gemini-omni" %}selected{% endif %}>Gemini Omni — multimodal video generation</option>
+            {% for key, spec in ai_models.items() %}
+            <option value="{{ key }}"{% if default_model == key %} selected{% endif %}>
+              {{ spec.label }} — {{ spec.hint }}
+              {%- if key in models_over_cap %} ⚠ max {{ "%g"|format(spec.max_clip_sec) }}s &lt; this project's {{ "%g"|format(segment_cap_sec) }}s segments{% endif %}
+            </option>
+            {% endfor %}
           </select>
-          <p class="hint" id="model-hint" style="display:none">
-            Gemini Omni caps each segment at 10s of generated output. Swap segments longer than 10s are skipped (the original clip is kept).
-          </p>
-          <p class="hint" id="omni-length-warning"
+          <!-- Text filled in by onModelChange() from MODEL_LIMITS. -->
+          <p class="hint" id="model-hint" style="display:none"></p>
+          <p class="hint" id="model-length-warning"
              style="display:none; color:var(--color-danger,#c0392b); font-weight:600"></p>
         </div>
 
         <!-- Resolution (options depend on the selected model) -->
         <div class="form-group">
           <label for="run-resolution">Resolution</label>
+          {# Server-rendered set for the default model; onModelChange() rebuilds
+             this list (with the longer labels) from MODEL_RESOLUTIONS on load
+             and on every model change. #}
+          {% set default_model_spec = ai_models.get(default_model) or ai_models.get("seedance") %}
           <select id="run-resolution" name="resolution" data-default="{{ default_resolution }}">
-            <option value="480p">480p — cheapest, use for tests</option>
-            <option value="720p">720p — balanced</option>
-            <option value="1080p">1080p — production quality</option>
+            {% for r in default_model_spec.resolutions %}
+            <option value="{{ r }}" {% if r == default_resolution %}selected{% endif %}>{{ r }}</option>
+            {% endfor %}
           </select>
         </div>
 
@@ -299,10 +311,8 @@ function copySrcLink(btn) {
             Generated clip audio = audio from each generated clip (use if the original drifts out of sync;
             silent segments fall back to silence).
           </p>
-          <p class="hint" id="audio-omni-note" style="display:none">
-            Gemini Omni generates video without audio, so the original source
-            soundtrack is always used.
-          </p>
+          <!-- Text filled in by onModelChange() for models that produce no audio. -->
+          <p class="hint" id="model-audio-note" style="display:none"></p>
         </div>
 
         <!-- Reference images -->
@@ -391,14 +401,16 @@ function handleRunCreated(event) {
 }
 
 // __ Model → resolution options __
-// Each backend supports a different resolution set; rebuild the dropdown when
-// the model changes so only valid options are offered.
-var MODEL_RESOLUTIONS = {
-  'seedance':    [['480p','480p — cheapest, use for tests'], ['720p','720p — balanced'], ['1080p','1080p — production quality']],
-  'seedance-fast': [['480p','480p — cheapest, use for tests'], ['720p','720p — balanced']],
-  'seedance-mini': [['480p','480p — cheapest, use for tests'], ['720p','720p — balanced']],
-  'gemini-omni': [['720p','720p — balanced'], ['1080p','1080p — production quality'], ['4k','4k — maximum quality']]
-};
+// {model: [[value, label], ...]} — serialised from app/ai_models.py so this map
+// is never a hand-kept copy of the registry. Each backend supports a different
+// resolution set; rebuild the dropdown when the model changes so only valid
+// options are offered.
+var MODEL_RESOLUTIONS = {{ model_resolutions_json | safe }};
+
+// {model: {max_clip_sec, produces_audio, label}} — serialised from the same
+// registry. Drives the model hint, the audio lock and the too-long-segment
+// warning, so none of those restate a model's limits.
+var MODEL_LIMITS = {{ model_limits_json | safe }};
 
 function onModelChange() {
   var modelSel = document.getElementById('run-model');
@@ -406,7 +418,11 @@ function onModelChange() {
   var hint = document.getElementById('model-hint');
   if (!modelSel || !resSel) return;
   var model = modelSel.value;
-  var opts = MODEL_RESOLUTIONS[model] || MODEL_RESOLUTIONS['seedance'];
+  // Fall back to the server-chosen default rather than a hardcoded key — if
+  // 'seedance' ever leaves the registry this would otherwise throw on the
+  // .map() below and abort onModelChange before the audio lock and the
+  // segment-length check ever run.
+  var opts = MODEL_RESOLUTIONS[model] || MODEL_RESOLUTIONS['{{ default_model }}'] || [];
   var prev = resSel.value;
   var preferred = resSel.getAttribute('data-default') || '720p';
   while (resSel.firstChild) resSel.removeChild(resSel.firstChild);
@@ -422,32 +438,55 @@ function onModelChange() {
   if (values.indexOf(prev) !== -1) resSel.value = prev;
   else if (values.indexOf(preferred) !== -1) resSel.value = preferred;
   else resSel.value = values[0];
-  if (hint) hint.style.display = (model === 'gemini-omni') ? '' : 'none';
 
-  // Gemini Omni produces no audio → lock audio mode to "original".
-  var audioSel = document.getElementById('run-audio-mode');
-  var audioNote = document.getElementById('audio-omni-note');
-  var isOmni = (model === 'gemini-omni');
-  if (audioSel) {
-    if (isOmni) audioSel.value = 'original';
-    audioSel.disabled = isOmni;
+  var limits = MODEL_LIMITS[model];
+
+  // Every model has its own per-clip ceiling — say which one applies.
+  if (hint) {
+    if (limits) {
+      hint.textContent = limits.label + ' generates at most ' + limits.max_clip_sec
+        + 's per segment. Longer swap segments are delivered as the original, '
+        + 'un-swapped footage.';
+      hint.style.display = '';
+    } else {
+      hint.textContent = '';
+      hint.style.display = 'none';
+    }
   }
-  if (audioNote) audioNote.style.display = isOmni ? '' : 'none';
 
-  checkOmniSegmentLengths();
+  // A model that produces no audio (Gemini Omni today) can only be delivered
+  // with the source soundtrack → lock audio mode to "original".
+  var audioSel = document.getElementById('run-audio-mode');
+  var audioNote = document.getElementById('model-audio-note');
+  var noAudio = !!(limits && !limits.produces_audio);
+  if (audioSel) {
+    if (noAudio) audioSel.value = 'original';
+    audioSel.disabled = noAudio;
+  }
+  if (audioNote) {
+    audioNote.textContent = noAudio
+      ? (limits.label + ' generates video without audio, so the original source '
+         + 'soundtrack is always used.')
+      : '';
+    audioNote.style.display = noAudio ? '' : 'none';
+  }
+
+  checkSegmentLengths();
 }
 
-// Gemini Omni generates at most 10s per segment (OMNI_MAX_CLIP_SECONDS in the
-// backend). Auto-segmentation already caps at 10s, but an operator can hand-edit
-// a segment longer than that — warn that those swaps will be skipped when Gemini
-// is the selected model.
-var OMNI_MAX_CLIP_SECONDS = 10;
-
-function checkOmniSegmentLengths() {
+// Each model generates at most max_clip_sec per segment (ai_models.AI_MODELS in
+// the backend). The project's segmentation cap (VideoProject.max_segment_sec)
+// may be higher than the selected model's ceiling, and an operator can hand-edit
+// a segment longer still. Warn about those segments: they are skipped at submit
+// time and the stitch delivers their ORIGINAL, un-swapped footage instead — the
+// run completes and delivers, just with less swapping than was asked for.
+function checkSegmentLengths() {
   var modelSel = document.getElementById('run-model');
-  var warn = document.getElementById('omni-length-warning');
+  var warn = document.getElementById('model-length-warning');
   if (!modelSel || !warn) return;
-  if (modelSel.value !== 'gemini-omni') { warn.style.display = 'none'; return; }
+  var limits = MODEL_LIMITS[modelSel.value];
+  if (!limits) { warn.style.display = 'none'; return; }
+  var maxSec = limits.max_clip_sec;
 
   var offending = [];
   document.querySelectorAll('#seg-tbody .seg-row').forEach(function(row) {
@@ -457,7 +496,7 @@ function checkOmniSegmentLengths() {
     var endEl = row.querySelector('.seg-end');
     if (!startEl || !endEl) return;
     var dur = parseFloat(endEl.value) - parseFloat(startEl.value);
-    if (isFinite(dur) && dur > OMNI_MAX_CLIP_SECONDS + 0.05) {
+    if (isFinite(dur) && dur > maxSec + 0.05) {
       var idxCell = row.querySelector('.seg-index-cell');
       var idx = idxCell ? idxCell.textContent.trim() : '?';
       offending.push('#' + idx + ' (' + dur.toFixed(1) + 's)');
@@ -466,10 +505,10 @@ function checkOmniSegmentLengths() {
 
   if (offending.length) {
     warn.textContent =
-      '⚠ Gemini Omni generates at most ' + OMNI_MAX_CLIP_SECONDS + 's per segment. '
-      + 'These swap segments are longer and will be SKIPPED (the original clip is '
-      + 'kept instead): ' + offending.join(', ') + '. Split them to ≤'
-      + OMNI_MAX_CLIP_SECONDS + 's, mark them "keep", or switch to Seedance.';
+      '⚠ ' + limits.label + ' generates at most ' + maxSec + 's per segment. '
+      + 'These swap segments are longer, so the ORIGINAL un-swapped footage will '
+      + 'be delivered for them: ' + offending.join(', ') + '. Split them to ≤'
+      + maxSec + 's, mark them "keep", or pick a model with a longer ceiling.';
     warn.style.display = '';
   } else {
     warn.style.display = 'none';
@@ -478,12 +517,12 @@ function checkOmniSegmentLengths() {
 
 // Re-check whenever segment timings/actions change (delegated so it also covers
 // rows added after load). Selects fire "change"; number inputs fire "input".
-(function bindOmniLengthCheck() {
+(function bindSegmentLengthCheck() {
   var tbody = document.getElementById('seg-tbody');
-  if (!tbody || tbody._omniBound) return;
-  tbody._omniBound = true;
-  tbody.addEventListener('input', checkOmniSegmentLengths);
-  tbody.addEventListener('change', checkOmniSegmentLengths);
+  if (!tbody || tbody._lenBound) return;
+  tbody._lenBound = true;
+  tbody.addEventListener('input', checkSegmentLengths);
+  tbody.addEventListener('change', checkSegmentLengths);
 })();
 
 document.addEventListener('DOMContentLoaded', onModelChange);
@@ -566,7 +605,7 @@ function recomputeStarts() {
     if (startInp) startInp.value = (idx === 0) ? 0 : parseFloat(prevEnd.toFixed(3));
     if (endInp) prevEnd = parseFloat(endInp.value);
   });
-  if (typeof checkOmniSegmentLengths === 'function') checkOmniSegmentLengths();
+  if (typeof checkSegmentLengths === 'function') checkSegmentLengths();
 }
 
 // Re-apply linked-boundary listeners to all editable end inputs.

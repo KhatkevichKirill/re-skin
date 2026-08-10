@@ -36,6 +36,26 @@
           <p class="hint">The prompt and reference images are entered when you create a Run, not here.</p>
         </div>
 
+        <!-- Max segment length (analysis-time segmentation cap) -->
+        <div class="form-group">
+          <label for="new-project-max-segment">Max segment length</label>
+          <select id="new-project-max-segment" name="max_segment_sec">
+            <option value="" selected>10s — works with every model (default)</option>
+            <option value="15">15s — Seedance 2.0 and 2.5 only</option>
+            <option value="30">30s — Seedance 2.5 only (fewer seams, longer clips)</option>
+          </select>
+          <p class="hint">
+            Applied when the video is <strong>analyzed</strong>: it caps how long a single
+            swap segment may be. Longer segments mean fewer stitch seams and less identity
+            drift across cuts, but they <strong>lock the project to the models that can
+            generate them</strong>: a run on a model with a lower per-clip limit cannot
+            produce the over-long segments, so it delivers the <strong>original,
+            un-swapped footage</strong> for them and flags the run as partly swapped.
+            Timing and audio still line up. Pick the cap that matches the model you
+            intend to run — you can change it later on the project page and re-analyze.
+          </p>
+        </div>
+
         <div class="action-row">
           <button type="submit" class="btn btn-primary">
             <span class="htmx-indicator spinner"></span>

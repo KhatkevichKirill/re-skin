@@ -45,7 +45,7 @@ function deleteThisRun(rid, pid) {
       {% endif %}
       <div class="meta-item">
         <label>Model</label>
-        <div class="val">{% if run.model == "gemini-omni" %}Gemini Omni{% elif run.model == "seedance-fast" %}Seedance Fast{% elif run.model == "seedance-mini" %}Seedance Mini{% else %}Seedance{% endif %}</div>
+        <div class="val">{{ run.model | model_label }}</div>
       </div>
       <div class="meta-item">
         <label>Resolution</label>
@@ -65,7 +65,10 @@ function deleteThisRun(rid, pid) {
 
 {% if status_val in ("done", "failed") %}
 <!-- __ Copy run: launch 1–10 copies, each with its own photo / quality / name __ -->
-{% set copy_res = ["720p", "1080p", "4k"] if run.model == "gemini-omni" else (["480p", "720p"] if run.model in ["seedance-fast", "seedance-mini"] else ["480p", "720p", "1080p"]) %}
+{# Resolutions this run's model actually supports, straight off the registry
+   (web_v2 passes ai_models) — the copy control must not offer a tier that
+   create_run would reject. #}
+{% set copy_res = (ai_models.get(run.model) or ai_models.get("seedance")).resolutions %}
 <div class="card">
   <div class="card-header"><h2>Copy run</h2></div>
   <div class="card-body">
