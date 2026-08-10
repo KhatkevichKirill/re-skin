@@ -1,0 +1,350 @@
+{# Localisation transcript panel (docs/localisation.md §7 / §8).
+
+   Self-polls every 3s ONLY while a transcription is queued or running; every
+   other state is terminal, so the rendered fragment drops the hx-* attributes
+   and polling stops naturally (same pattern as partials/project_merges_list.html
+   and run_status_content.html).
+
+   Two rules the layout follows from that:
+
+   1. Nothing typeable is rendered in a polling state. The panel replaces its
+      own innerHTML every 3s, so an input shown next to that spinner would lose
+      a keystroke every three seconds. The editor therefore renders in the four
+      NON-polling states (never requested / ready / empty / failed, plus a
+      "pending" that analysis failure has stranded) — which is also what §8's
+      fallback needs: a failed transcription has to leave the project usable by
+      letting the operator type the lines in by hand.
+   2. Every state offers a way out. A transcription that is queued or running
+      can be restarted (RQ kills a job at TRANSCRIBE_JOB_TIMEOUT and nothing
+      writes "failed" for it, so "running" can outlive its worker), and every
+      terminal state can be re-run or hand-edited.
+
+   Rendered for localisation projects only — every other type has nothing to
+   transcribe, and web_v2._transcript_context resolves the flag through
+   spec_for() so an unknown project_type never turns this on. #}
+{% if is_localisation %}
+<div
+  class="card"
+  id="transcript-card"
+  {% if transcript_active %}
+  hx-get="/v2/projects/{{ project.id }}/transcript-fragment"
+  hx-trigger="every 3s"
+  hx-target="#project-transcript-content"
+  hx-swap="innerHTML"
+  {% endif %}
+>
+  <div class="card-header">
+    <h2>Transcript</h2>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">
+      {% if transcript_status %}{{ transcript_status }}{% else %}not requested{% endif %}
+    </span>
+  </div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">
+      What is said in the source video: verbatim lines with timestamps and speaker
+      labels grounded in what is visible on screen. It belongs to the project, not to a
+      run — one transcription is reused by every run and every target language. The New
+      Run form's <strong>Translate</strong> button builds the run prompt from it, so
+      whatever you correct here is what gets translated.
+    </p>
+
+    {# ── State banner ─────────────────────────────────────────────────── #}
+    {% if transcript_awaiting_analysis %}
+    <div class="polling-section">
+      <span class="spinner"></span>
+      <span>Transcription is queued — it starts as soon as analysis has fetched and
+        probed the video. This panel updates by itself.</span>
+    </div>
+
+    {% elif transcript_active %}
+    <div class="polling-section">
+      <span class="spinner"></span>
+      <span>Transcribing&hellip; (status: <strong>{{ transcript_status }}</strong>)
+        this reads the whole video and takes a minute or two.</span>
+    </div>
+    <div class="action-row" style="margin-top:10px">
+      <button type="button" class="btn btn-sm btn-secondary"
+              onclick="requestTranscript('{{ project.id }}', this, 'A transcription is already {{ transcript_status }}. Starting another one costs a second model call on the same video. Only do this if it has been stuck for several minutes. Continue?')">Restart transcription</button>
+      <span class="hint" style="margin-left:8px">
+        Only if this has been spinning for more than a few minutes: a worker restart
+        (any deploy) or a provider that never answers leaves the row at
+        <code>{{ transcript_status }}</code> with nothing left to write to it. Restarting
+        pays for another model call, so it asks first.
+      </span>
+    </div>
+
+    {% elif transcript_stalled %}
+    <div class="alert alert-warning">
+      <strong>Transcription never started.</strong>
+      It is queued behind analysis, and this project's analysis failed — so nothing
+      will pick it up. Fix and re-analyze the project, start the transcription by
+      hand below, or just type the lines in yourself.
+    </div>
+
+    {% elif transcript_status == "failed" %}
+    <div class="alert alert-danger">
+      <strong>Transcription failed.</strong>
+      {% if transcript_error %}<div style="margin-top:4px; font-size:12px; word-break:break-word">{{ transcript_error }}</div>{% endif %}
+    </div>
+    <p class="hint">
+      Nothing else is blocked: the project stays fully usable. Run it again, or type
+      the lines into the table below and press Save — a hand-written transcript counts
+      as ready and switches the <strong>Translate</strong> button back on.
+    </p>
+
+    {% elif transcript_status == "empty" %}
+    <div class="alert alert-info">
+      <strong>No speech found in this video.</strong>
+      That is a legal outcome, not an error — a wordless hook has nothing to
+      translate, so the <strong>Translate</strong> button stays disabled. If the model
+      simply missed the speech, type the lines in below and press Save.
+    </div>
+
+    {% elif transcript_status is none %}
+    <p class="text-muted" style="margin-bottom:10px">
+      Not transcribed yet. Transcription normally runs by itself after analysis —
+      start it by hand if it never did, or type the lines in below.
+    </p>
+
+    {% else %}
+    <p class="text-muted" style="margin-bottom:10px">
+      Transcript ready — {{ transcript_lines | length }} line(s). Correct anything the
+      model misheard and press Save; that is what gets translated.
+    </p>
+    {% endif %}
+
+    {# ── Editor + re-run, in every non-polling state (§8 hand-paste
+         fallback: failed / empty / never-requested must all be fixable by
+         hand, not just "ready") ─────────────────────────────────────────── #}
+    {% if transcript_editable %}
+    <div class="action-row" style="margin-bottom:14px">
+      <button type="button"
+              class="btn {% if transcript_status == 'failed' %}btn-warning{% elif transcript_status is none %}btn-primary{% else %}btn-secondary{% endif %}"
+              onclick="requestTranscript('{{ project.id }}', this)"
+        >{% if transcript_status is none %}Transcribe{% else %}Transcribe again{% endif %}</button>
+      <span class="hint" style="margin-left:8px">
+        Re-reads the whole video with the model. The transcript below stays readable
+        until the new one lands.
+      </span>
+    </div>
+
+    <div class="form-group" style="max-width:320px">
+      <label for="transcript-source-language">Detected source language</label>
+      <input type="text" id="transcript-source-language"
+             value="{{ transcript_source_language }}" placeholder="e.g. en" maxlength="8" />
+      <p class="hint" style="margin-bottom:0">
+        ISO 639-1 code, detected from the video rather than assumed. It is one half of
+        the "from X to Y" the translation is asked for — correct it if it is wrong.
+      </p>
+    </div>
+
+    <div style="overflow-x:auto">
+      <table id="transcript-lines">
+        <thead>
+          <tr>
+            <th style="width:34px">#</th>
+            <th style="width:150px">Start / End (s)</th>
+            <th style="width:200px">Speaker</th>
+            <th>Text</th>
+            <th style="width:70px">On screen</th>
+            <th style="width:40px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in transcript_lines %}
+          <tr data-line-index="{{ line.index }}" data-line-id="{{ line.id }}">
+            <td class="text-muted">{{ line.id }}</td>
+            <td style="white-space:nowrap">
+              <input type="number" step="0.1" class="tr-start" style="width:64px"
+                     value="{% if line.start is not none %}{{ "%.1f"|format(line.start) }}{% endif %}" />
+              <span class="text-muted">&ndash;</span>
+              <input type="number" step="0.1" class="tr-end" style="width:64px"
+                     value="{% if line.end is not none %}{{ "%.1f"|format(line.end) }}{% endif %}" />
+            </td>
+            <td><input type="text" class="tr-speaker" value="{{ line.speaker }}" style="width:100%" /></td>
+            <td><textarea class="tr-text" rows="2" style="width:100%; font-size:12px; resize:vertical">{{ line.text }}</textarea></td>
+            <td class="text-center">
+              <input type="checkbox" class="tr-onscreen" {% if line.on_screen %}checked{% endif %} />
+            </td>
+            <td>
+              <button type="button" class="btn btn-sm btn-danger"
+                      title="Drop this line" onclick="this.closest('tr').remove()">X</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if not transcript_lines %}
+    <p class="text-muted" id="transcript-no-lines" style="margin-top:8px">
+      This transcript has no lines. Press <strong>Add line</strong> to type one in —
+      a hand-written transcript is the documented fallback when the model is down or
+      wrong, and saving one counts as <code>ready</code>.
+    </p>
+    {% endif %}
+    <p class="hint">
+      <strong>Speaker</strong> is what Seedance uses to map a line onto a person it can
+      see, so describe the role visibly ("the woman in the red jacket", "off-screen
+      interviewer") rather than numbering them. <strong>Text</strong> is verbatim on
+      purpose — fillers and false starts included, because line length is what makes the
+      translation fit the same number of seconds. Timestamps are seconds from the start
+      of the source. Nothing here is saved until you press Save.
+    </p>
+
+    <div class="action-row">
+      <button type="button" class="btn btn-primary"
+              onclick="saveTranscript('{{ project.id }}', this)">Save transcript</button>
+      <button type="button" class="btn btn-secondary" id="transcript-add-line"
+              onclick="addTranscriptLine()" style="margin-left:8px">Add line</button>
+      <span id="transcript-save-status" class="text-muted"
+            style="font-size:12px; margin-left:8px"></span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+// The stored §4.1 object, verbatim. Edits are merged ONTO it rather than
+// replacing it, so keys this panel does not show (schema_version, model,
+// prompt_version, on_screen_text, a line's source_text) survive a hand edit —
+// PATCH /transcript takes the whole dict.
+var TRANSCRIPT = {{ transcript_json | tojson }};
+
+// Next free line id. PATCH /transcript refuses duplicate ids (a translation is
+// rejoined on them), so a hand-added line must not collide with a stored one.
+var TRANSCRIPT_NEXT_ID = {{ transcript_next_line_id }};
+
+function refreshTranscriptPanel(pid) {
+  if (window.htmx) {
+    htmx.ajax('GET', '/v2/projects/' + encodeURIComponent(pid) + '/transcript-fragment', {
+      target: '#project-transcript-content', swap: 'innerHTML',
+    });
+  } else {
+    location.reload();
+  }
+}
+
+// POST /transcribe returns 202 and flips the status to "pending"; re-rendering
+// the panel is what starts the 3s poll — and, through the out-of-band
+// #translate-gate in that same response, what switches the New Run form's
+// Translate button back off.
+//
+// `confirmMessage` is passed only from the restart control shown under a
+// running job: that is the one call site where clicking costs a second model
+// call on a video that may already be being transcribed, so it is never
+// silent.
+function requestTranscript(pid, btn, confirmMessage) {
+  if (confirmMessage && !window.confirm(confirmMessage)) return;
+  if (btn) btn.disabled = true;
+  fetch('/api/v2/projects/' + encodeURIComponent(pid) + '/transcribe', { method: 'POST' })
+    .then(function (r) {
+      if (r.ok) { refreshTranscriptPanel(pid); return; }
+      return r.json().catch(function () { return {}; }).then(function (b) {
+        if (btn) btn.disabled = false;
+        alert('Could not start transcription: ' + apiErrorText(b, r));
+      });
+    })
+    .catch(function (e) {
+      if (btn) btn.disabled = false;
+      alert('Network error: ' + e);
+    });
+}
+
+// Append an empty, valid row. Timestamps start at 0 rather than blank because
+// PATCH requires numbers; speaker and text are left empty on purpose — the
+// server refuses a blank one with a message, which is a better teacher than a
+// placeholder.
+function addTranscriptLine() {
+  var tbody = document.querySelector('#transcript-lines tbody');
+  if (!tbody) return;
+  var id = TRANSCRIPT_NEXT_ID++;
+  var tr = document.createElement('tr');
+  // -1 = not in the stored lines array, so saveTranscript merges onto {}.
+  tr.dataset.lineIndex = '-1';
+  tr.dataset.lineId = String(id);
+  tr.innerHTML =
+    '<td class="text-muted">' + id + '</td>' +
+    '<td style="white-space:nowrap">' +
+      '<input type="number" step="0.1" class="tr-start" style="width:64px" value="0" />' +
+      '<span class="text-muted">&ndash;</span>' +
+      '<input type="number" step="0.1" class="tr-end" style="width:64px" value="0" />' +
+    '</td>' +
+    '<td><input type="text" class="tr-speaker" style="width:100%" /></td>' +
+    '<td><textarea class="tr-text" rows="2" style="width:100%; font-size:12px; resize:vertical"></textarea></td>' +
+    '<td class="text-center"><input type="checkbox" class="tr-onscreen" /></td>' +
+    '<td><button type="button" class="btn btn-sm btn-danger" title="Drop this line"' +
+      ' onclick="this.closest(\'tr\').remove()">X</button></td>';
+  tbody.appendChild(tr);
+  var emptyNote = document.getElementById('transcript-no-lines');
+  if (emptyNote) emptyNote.style.display = 'none';
+  var speaker = tr.querySelector('.tr-speaker');
+  if (speaker) speaker.focus();
+}
+
+function saveTranscript(pid, btn) {
+  var statusEl = document.getElementById('transcript-save-status');
+  var payload = JSON.parse(JSON.stringify(TRANSCRIPT || {}));
+  var original = Array.isArray(payload.lines) ? payload.lines : [];
+
+  var srcInp = document.getElementById('transcript-source-language');
+  if (srcInp) payload.source_language = srcInp.value.trim();
+
+  var lines = [];
+  document.querySelectorAll('#transcript-lines tbody tr').forEach(function (tr) {
+    var i = parseInt(tr.dataset.lineIndex, 10);
+    var line = Object.assign({}, (i >= 0 && original[i]) ? original[i] : {});
+    // The id the row was rendered with — repaired server-side when the stored
+    // one was missing or duplicated, so Save works on a damaged transcript
+    // instead of 400-ing on it.
+    var id = parseInt(tr.dataset.lineId, 10);
+    if (isFinite(id)) line.id = id;
+    var start = parseFloat(tr.querySelector('.tr-start').value);
+    var end = parseFloat(tr.querySelector('.tr-end').value);
+    // A blanked-out timestamp keeps whatever was stored rather than writing
+    // NaN into the transcript the prompt builder slices on; a new row that was
+    // never filled in falls back to 0, which is a legal timestamp.
+    if (isFinite(start)) line.start = start;
+    else if (typeof line.start !== 'number') line.start = 0;
+    if (isFinite(end)) line.end = end;
+    else if (typeof line.end !== 'number') line.end = 0;
+    line.speaker = tr.querySelector('.tr-speaker').value;
+    line.text = tr.querySelector('.tr-text').value;
+    line.on_screen = tr.querySelector('.tr-onscreen').checked;
+    lines.push(line);
+  });
+  payload.lines = lines;
+
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = 'Saving…';
+  fetch('/api/v2/projects/' + encodeURIComponent(pid) + '/transcript', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+    .then(function (r) {
+      if (r.ok) { refreshTranscriptPanel(pid); return; }
+      return r.json().catch(function () { return {}; }).then(function (b) {
+        if (btn) btn.disabled = false;
+        if (statusEl) statusEl.textContent = 'Error: ' + apiErrorText(b, r);
+      });
+    })
+    .catch(function (e) {
+      if (btn) btn.disabled = false;
+      if (statusEl) statusEl.textContent = 'Network error: ' + e;
+    });
+}
+</script>
+
+{# ── Out-of-band refresh of the New Run form's Translate control ──────────
+   Emitted by the polling fragment only (web_v2.project_transcript_fragment
+   passes oob=True), and only when that form is actually on the page — a
+   localisation project whose status is "ready". htmx lifts this element out of
+   the response and swaps it over #translate-gate wherever it sits, so ONE
+   3s poll keeps both the panel and the button honest while #status-content
+   stays frozen around the operator's half-typed prompt. #}
+{% if translate_gate_oob %}
+<div id="translate-gate" hx-swap-oob="true">
+  {% include "partials/translate_gate.html" %}
+</div>
+{% endif %}
+{% endif %}

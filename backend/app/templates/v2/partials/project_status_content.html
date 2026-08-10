@@ -261,6 +261,51 @@ function copySrcLink(btn) {
         </div>
         {% endif %}
 
+        {% if is_localisation %}
+        <!-- Localisation: mode + translation (docs/localisation.md §7) -->
+        <div class="form-group" id="localisation-panel"
+             style="border:1px solid var(--color-border,#e0e0e0); border-radius:6px; padding:10px 12px">
+          <label style="margin-bottom:6px">Localisation</label>
+          <div style="display:flex; flex-direction:column; gap:4px">
+            <label style="font-weight:400">
+              <input type="radio" name="localisation_mode" value="keep"
+                     {% if default_localisation_mode == "keep" %}checked{% endif %}
+                     onchange="onLocalisationModeChange()" />
+              Speech only — the person on screen stays, only the spoken language changes
+            </label>
+            <label style="font-weight:400">
+              <input type="radio" name="localisation_mode" value="swap"
+                     {% if default_localisation_mode == "swap" %}checked{% endif %}
+                     onchange="onLocalisationModeChange()" />
+              Speech + character — also replace the person
+              <span style="color:#dc3545">(reference image required)</span>
+            </label>
+          </div>
+
+          {# The button and its reason line are re-rendered out-of-band by the
+             transcript panel's poll (partials/translate_gate.html) — nothing
+             else in this form ever is, because everything else here holds typed
+             work. #translate-status and #translate-warnings stay OUTSIDE the
+             gate on purpose: they describe the prompt currently in the
+             textarea, which survives a status change. #}
+          <div id="translate-gate">
+            {% include "partials/translate_gate.html" %}
+          </div>
+          <div style="margin-top:6px">
+            <span id="translate-status" style="font-size:12px; color:var(--color-muted)"></span>
+          </div>
+          <p class="hint" style="margin-bottom:0">
+            Translates the transcript's hook window into the language selected below and
+            fills the prompt (and the per-segment prompts, when the hook spans more than
+            one segment) with the mode's template plus the translated dialogue. Nothing is
+            saved — edit the result freely before starting the run.
+          </p>
+          <ul id="translate-warnings"
+              style="display:none; margin:8px 0 0; padding-left:18px; font-size:12px;
+                     color:var(--color-danger,#c0392b)"></ul>
+        </div>
+        {% endif %}
+
         <!-- Model -->
         <div class="form-group">
           <label for="run-model">Model</label>
@@ -270,11 +315,18 @@ function copySrcLink(btn) {
              segments shorter), but they are labelled: picking one without
              splitting the long segments first delivers the ORIGINAL, un-swapped
              footage for those segments. `default_model` is already narrowed to a
-             compatible model by web_v2._new_run_defaults. #}
+             compatible model by web_v2._new_run_defaults.
+
+             `models_without_audio` is only non-empty for a type whose spec sets
+             requires_audio_model (localisation). Those models are DISABLED, not
+             just labelled: a model that emits no audio makes create_run force
+             audio_mode="original", which overlays the untranslated source track
+             over the localised video — there is no way to use one here. #}
           <select id="run-model" name="model" onchange="onModelChange()">
             {% for key, spec in ai_models.items() %}
-            <option value="{{ key }}"{% if default_model == key %} selected{% endif %}>
+            <option value="{{ key }}"{% if key in models_without_audio %} disabled{% endif %}{% if default_model == key %} selected{% endif %}>
               {{ spec.label }} — {{ spec.hint }}
+              {%- if key in models_without_audio %} ⚠ generates no audio — cannot re-voice a hook{% endif %}
               {%- if key in models_over_cap %} ⚠ max {{ "%g"|format(spec.max_clip_sec) }}s &lt; this project's {{ "%g"|format(segment_cap_sec) }}s segments{% endif %}
             </option>
             {% endfor %}
@@ -302,9 +354,13 @@ function copySrcLink(btn) {
         <!-- Audio mode -->
         <div class="form-group">
           <label for="run-audio-mode">Audio</label>
-          <select id="run-audio-mode" name="audio_mode">
-            <option value="original" selected>Original — source soundtrack</option>
-            <option value="seedance">Generated clip audio — from each generated clip</option>
+          <select id="run-audio-mode" name="audio_mode" onchange="onAudioModeChange()">
+            {# Pre-selection comes from web_v2._new_run_defaults: the project type's
+               default_audio_mode, forced to the generated track whenever the project
+               has "Remove original audio" on (there is nothing else worth delivering
+               then). Still overridable. #}
+            <option value="original" {% if default_audio_mode != "seedance" %}selected{% endif %}>Original — source soundtrack</option>
+            <option value="seedance" {% if default_audio_mode == "seedance" %}selected{% endif %}>Generated clip audio — from each generated clip</option>
           </select>
           <p class="hint">
             Original = source soundtrack (best when timing matches, recommended).
@@ -313,14 +369,55 @@ function copySrcLink(btn) {
           </p>
           <!-- Text filled in by onModelChange() for models that produce no audio. -->
           <p class="hint" id="model-audio-note" style="display:none"></p>
+          <!-- Shown by onAudioModeChange() when a localisation run picks "Original". -->
+          <p class="hint" id="audio-localisation-warning"
+             style="display:none; color:var(--color-danger,#c0392b); font-weight:600">
+            &#9888; This is a localisation project. <strong>Original</strong> overlays the
+            untranslated source soundtrack over the re-voiced video: the delivered
+            creative would look localised and still be spoken in the source language.
+            Nothing fails and nothing downstream flags it — the only warning is this
+            one. Keep <strong>Generated clip audio</strong>.
+          </p>
+
+        </div>
+
+        <!-- Language -->
+        <div class="form-group">
+          <label for="run-language">Language</label>
+          <select id="run-language" name="language">
+            {% for code, lang in languages.items() %}
+            <option value="{{ code }}" {% if default_language == code %}selected{% endif %}>{{ lang.label }}</option>
+            {% endfor %}
+          </select>
+          <p class="hint">
+            {% if is_localisation %}
+            The language the hook is <strong>re-spoken in</strong> — the translation target
+            the Translate button above sends. Press Translate again after changing it.
+            {% else %}
+            The spoken language of the delivered creative. Descriptive metadata only —
+            nothing in the pipeline branches on it.
+            {% endif %}
+          </p>
         </div>
 
         <!-- Reference images -->
         <div class="form-group">
           <label>Reference images (max {{ max_refs }})</label>
+          {% if not project_uses_references %}
+          <p class="hint">
+            Not needed for <strong>{{ project_type_label }}</strong> — the prompt does the work. Leave blank.
+          </p>
+          {% endif %}
           <p class="hint">Upload up to {{ max_refs }} image files and/or paste comma-separated URLs below. Combined total must not exceed {{ max_refs }}.</p>
+          {% if is_localisation %}
+          <!-- Shown/hidden by onLocalisationModeChange(); enforced on submit. -->
+          <p class="hint" id="ref-localisation-required" style="display:none; font-weight:600">
+            <span style="color:#dc3545">*</span> Required in <strong>Speech + character</strong>
+            mode — that mode replaces the person, and this is the person it replaces them with.
+          </p>
+          {% endif %}
           <input type="file" name="reference_files" accept="image/*" multiple style="margin-bottom:8px" />
-          <input type="text" name="reference_urls" placeholder="https://example.com/ref1.jpg, https://example.com/ref2.jpg" />
+          <input type="text" name="reference_urls" id="reference-urls" placeholder="https://example.com/ref1.jpg, https://example.com/ref2.jpg" />
         </div>
 
         <!-- GDrive folder -->
@@ -412,6 +509,22 @@ var MODEL_RESOLUTIONS = {{ model_resolutions_json | safe }};
 // warning, so none of those restate a model's limits.
 var MODEL_LIMITS = {{ model_limits_json | safe }};
 
+// True on a localisation project — the one flow where "Original" audio is a
+// silent catastrophe rather than a preference (see onAudioModeChange).
+var LOCALISATION_RUN = {{ is_localisation | tojson }};
+
+// The audio choice is normally a matter of taste, but on a localisation run
+// "Original" overlays the source (untranslated) soundtrack onto the re-voiced
+// video: the delivery looks right, is spoken in the wrong language, and nothing
+// in the pipeline objects. Warn rather than block — the operator may
+// deliberately be re-running a hook that was never localised.
+function onAudioModeChange() {
+  var sel = document.getElementById('run-audio-mode');
+  var warn = document.getElementById('audio-localisation-warning');
+  if (!sel || !warn) return;
+  warn.style.display = (LOCALISATION_RUN && sel.value === 'original') ? '' : 'none';
+}
+
 function onModelChange() {
   var modelSel = document.getElementById('run-model');
   var resSel = document.getElementById('run-resolution');
@@ -470,6 +583,8 @@ function onModelChange() {
       : '';
     audioNote.style.display = noAudio ? '' : 'none';
   }
+  // The lock above can force "original" — re-evaluate the localisation warning.
+  onAudioModeChange();
 
   checkSegmentLengths();
 }
@@ -802,6 +917,183 @@ async function saveSegments(projectId) {
   }
 }
 </script>
+
+
+{% if is_localisation %}
+<script>
+// __ Localisation New Run form (docs/localisation.md §7) __
+//
+// Two jobs, both client-side: swap the pre-filled prompt template when the mode
+// changes, and fetch a translated prompt from
+// POST /api/v2/projects/{pid}/localisation-prompt (which writes NOTHING — it
+// returns text this form drops into its own fields).
+
+// {mode: template} — the two prompt constants from app/project_types.py, the
+// same ones localisation.build_prompt formats server-side.
+var LOCALISATION_PROMPTS = {{ localisation_prompts | tojson }};
+
+// Set once the Translate button has filled the prompt, so a later mode switch
+// can say the translated text is being thrown away rather than doing it mutely.
+var _localisationTranslated = false;
+
+function localisationMode() {
+  var checked = document.querySelector('#new-run-form input[name="localisation_mode"]:checked');
+  return checked ? checked.value : 'keep';
+}
+
+function onLocalisationModeChange() {
+  var mode = localisationMode();
+  var promptEl = document.getElementById('run-prompt');
+  if (promptEl && LOCALISATION_PROMPTS[mode]) promptEl.value = LOCALISATION_PROMPTS[mode];
+
+  var reqHint = document.getElementById('ref-localisation-required');
+  if (reqHint) reqHint.style.display = (mode === 'swap') ? '' : 'none';
+
+  var statusEl = document.getElementById('translate-status');
+  if (statusEl) {
+    // The template just replaced the prompt, translation included. Say so — the
+    // operator would otherwise submit an untranslated template.
+    statusEl.textContent = _localisationTranslated
+      ? 'Mode changed — the prompt was reset to the template. Press Translate again.'
+      : '';
+  }
+  _localisationTranslated = false;
+}
+
+// Render the endpoint's `warnings` list as visible bullets. These are the "a
+// line is cut mid-sentence" / "this translation will not fit its shot" /
+// "your swap segments do not cover the hook" notes — swallowing them is how a
+// bad prompt reaches the model and a generation is paid for twice.
+function renderTranslateWarnings(warnings) {
+  var list = document.getElementById('translate-warnings');
+  if (!list) return;
+  list.textContent = '';
+  if (!warnings || !warnings.length) { list.style.display = 'none'; return; }
+  warnings.forEach(function (w) {
+    var li = document.createElement('li');
+    li.textContent = String(w);
+    list.appendChild(li);
+  });
+  list.style.display = '';
+}
+
+// POST the current language + mode, then fill the run prompt and any per-segment
+// prompt textareas from the response. segment_prompts is keyed by
+// segment_def_id — the same key .seg-prompt-field carries in data-seg-id and
+// collectSegmentPrompts() sends back — and is only populated when the hook spans
+// more than one swap segment.
+function translateHook(projectId) {
+  var btn = document.getElementById('translate-btn');
+  var statusEl = document.getElementById('translate-status');
+  var langSel = document.getElementById('run-language');
+  if (!btn) return;
+
+  var body = new FormData();
+  body.append('language', langSel ? langSel.value : '');
+  body.append('swap_character', localisationMode() === 'swap' ? 'true' : 'false');
+
+  btn.disabled = true;
+  if (statusEl) statusEl.textContent = 'Translating…';
+  renderTranslateWarnings([]);
+
+  fetch('/api/v2/projects/' + encodeURIComponent(projectId) + '/localisation-prompt',
+        { method: 'POST', body: body })
+    .then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (!r.ok) {
+          // 409 = the transcript is no longer ready (a re-transcription started
+          // elsewhere). Re-render the panel so the button catches up with the
+          // truth instead of staying enabled and 409-ing again.
+          if (r.status === 409 && typeof refreshTranscriptPanel === 'function') {
+            refreshTranscriptPanel(projectId);
+          }
+          // apiErrorText, not data.detail: FastAPI's own 422 sends `detail` as
+          // an ARRAY of error objects, which string-concatenates to
+          // "[object Object]".
+          throw new Error(apiErrorText(data, r));
+        }
+        return data;
+      });
+    })
+    .then(function (data) {
+      var promptEl = document.getElementById('run-prompt');
+      if (promptEl && data.prompt) promptEl.value = data.prompt;
+
+      var segPrompts = data.segment_prompts || {};
+      document.querySelectorAll('#new-run-form .seg-prompt-field').forEach(function (t) {
+        var text = segPrompts[t.dataset.segId];
+        if (!text) return;
+        t.value = text;
+        // Open the collapsed <details> so a filled-in per-segment prompt is
+        // never hidden behind a closed summary at submit time.
+        var d = t.closest('details');
+        while (d) { d.open = true; d = d.parentElement ? d.parentElement.closest('details') : null; }
+      });
+
+      _localisationTranslated = true;
+      if (statusEl) {
+        // Echo the window that was actually cut — hook_sec comes from the
+        // project's analyzed segments (or the settings default), not from
+        // anything on this form, so it is the one number the operator cannot
+        // otherwise see.
+        statusEl.textContent =
+          (data.source_language || '?') + ' → ' + (data.target_language || '?')
+          + ' · ' + ((data.lines || []).length) + ' line(s)'
+          + (data.hook_sec ? ' from the first ' + data.hook_sec.toFixed(1) + 's' : '');
+      }
+      renderTranslateWarnings(data.warnings || []);
+    })
+    .catch(function (err) {
+      if (statusEl) statusEl.textContent = '';
+      renderTranslateWarnings(['Translation failed: ' + (err.message || err)]);
+    })
+    .finally(function () {
+      // Re-query rather than reusing `btn`: the transcript panel may have
+      // swapped the whole gate out-of-band while this request was in flight,
+      // and re-enabling a button whose transcript is no longer ready would hand
+      // back a control that can only 409.
+      var live = document.getElementById('translate-btn');
+      if (live && live.dataset.transcriptStatus === 'ready') live.disabled = false;
+    });
+}
+
+// "Speech + character" replaces the person on screen, so it cannot work without
+// a reference image. Blocked client-side because the API cannot tell the two
+// modes apart — the mode is a form-level choice that only picks a prompt
+// template, so a swap-mode run with no reference is a perfectly valid request
+// that quietly produces the wrong video.
+function localisationSubmitBlocker() {
+  if (localisationMode() !== 'swap') return null;
+  var files = document.querySelector('#new-run-form input[name="reference_files"]');
+  var urls = document.getElementById('reference-urls');
+  var has = (files && files.files && files.files.length > 0)
+    || (urls && urls.value.trim() !== '');
+  if (has) return null;
+  return '"Speech + character" replaces the person on screen, so it needs a reference '
+    + 'image: upload one, paste a URL, or switch to "Speech only".';
+}
+
+(function bindLocalisationSubmitGuard() {
+  var form = document.getElementById('new-run-form');
+  if (!form || form._locGuardBound) return;
+  form._locGuardBound = true;
+  form.addEventListener('submit', function (event) {
+    var blocker = localisationSubmitBlocker();
+    if (!blocker) return;
+    event.preventDefault();
+    event.stopPropagation();
+    window.alert(blocker);
+  }, true);
+})();
+
+// Re-stamp the template the server already rendered (same text) and show the
+// reference-required hint for the mode the registry defaulted to. Runs on both
+// paths because this fragment arrives via HTMX swap as often as via page load —
+// a DOMContentLoaded-only binding would never fire on the normal path.
+document.addEventListener('DOMContentLoaded', onLocalisationModeChange);
+onLocalisationModeChange();
+</script>
+{% endif %}
 
 {% elif sv == "failed" %}
 <!-- __ Failed __ -->

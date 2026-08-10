@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import uuid
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     Form,
@@ -33,9 +35,17 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from . import ai_models
+from . import languages
+from . import localisation
 from .config import settings
 from .db import get_db
 from .models import Run, RunSegment, SegmentDef, VideoProject
+from .project_types import (
+    DEFAULT_PROJECT_TYPE,
+    LOCALISATION,
+    VALID_PROJECT_TYPES,
+    spec_for,
+)
 from .schemas_v2 import (
     NewSegmentDef,
     ProjectCreateResponse,
@@ -49,10 +59,16 @@ from .schemas_v2 import (
     RunSegmentResponse,
     SegmentDefResponse,
     SegmentsUpdateRequest,
+    LocalisationPromptResponse,
+    TranscriptResponse,
 )
 from .state_machine import InvalidTransition, ProjectStatus, RunStatus, SegmentStatus, transition
 from .storage import project_dir, project_source_path, run_dir
-from .tasks import enqueue_analyze_project, enqueue_process_run
+from .tasks import (
+    enqueue_analyze_project,
+    enqueue_process_run,
+    enqueue_transcribe_project,
+)
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +91,15 @@ _MAX_BATCH_COPY_RUNS = 10
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _validate_project_type(project_type: str) -> None:
+    """400 unless *project_type* is one of the registered flows."""
+    if project_type not in VALID_PROJECT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"project_type must be one of {sorted(VALID_PROJECT_TYPES)}",
+        )
 
 
 # Floor for the per-project segmentation cap. NOT ai_models.min_clip_sec, which
@@ -142,6 +167,96 @@ def _validate_max_segment_sec(value: Optional[float]) -> Optional[float]:
             ),
         )
     return float(value)
+
+
+def _status_text(value) -> str:
+    """A status enum rendered as the plain string an operator should see.
+
+    ``ProjectStatus``/``RunStatus`` are ``str`` Enums, but neither ``str()``
+    nor ``!r`` gives back the bare value: they render the Python identity
+    (``ProjectStatus.ready``, ``<ProjectStatus.ready: 'ready'>``). Interpolating
+    one straight into an ``HTTPException`` detail therefore ships a Python repr
+    into a browser alert — which is exactly what ``POST /transcribe`` used to
+    do. Use this anywhere a status reaches a human or a JSON field.
+
+    ``hasattr`` rather than ``isinstance`` because a legacy row can hand back a
+    plain string for the same column.
+    """
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _hook_sec_in_range(value: float) -> bool:
+    """True when *value* is a usable localised-hook length.
+
+    Written as a chained comparison for exactly the reason
+    :func:`_max_segment_sec_in_range` is — every comparison against NaN is
+    False, so the two-negation form (``value <= 0 or value == inf``) would
+    ACCEPT NaN, and Pydantic really does parse ``NaN``/``"nan"`` into a float
+    NaN that Postgres stores happily. A NaN hook then poisons the analyze-time
+    clamp (``min``/``max`` propagate it) and the hook window of every
+    translate call, both silently.
+
+    Deliberately unbounded above: unlike the segmentation cap, a hook longer
+    than the video or the cap is not an error — hook_split clamps it down to
+    ``min(effective cap, duration)`` (docs/localisation.md §5), and a hook that
+    covers the whole video is a legitimate "re-speak all of it" project. Only
+    values that can never mean anything (zero, negative, NaN, infinite) are
+    refused here.
+    """
+    return 0.0 < value < math.inf
+
+
+def _validate_hook_sec(value: Optional[float]) -> Optional[float]:
+    """Validate the per-project localised-hook length, or 400.
+
+    ``None`` is a real, meaningful value (mirroring
+    :func:`_validate_max_segment_sec`): it means "no explicit choice", and both
+    analysis and the translate endpoint fall back to
+    ``settings.LOCALISATION_DEFAULT_HOOK_SEC``. It is returned untouched rather
+    than resolved to a number, so the default stays in one place instead of
+    being frozen into every row at creation time.
+
+    ``0.0``, by contrast, is a VALUE and it is rejected: a zero-length hook
+    would produce a swap segment no model can generate and a transcript window
+    containing no speech. Blank form fields arrive as None (not 0.0), so the
+    "operator left it empty" case never reaches this branch.
+    """
+    if value is None:
+        return None
+    if not _hook_sec_in_range(value):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"hook_sec must be a finite number greater than 0 seconds (got "
+                f"{value}) — it is the length of the front-of-video hook a "
+                "localisation project re-speaks; omit it (or send null) to use "
+                f"the {settings.LOCALISATION_DEFAULT_HOOK_SEC}s default. A hook "
+                "longer than the video is allowed: analysis clamps it to the "
+                "video's duration and the segmentation cap"
+            ),
+        )
+    return float(value)
+
+
+def _validate_language(code: Optional[str]) -> Optional[str]:
+    """Canonicalise a language code, or 400 when it isn't one of ours.
+
+    Blank/absent/whitespace stays None (the "language-agnostic"/"never chosen"
+    value, and the way an edit endpoint CLEARS the field); anything else must be
+    one of app/languages.py's five codes. An unknown code is refused rather than
+    stored: on a localisation run this value IS the translation target handed to
+    the LLM, so an unrecognised code would silently produce a hook in some other
+    language than the one recorded.
+    """
+    normalized = languages.normalize(code)
+    if (code or "").strip() and normalized is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"language must be one of {sorted(languages.LANGUAGES)}"
+            ),
+        )
+    return normalized
 
 
 def _get_project_or_404(project_id: str, db: Session) -> VideoProject:
@@ -255,7 +370,10 @@ def _normalize_partition(segments: list, duration: float, db: Session) -> None:
 def create_project(
     video_file: Optional[UploadFile] = File(None),
     gdrive_link: Optional[str] = Form(None),
+    project_type: str = Form(DEFAULT_PROJECT_TYPE),
+    mute_source: bool = Form(False),
     max_segment_sec: Optional[float] = Form(None),
+    hook_sec: Optional[float] = Form(None),
     db: Session = Depends(get_db),
 ) -> ProjectCreateResponse:
     """Create a new VideoProject.
@@ -263,13 +381,33 @@ def create_project(
     Exactly one of *video_file* or *gdrive_link* must be provided.
     Analysis is enqueued immediately (ffprobe + segment proposal).
 
+    *project_type* selects the flow (see app/project_types.py): ``face_swap``
+    (default) detects faces and proposes swap/keep segments, ``subtitle_removal``
+    cuts on scene changes, ``localisation`` splits the hook off the front, and
+    ``cover_change`` seeds one full-length keep segment for manual editing.
+
+    *mute_source* ("remove original audio") makes every run of this project
+    upload video-only swap clips to the AI model, so it generates audio from
+    the prompt instead of reacting to the source soundtrack. Toggleable later
+    via ``PATCH /projects/{pid}``.
+
     *max_segment_sec* is the longest swap segment analysis may propose. Omit it
     to get the universal default (the shortest per-clip ceiling across every
     model, so the segmentation is runnable on any of them); raise it to use a
     longer-clip model such as Seedance 2.5 to its full length, at the cost of
-    portability to shorter-clip models.
+    portability to shorter-clip models. It is consumed by *analysis*, which is
+    enqueued right here, so this is the moment that matters: a later PATCH will
+    not re-cut the segments this call is about to produce.
+
+    *hook_sec* is the ``localisation`` flow's equivalent knob: how long the
+    front-of-video hook that gets re-spoken in another language is. Omit it
+    (NULL) to use ``settings.LOCALISATION_DEFAULT_HOOK_SEC``. Same analyze-time
+    contract as *max_segment_sec*, and meaningless for the other project types,
+    which never read it.
     """
+    _validate_project_type(project_type)
     max_segment_sec = _validate_max_segment_sec(max_segment_sec)
+    hook_sec = _validate_hook_sec(hook_sec)
     has_file = video_file is not None and video_file.filename
     has_link = gdrive_link is not None and gdrive_link.strip()
 
@@ -299,7 +437,10 @@ def create_project(
             source_ref=filename,
             source_local_path=src_path,
             status=ProjectStatus.created,
+            project_type=project_type,
+            mute_source=mute_source,
             max_segment_sec=max_segment_sec,
+            hook_sec=hook_sec,
         )
     else:
         link = gdrive_link.strip()
@@ -308,8 +449,27 @@ def create_project(
             source_type="gdrive",
             source_ref=link,
             status=ProjectStatus.created,
+            project_type=project_type,
+            mute_source=mute_source,
             max_segment_sec=max_segment_sec,
+            hook_sec=hook_sec,
         )
+
+    # A localisation project is transcribed automatically once analysis returns
+    # (tasks._enqueue_transcribe_after_analyze), so its transcript is spoken for
+    # from this moment on — say so NOW rather than at the end of analysis.
+    # Otherwise transcript_status is NULL for the whole analyze window and NULL
+    # means two different things at once ("nobody asked for a transcript" and
+    # "one is coming"), which is what makes the panel render a Transcribe button
+    # next to a job that is already promised — one click, two paid model calls on
+    # the same video. With this, NULL means exactly "never requested" and the UI
+    # can act on it without guessing.
+    #
+    # Only the status column is touched, and only at creation: the task re-writes
+    # it anyway, and every other reader (POST /localisation-prompt, the panel)
+    # already treats "pending" as "not translatable yet".
+    if spec_for(project_type).key == LOCALISATION:
+        project.transcript_status = _TRANSCRIPT_PENDING
 
     db.add(project)
     db.commit()
@@ -317,7 +477,12 @@ def create_project(
     # Enqueue analysis — import at module level so monkeypatch targets app.api_v2.*
     enqueue_analyze_project(project_id)
 
-    log.info("Created project %s source_type=%s", project_id, project.source_type)
+    log.info(
+        "Created project %s source_type=%s project_type=%s mute_source=%s "
+        "max_segment_sec=%s hook_sec=%s",
+        project_id, project.source_type, project_type, mute_source,
+        max_segment_sec, hook_sec,
+    )
     status_val = project.status.value if hasattr(project.status, "value") else str(project.status)
     return ProjectCreateResponse(project_id=project_id, status=status_val)
 
@@ -344,12 +509,22 @@ def get_project(pid: str, db: Session = Depends(get_db)) -> ProjectResponse:
 def update_project(
     pid: str, body: ProjectUpdate, db: Session = Depends(get_db)
 ) -> ProjectResponse:
-    """Update editable project settings (display name, segmentation cap).
+    """Update editable project settings.
 
-    ``max_segment_sec`` is consumed at ANALYZE time, so changing it here does not
-    re-partition segments that already exist — the project has to be re-analyzed
-    for a new cap to take effect. ``max_segment_sec=null`` clears the setting back
-    to the universal default.
+    Two different contracts here, and the difference matters:
+
+    * ``mute_source`` is read at SUBMIT time, so it takes effect on the next run
+      of this project with no re-analysis.
+    * ``max_segment_sec`` and ``hook_sec`` are consumed at ANALYZE time, so
+      changing them does not re-partition segments that already exist — the
+      project has to be re-analyzed (``POST /projects/{pid}/analyze``) for a new
+      value to take effect.
+
+    Sending either analyze-time field as ``null`` clears it back to its default
+    (the universal segmentation cap / ``LOCALISATION_DEFAULT_HOOK_SEC``).
+    ``project_type`` is deliberately NOT editable: it decides how the existing
+    segments were cut, so changing it without re-analyzing would leave a project
+    whose segmentation contradicts its type.
     """
     project = _get_project_or_404(pid, db)
     if body.name is not None:
@@ -357,13 +532,108 @@ def update_project(
         project.name = name[:255] or None
     if "max_segment_sec" in body.model_fields_set:
         project.max_segment_sec = _validate_max_segment_sec(body.max_segment_sec)
+    if body.mute_source is not None:
+        project.mute_source = bool(body.mute_source)
+    if "hook_sec" in body.model_fields_set:
+        project.hook_sec = _validate_hook_sec(body.hook_sec)
     db.commit()
     db.refresh(project)
     log.info(
-        "Updated project %s name=%r max_segment_sec=%s",
-        pid, project.name, project.max_segment_sec,
+        "Updated project %s name=%r max_segment_sec=%s mute_source=%s hook_sec=%s",
+        pid, project.name, project.max_segment_sec, project.mute_source,
+        project.hook_sec,
     )
     return ProjectResponse.model_validate(project)
+
+
+@router.post(
+    "/projects/{pid}/analyze",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ProjectCreateResponse,
+)
+def reanalyze_project(pid: str, db: Session = Depends(get_db)) -> ProjectCreateResponse:
+    """Re-run analysis on an existing project (202 Accepted).
+
+    This is the only way an analyze-time setting can be made to take effect
+    after creation. ``max_segment_sec`` and ``hook_sec`` are both read when the
+    segments are cut, so ``PATCH /projects/{pid}`` alone re-cuts nothing — the
+    documented sequence is PATCH, then this.
+
+    **Destructive, by design.** ``pipeline_v2.analyze_project`` replaces the
+    segmentation wholesale: it deletes every existing ``SegmentDef`` before
+    writing the new proposal, and that cascades to every ``RunSegment`` that
+    referenced one.
+
+    What SURVIVES:
+      * every ``Run`` row — its prompt, refs, model, status and, for a finished
+        run, ``result_local_path`` / the delivered Drive video. A ``done`` run
+        stays done and its video stays playable and downloadable.
+      * the project's source file, transcript, name and settings.
+
+    What does NOT survive:
+      * every ``SegmentDef`` — the ids change, so any per-segment
+        ``prompt_override`` naming one is gone.
+      * every ``RunSegment`` of every run, including finished ones. The
+        per-segment breakdown of an old run (its clips, its Kie task ids, the
+        "re-run this segment" button) disappears with them; only the stitched
+        result remains.
+
+    Guards (409), mirroring ``DELETE /projects/{pid}`` — same reason, same
+    statuses: analysis and the run pipeline both write the rows this deletes.
+      * the project is already ``analyzing`` — a second analyze would race the
+        first one's segment rewrite.
+      * any run of the project is in a non-terminal state
+        (``_ACTIVE_RUN_STATUSES``) — deleting its RunSegments mid-flight pulls
+        the rows out from under the worker. ``created``, ``done``, ``failed``
+        and ``incomplete`` runs do NOT block: nothing is processing them. Note
+        that a ``failed``/``incomplete`` run becomes unretryable afterwards
+        (its RunSegments are gone) — retry it first if you want it back.
+
+    A ``localisation`` project is additionally marked ``transcript_status =
+    "pending"`` here, for the same reason project creation does: analysis
+    chains a fresh transcription (``tasks._enqueue_transcribe_after_analyze``),
+    so the transcript is spoken for from this moment and the panel must not
+    offer a Transcribe button next to a job already queued. The previous
+    transcript stays readable until the new one lands, but
+    ``POST /localisation-prompt`` gates on the status and will 409 until then.
+    """
+    project = _get_project_or_404(pid, db)
+    if project.status == ProjectStatus.analyzing:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot re-analyze a project while it is already analyzing",
+        )
+    active = db.execute(
+        select(Run.id).where(
+            Run.project_id == pid, Run.status.in_(_ACTIVE_RUN_STATUSES)
+        )
+    ).first()
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot re-analyze a project while one of its runs is active — "
+                "re-analysis deletes every segment definition (and with it every "
+                "run segment), which would pull rows out from under the worker. "
+                "Wait for the run to finish and try again."
+            ),
+        )
+
+    if spec_for(project.project_type).key == LOCALISATION:
+        project.transcript_status = _TRANSCRIPT_PENDING
+        project.transcript_error = None
+        db.commit()
+        db.refresh(project)
+
+    enqueue_analyze_project(pid)
+    log.info(
+        "Queued RE-analysis for project %s (status=%s, project_type=%s) — "
+        "existing SegmentDefs and every RunSegment will be replaced",
+        pid, _status_text(project.status), project.project_type,
+    )
+    return ProjectCreateResponse(
+        project_id=pid, status=_status_text(project.status)
+    )
 
 
 @router.delete("/projects/{pid}", status_code=status.HTTP_204_NO_CONTENT)
@@ -621,6 +891,7 @@ def create_run(
     model: str = Form("seedance"),
     resolution: str = Form(settings.DEFAULT_RESOLUTION),
     audio_mode: str = Form("original"),
+    language: Optional[str] = Form(None),
     gdrive_folder_id: Optional[str] = Form(None),
     reference_files: List[UploadFile] = File(default=[]),
     reference_urls: Optional[str] = Form(None),
@@ -635,6 +906,11 @@ def create_run(
     *segment_prompts* is an optional JSON object ``{segment_def_id: extra_text}``
     of per-segment additions: the extra text is appended to the run prompt for
     that swap segment on the very first run (blank/absent → uses the run prompt).
+
+    *language* is the spoken language of the delivered creative, one of
+    app/languages.py's codes. On a ``localisation`` project it is the translation
+    target the hook is re-spoken in (``POST /localisation-prompt`` reads it);
+    elsewhere it is descriptive metadata. Omit it for English.
     """
     project = _get_project_or_404(pid, db)
     if project.status != ProjectStatus.ready:
@@ -675,6 +951,9 @@ def create_run(
     if not ai_models.spec_for(model).produces_audio:
         audio_mode = "original"
 
+    # Validate language (blank/absent stays NULL, which behaves as English)
+    language = _validate_language(language)
+
     # Validate reference image count
     ref_files = reference_files or []
     ref_urls = [u.strip() for u in (reference_urls or "").split(",") if u.strip()]
@@ -700,6 +979,7 @@ def create_run(
         model=model,
         resolution=resolution,
         audio_mode=audio_mode,
+        language=language,
         gdrive_folder_id=resolved_folder_id,
         status=RunStatus.created,
         reference_image_urls=[],
@@ -1403,3 +1683,899 @@ async def copy_run_batch(
             for nr in new_runs
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# Localisation — transcript, translation and the New Run prompt builder
+# (docs/localisation.md)
+# ---------------------------------------------------------------------------
+
+# Transcript lifecycle values (VideoProject.transcript_status). Only "ready"
+# unlocks translation; "empty" is a SUCCESS (no speech in the clip) and
+# "failed" is non-fatal — the project stays usable and the operator pastes a
+# translation by hand, exactly as before this feature existed.
+_TRANSCRIPT_READY = "ready"
+_TRANSCRIPT_EMPTY = "empty"
+_TRANSCRIPT_PENDING = "pending"
+
+# Rough conversational throughput, characters per second, used ONLY to decide
+# whether a translated line deserves an operator's second look — never to gate
+# anything. Latin-script casual speech runs ~150 wpm, i.e. ~14 chars/s counting
+# spaces; Japanese has no spaces and mixes dense kanji with kana, so the same
+# second buys far fewer characters. Both numbers are crude by design: the band
+# below is wide enough that only a translation that is obviously the wrong
+# LENGTH trips it, which is the failure that actually shipped (a literal EN→JA
+# hook that overran the shot).
+_CHARS_PER_SEC = {"ja": 6.0}
+_DEFAULT_CHARS_PER_SEC = 14.0
+# Warn past these multiples of the source line's on-screen duration. Overrun is
+# the worse failure (the delivery races or runs off the end of the shot), so
+# the ceiling is tighter than the floor is loose.
+_SPEECH_OVERRUN_RATIO = 1.5
+_SPEECH_UNDERRUN_RATIO = 0.5
+
+# Slack, in seconds, when comparing segment boundaries against the hook window.
+# Segment times are floats that have been through a clamp and an operator's
+# drag; a 30-millisecond sliver of "uncovered" hook is a rounding artefact, not
+# a gap worth an alert, and no dialogue fits in one either.
+_COVERAGE_EPS = 0.05
+
+def _transcript_response(project: VideoProject) -> TranscriptResponse:
+    """Project → the {status, error, transcript} payload all three endpoints return."""
+    return TranscriptResponse(
+        status=project.transcript_status,
+        error=project.transcript_error,
+        transcript=project.transcript,
+    )
+
+
+def _transcript_number(value, where: str) -> float:
+    """Coerce a timestamp from an operator-supplied transcript, or 400.
+
+    Rejects bools (``isinstance(True, int)`` is True in Python, and a
+    ``"start": true`` would otherwise be stored as 1.0), non-numbers, NaN and
+    the infinities — NaN in particular would sail through every ``<`` in
+    :func:`app.localisation.slice_lines` and silently drop the line from every
+    hook window, with nothing to show for it.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HTTPException(
+            status_code=400, detail=f"{where} must be a number (seconds)"
+        )
+    number = float(value)
+    if not math.isfinite(number):
+        raise HTTPException(
+            status_code=400, detail=f"{where} must be a finite number (got {value})"
+        )
+    if number < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{where} must be >= 0 — timestamps are seconds from the clip start",
+        )
+    return number
+
+
+def _transcript_text(value, where: str) -> str:
+    """Require a non-empty string field, or 400."""
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(
+            status_code=400, detail=f"{where} must be a non-empty string"
+        )
+    return value.strip()
+
+
+def _validate_transcript_payload(body) -> dict:
+    """Validate an operator-edited transcript against §4.1, or 400.
+
+    The transcript is an INPUT to the translation prompt, not a pipeline
+    artefact, which is why it is hand-editable at all — but it is also the only
+    thing standing between a typo and a run prompt, so garbage is refused here
+    rather than stored and discovered later by ``slice_lines`` returning
+    nothing (or by Seedance being handed an empty dialogue block).
+
+    Enforced: every line carries an integer ``id`` >= 1, unique across the
+    transcript (translation rejoins on it — a duplicate would make one line
+    overwrite another); ``start``/``end`` are finite, non-negative and ordered;
+    ``text`` and ``speaker`` are non-empty. ``speaker`` matters more than it
+    looks: it is handed to Seedance, which has to map the line onto a person it
+    can see, so a blank label is a broken prompt, not a cosmetic gap.
+
+    Normalised, not enforced: ``on_screen`` is coerced to a bool (default
+    False) — it is a display hint the UI may legitimately omit; strings are
+    stripped. Line ORDER is preserved exactly as sent rather than re-sorted by
+    timestamp: the ids are the operator's, and ``format_dialogue`` merges
+    consecutive same-speaker lines, so re-ordering would silently change the
+    prompt they just proof-read.
+
+    Unknown top-level keys (``model``, ``prompt_version``, ``created_at``, …)
+    are passed through untouched so a round-trip edit does not strip the
+    envelope that records which model produced the transcript.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "transcript must be a JSON object with a 'lines' array "
+                "(docs/localisation.md §4.1)"
+            ),
+        )
+
+    raw_lines = body.get("lines")
+    if not isinstance(raw_lines, list):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "transcript.lines must be an array — send [] for a clip with no "
+                "speech (a legal outcome, stored as transcript_status='empty')"
+            ),
+        )
+
+    seen_ids: set[int] = set()
+    lines: list[dict] = []
+    for position, item in enumerate(raw_lines):
+        where = f"lines[{position}]"
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail=f"{where} must be an object")
+
+        line_id = item.get("id")
+        if isinstance(line_id, bool) or not isinstance(line_id, int) or line_id < 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{where}.id must be an integer >= 1 — ids are how a "
+                    "translation is rejoined to its source line"
+                ),
+            )
+        if line_id in seen_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{where}.id={line_id} is a duplicate; line ids must be "
+                    "unique within a transcript"
+                ),
+            )
+        seen_ids.add(line_id)
+
+        start = _transcript_number(item.get("start"), f"{where}.start")
+        end = _transcript_number(item.get("end"), f"{where}.end")
+        if end < start:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{where}: start ({start}) must be <= end ({end})",
+            )
+
+        lines.append(
+            {
+                "id": line_id,
+                "start": start,
+                "end": end,
+                "speaker": _transcript_text(item.get("speaker"), f"{where}.speaker"),
+                "on_screen": bool(item.get("on_screen")),
+                "text": _transcript_text(item.get("text"), f"{where}.text"),
+            }
+        )
+
+    raw_on_screen = body.get("on_screen_text")
+    if raw_on_screen is None:
+        raw_on_screen = []
+    if not isinstance(raw_on_screen, list):
+        raise HTTPException(
+            status_code=400, detail="transcript.on_screen_text must be an array"
+        )
+    on_screen_text: list[dict] = []
+    for position, item in enumerate(raw_on_screen):
+        where = f"on_screen_text[{position}]"
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail=f"{where} must be an object")
+        start = _transcript_number(item.get("start"), f"{where}.start")
+        end = _transcript_number(item.get("end"), f"{where}.end")
+        if end < start:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{where}: start ({start}) must be <= end ({end})",
+            )
+        on_screen_text.append(
+            {
+                "start": start,
+                "end": end,
+                "text": _transcript_text(item.get("text"), f"{where}.text"),
+            }
+        )
+
+    source_language = body.get("source_language")
+    if source_language is not None and not isinstance(source_language, str):
+        raise HTTPException(
+            status_code=400,
+            detail="transcript.source_language must be a string (ISO 639-1 code)",
+        )
+
+    cleaned = dict(body)
+    cleaned["schema_version"] = body.get(
+        "schema_version", localisation.TRANSCRIPT_SCHEMA_VERSION
+    )
+    cleaned["source_language"] = (source_language or "").strip().lower()
+    cleaned["lines"] = lines
+    cleaned["on_screen_text"] = on_screen_text
+    return cleaned
+
+def _intended_hook_sec(project: VideoProject) -> float:
+    """The operator's stored hook INTENT, in seconds (never the analyzed one).
+
+    The stored column, or ``settings.LOCALISATION_DEFAULT_HOOK_SEC`` when it is
+    NULL. A stored value that is out of range (a NaN or a 0 from a direct SQL
+    edit or a row written before validation existed) degrades to the default
+    with a log line instead of raising, mirroring
+    :func:`_inherited_max_segment_sec`: the caller never sent it, so blaming
+    their request would be the wrong shape of failure, and a translation
+    against the default window is far more useful than a 400 they cannot act
+    on.
+    """
+    stored = project.hook_sec
+    if stored is not None:
+        if _hook_sec_in_range(stored):
+            return float(stored)
+        log.warning(
+            "Project %s has an unusable stored hook_sec=%r; treating the hook "
+            "intent as the %ss default instead",
+            project.id, stored, settings.LOCALISATION_DEFAULT_HOOK_SEC,
+        )
+    return float(settings.LOCALISATION_DEFAULT_HOOK_SEC)
+
+
+def _analyzed_hook_sec(swap_segments: list, intent: float) -> Optional[float]:
+    """Where the swap coverage inside ``[0, intent)`` actually ENDS, or None.
+
+    "Actually" is the whole point: ``pipeline_v2._hook_split_segments`` clamps
+    the hook down to ``min(segmentation cap, duration)`` at analyze time, and
+    the operator may since have dragged a boundary in the Segment Editor —
+    neither writes back to ``VideoProject.hook_sec``. So the row can say 15
+    while the clip that will be generated is ``swap[0,10]``.
+
+    Measured as the end of the last swap segment that starts inside the intent
+    window, capped at the intent. Max-end rather than "the first gap" on
+    purpose: a hand-split hook like ``swap[0,3] + keep[3,5] + swap[5,10]`` is
+    still a 10-second hook with a hole in it, and shrinking the window to 3s
+    would silently orphan the second swap segment (it would drop out of
+    :func:`_hook_swap_segments`, get no per-segment prompt, and fall back to
+    re-speaking the whole hook). The hole is reported by the coverage warning
+    instead, which is where an operator can act on it.
+
+    None when no swap segment overlaps the window at all — an unanalyzed
+    project, or one whose hook was flipped to keep. The caller falls back to
+    the intent, and the "nothing will be generated" warning fires.
+    """
+    ends = [
+        float(s.end_sec)
+        for s in swap_segments
+        if float(s.start_sec) < intent and float(s.end_sec) > 0.0
+    ]
+    if not ends:
+        return None
+    return min(max(ends), intent)
+
+
+def _resolve_hook_sec(
+    project: VideoProject, override: Optional[float], swap_segments: list
+) -> float:
+    """Which hook window to slice the transcript to, in seconds.
+
+    Three different numbers can call themselves "the hook length", and mixing
+    them up is what made a 15s script get written for a 10s clip. They are, in
+    the order this function consults them:
+
+    1. **The per-call override** (``hook_sec`` on the ``localisation-prompt``
+       form) — highest precedence, applies to this one call, is never
+       persisted, and re-segments nothing. It exists so an operator can
+       retranslate against a wider or narrower window without touching the
+       project. Because it deliberately ignores reality, it keeps its warning
+       when it asks for more than the analyzed swap segments can say.
+    2. **The analyzed reality** (:func:`_analyzed_hook_sec`) — the DEFAULT
+       window. What the swap SegmentDefs actually cover is what a run will
+       actually generate, so it is the honest window to cut a script to. It is
+       derived, never stored.
+    3. **The stored intent** (``VideoProject.hook_sec``, via
+       :func:`_intended_hook_sec`) — what the operator asked for at creation
+       or in a PATCH. It bounds (2) and it is what the NEXT analysis will cut
+       to, but on its own it says nothing about the clips that exist today. It
+       is the fallback when the project has no swap segments to measure.
+
+    So a project created with Hook length 15 under the default 10s segmentation
+    cap keeps ``hook_sec=15`` in the column (raise the cap and re-analyze and
+    it will finally get 15), while this endpoint cuts 10s of transcript,
+    because ``swap[0,10]`` is the clip that will speak it.
+    """
+    if override is not None:
+        return float(override)
+    intent = _intended_hook_sec(project)
+    analyzed = _analyzed_hook_sec(swap_segments, intent)
+    if analyzed is None:
+        return intent
+    if abs(analyzed - intent) > _COVERAGE_EPS:
+        log.info(
+            "Project %s: hook intent is %.2fs but the analyzed swap segments "
+            "end at %.2fs — slicing the transcript to the analyzed window",
+            project.id, intent, analyzed,
+        )
+    return analyzed
+
+
+def _estimated_speech_sec(text: str, language: Optional[str]) -> float:
+    """Crude estimate of how long *text* takes to say in *language*."""
+    rate = _CHARS_PER_SEC.get(language or "", _DEFAULT_CHARS_PER_SEC)
+    return len((text or "").strip()) / rate
+
+
+def _line_seconds(line: dict, key: str) -> float:
+    """A transcript line's timestamp, tolerating whatever is in the column.
+
+    ``PATCH /transcript`` guarantees floats and the transcription task
+    normalises them, but the column is free JSON and predates neither guard, so
+    the advisory pass degrades to 0.0 rather than 500-ing on a legacy row —
+    :func:`app.localisation.slice_lines` is equally forgiving for the same
+    reason.
+    """
+    try:
+        return float(line.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _line_midpoint(line: dict) -> float:
+    """The instant a transcript line is considered to happen at.
+
+    The midpoint, because that is the one point of a line that belongs to a
+    single segment no matter how the boundaries fall — see
+    :func:`_assign_lines_to_segments`. A zero-length (or reversed) line
+    degrades to its start.
+    """
+    start = _line_seconds(line, "start")
+    end = _line_seconds(line, "end")
+    return start if end <= start else (start + end) / 2.0
+
+
+def _assign_lines_to_segments(
+    lines: list[dict], segments: list
+) -> tuple[dict[str, list[dict]], list[dict]]:
+    """Give every line to EXACTLY ONE swap segment. Returns (by_segment, dropped).
+
+    Each line goes to the segment whose ``[start_sec, end_sec)`` contains the
+    line's MIDPOINT; lines whose midpoint lands in no segment come back in
+    *dropped*. Segments are consulted in the order given (index order), so
+    should two ever overlap the earlier one wins and the result stays
+    deterministic.
+
+    Why not ``localisation.slice_lines`` — the function that cuts the hook out
+    of the full transcript? Because its semantics are OVERLAP, which is right
+    for one window and wrong for a partition:
+
+    * ``swap[0,5] + swap[5,10]`` with a line running 4.8–5.4s: overlap puts it
+      in BOTH windows, both clips are generated saying it, and the stitched
+      hook says the sentence twice.
+    * ``swap[0,3] + keep[3,5] + swap[5,10]`` with a line inside ``[3,5)``:
+      overlap puts it in NEITHER window. Since a per-segment prompt REPLACES
+      the run prompt (``pipeline_v2._submit_swap_segment_isolated`` uses
+      ``prompt_override if prompt_override else run_prompt``), the run prompt
+      is not a fallback for a segment that got one — so the line reaches no
+      model at all and is silently lost.
+
+    A midpoint falls in at most one half-open interval, which kills the first
+    case, and the second is made loud instead of silent: the caller warns by
+    name about everything in *dropped*.
+
+    A line that straddles a boundary is still assigned whole (a model cannot be
+    handed half a sentence), so it is spoken entirely by one clip and the
+    delivery is cut mid-sentence at the seam. That is a real editorial problem,
+    and the caller warns about it separately.
+    """
+    by_segment: dict[str, list[dict]] = {s.id: [] for s in segments}
+    dropped: list[dict] = []
+    for line in lines or []:
+        midpoint = _line_midpoint(line)
+        for segment in segments:
+            if float(segment.start_sec) <= midpoint < float(segment.end_sec):
+                by_segment[segment.id].append(line)
+                break
+        else:
+            dropped.append(line)
+    return by_segment, dropped
+
+
+def _coverage_gaps(segments: list, hook: float) -> list[tuple[float, float]]:
+    """The sub-windows of ``[0, hook)`` no swap segment covers.
+
+    A UNION sweep, not ``max(end_sec)``. The old measure could only see a hook
+    that ran off the end of the last segment; a hole in the middle
+    (``swap[0,3] + keep[3,5] + swap[5,10]``, the shape an operator produces by
+    hand-splitting in the Segment Editor) still read as fully covered, because
+    the last segment ends exactly at the hook. Every line in that hole is
+    dropped from every prompt, so it has to be visible.
+
+    Gaps narrower than :data:`_COVERAGE_EPS` are ignored as float noise.
+    """
+    intervals = sorted(
+        (max(0.0, float(s.start_sec)), min(hook, float(s.end_sec)))
+        for s in segments
+    )
+    gaps: list[tuple[float, float]] = []
+    cursor = 0.0
+    for start, end in intervals:
+        if end <= start:
+            continue
+        if start - cursor > _COVERAGE_EPS:
+            gaps.append((cursor, start))
+        cursor = max(cursor, end)
+    if hook - cursor > _COVERAGE_EPS:
+        gaps.append((cursor, hook))
+    return gaps
+
+
+def _segment_boundaries(segments: list, hook: float) -> list[float]:
+    """Every instant inside ``(0, hook)`` where the delivery cuts, plus the hook.
+
+    A line spanning one of these is spoken by one clip but the stitch cuts
+    there anyway, so it needs the same "cut mid-sentence" advisory the hook
+    edge has always had. Both ends of a gap qualify, which is why segment
+    starts are included and not only ends.
+    """
+    marks = {float(hook)}
+    for segment in segments:
+        for edge in (float(segment.start_sec), float(segment.end_sec)):
+            if _COVERAGE_EPS < edge < hook - _COVERAGE_EPS:
+                marks.add(edge)
+    return sorted(marks)
+
+
+def _localisation_warnings(
+    *,
+    window_lines: list[dict],
+    translated_lines: list[dict],
+    hook: float,
+    hook_segments: list,
+    dropped_lines: list[dict],
+    source_language: str,
+    target_language: str,
+) -> list[str]:
+    """Advisories an operator must see before submitting the run.
+
+    Five things, all of them invisible in the returned prompt itself and all
+    of them expensive to discover after a generation has been paid for:
+
+    1. **A line straddling a cut.** ``slice_lines`` takes lines that OVERLAP the
+       window, so a line starting at 9.5s in a 10s hook is included whole — but
+       the hook segment ends at 10s, so its delivery is cut mid-sentence. The
+       same applies at every boundary BETWEEN the hook's swap segments: the
+       line is assigned whole to the clip holding its midpoint (a model cannot
+       be handed half a sentence), and the stitch cuts through it anyway.
+       Shortening the line, or moving the boundary, is a decision only the
+       operator can make.
+    2. **An implausible spoken length.** The translation is asked to match each
+       line's DURATION, not its word count, and the model does not always
+       comply. A line that will obviously overrun makes the delivery race or
+       run off the end of the shot — the exact failure the manual run had to be
+       re-cut for.
+    3. **Source language == target language.** Almost always a mis-picked
+       dropdown: the run would spend a generation reproducing the original.
+    4. **The hook window is not fully covered by swap segments.** Measured as
+       the UNION of swap coverage inside ``[0, hook)``, so a hole in the middle
+       counts — ``swap[0,3] + keep[3,5] + swap[5,10]`` used to read as fully
+       covered because the last segment still ended at the hook. Two shapes
+       reach this: a per-call ``hook_sec`` override that deliberately
+       re-segments nothing and so asks for 15s of dialogue from a 10s clip, and
+       a hand-split hook with a keep gap in it. A project with no swap segment
+       over the hook at all (analyzed under a different type, or every segment
+       flipped to keep) gets the blunter version of the same message: this
+       prompt is text no clip will ever receive.
+    5. **A line that lands in one of those gaps.** It is generated by nothing —
+       not the run prompt either, because a per-segment prompt REPLACES the run
+       prompt rather than extending it, so the segments around the gap never
+       see it. Naming the line is the whole point: this failure is otherwise
+       completely silent, and the first sign of it is a delivered hook missing
+       a sentence. The caller passes an empty *dropped_lines* when it produced
+       no per-segment prompts at all, because then the run prompt IS what the
+       single swap segment receives and nothing is actually lost.
+
+    Everything here is advisory — the prompt is returned regardless, because
+    an operator who knows better must not be blocked by a heuristic.
+    """
+    warnings: list[str] = []
+
+    gaps = _coverage_gaps(hook_segments, hook)
+    covered = hook - sum(end - start for start, end in gaps)
+    if not hook_segments:
+        warnings.append(
+            f"This project has no swap segment over the first {hook:.1f}s, so "
+            "nothing will be generated from this prompt. Re-analyze the project "
+            "as a localisation project, or mark the hook segment as swap."
+        )
+    elif gaps:
+        gap_text = ", ".join(f"{start:.1f}-{end:.1f}s" for start, end in gaps)
+        warnings.append(
+            f"The hook window is {hook:.1f}s but the analyzed swap segment(s) "
+            f"only cover {covered:.1f}s of it — nothing is generated for "
+            f"{gap_text}. Dialogue there reaches no clip at all. Set hook_sec on "
+            "the project and re-analyze, or mark the uncovered stretch as swap."
+        )
+
+    if source_language and source_language == target_language:
+        warnings.append(
+            f"Source language and target language are both "
+            f"{languages.label_for(target_language)} ({target_language}) — the "
+            "translation is a no-op; pick a different target language unless "
+            "this is deliberate."
+        )
+
+    for line in dropped_lines:
+        start = _line_seconds(line, "start")
+        end = _line_seconds(line, "end")
+        warnings.append(
+            f"Line {line.get('id')} ({line.get('speaker')}) runs from "
+            f"{start:.1f}s to {end:.1f}s, which no swap segment covers — it is "
+            "assigned to no clip and will not be spoken at all. Extend a swap "
+            "segment over it, or drop the line."
+        )
+
+    boundaries = _segment_boundaries(hook_segments, hook)
+    for line in window_lines:
+        start = _line_seconds(line, "start")
+        end = _line_seconds(line, "end")
+        for boundary in boundaries:
+            if not start < boundary < end:
+                continue
+            if boundary == hook:
+                warnings.append(
+                    f"Line {line.get('id')} ({line.get('speaker')}) runs from "
+                    f"{start:.1f}s to {end:.1f}s and crosses the {hook:.1f}s hook "
+                    "boundary — it will be cut mid-sentence. Shorten the line or "
+                    "move the hook."
+                )
+            else:
+                warnings.append(
+                    f"Line {line.get('id')} ({line.get('speaker')}) runs from "
+                    f"{start:.1f}s to {end:.1f}s and crosses the {boundary:.1f}s "
+                    "boundary between two swap segments — one clip speaks it "
+                    "whole, so the delivery is cut mid-sentence at the seam. "
+                    "Move the boundary or split the line."
+                )
+
+    for line in translated_lines:
+        duration = _line_seconds(line, "end") - _line_seconds(line, "start")
+        if duration <= 0:
+            continue
+        estimate = _estimated_speech_sec(line.get("text", ""), target_language)
+        if estimate > duration * _SPEECH_OVERRUN_RATIO:
+            warnings.append(
+                f"Line {line.get('id')}: the translation is roughly "
+                f"{estimate:.1f}s of speech but the shot gives it "
+                f"{duration:.1f}s — it will overrun. Shorten it."
+            )
+        elif estimate < duration * _SPEECH_UNDERRUN_RATIO:
+            warnings.append(
+                f"Line {line.get('id')}: the translation is roughly "
+                f"{estimate:.1f}s of speech against {duration:.1f}s of footage "
+                "— check nothing was dropped."
+            )
+
+    return warnings
+
+@router.post(
+    "/projects/{pid}/transcribe",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=TranscriptResponse,
+)
+def transcribe_project(pid: str, db: Session = Depends(get_db)) -> TranscriptResponse:
+    """Queue transcription of the project's source video (202 Accepted).
+
+    Sets ``transcript_status="pending"``, clears the previous error and pushes
+    the job; the worker takes it from there (docs/localisation.md §8 —
+    transcription is its own RQ task, never part of analysis, so a model outage
+    can neither fail analysis nor block segmentation).
+
+    Deliberately re-runnable at any time (the project page's "Распознать
+    заново"): the task overwrites the transcript wholesale, so a duplicate
+    enqueue costs a model call and nothing else, and an operator whose job died
+    mid-flight must not be locked out by a stale ``running`` status. The
+    PREVIOUS transcript stays readable until the new one lands — but note that
+    ``POST /localisation-prompt`` gates on the STATUS, so it will 409 until the
+    re-run finishes.
+
+    409 when the source video has not been fetched yet — transcription reads
+    the downloaded file, and a Drive project only gets one when analysis
+    downloads it. The remedy depends on where the project is, so the detail
+    says which: still-to-be-analyzed means "wait", whereas an already-``ready``
+    project with no file means the download never produced one (or the file was
+    since removed), and waiting for an analysis that already finished would be
+    waiting forever — re-analysis is what fetches it again.
+
+    Not gated on project_type: a transcript is meaningful for any footage, and
+    the flow that consumes it is the caller's business.
+    """
+    project = _get_project_or_404(pid, db)
+    if not project.source_local_path:
+        # `_status_text`, not `!r`: the panel puts this string straight into a
+        # browser alert, and `<ProjectStatus.ready: 'ready'>` is not something
+        # an operator should ever be shown.
+        if project.status in (ProjectStatus.created, ProjectStatus.analyzing):
+            remedy = (
+                "analysis has not fetched it yet — wait for the project to "
+                "become ready, then try again"
+            )
+        else:
+            remedy = (
+                "analysis is no longer running, so the file was never "
+                f"downloaded or has since been removed — POST /api/v2/projects/"
+                f"{pid}/analyze to fetch it again"
+            )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot transcribe: this project has no source video on disk "
+                f"(project status: {_status_text(project.status)}) — {remedy}"
+            ),
+        )
+
+    project.transcript_status = _TRANSCRIPT_PENDING
+    project.transcript_error = None
+    db.commit()
+    db.refresh(project)
+
+    enqueue_transcribe_project(pid)
+    log.info("Queued transcription for project %s", pid)
+    return _transcript_response(project)
+
+
+@router.get("/projects/{pid}/transcript", response_model=TranscriptResponse)
+def get_project_transcript(
+    pid: str, db: Session = Depends(get_db)
+) -> TranscriptResponse:
+    """Return the cached transcript and the transcription task's state.
+
+    ``status`` is None when transcription was never requested, and ``empty``
+    when the model heard no speech — a success, not an error. ``transcript`` is
+    the §4.1 dict verbatim.
+    """
+    project = _get_project_or_404(pid, db)
+    return _transcript_response(project)
+
+
+@router.patch("/projects/{pid}/transcript", response_model=TranscriptResponse)
+def update_project_transcript(
+    pid: str, body: Any = Body(...), db: Session = Depends(get_db)
+) -> TranscriptResponse:
+    """Replace the transcript with an operator-corrected version (§4.1 shape).
+
+    A whole-document PUT in PATCH's clothing, matching the panel that produces
+    it: the UI holds the transcript in memory, the operator fixes a speaker
+    label or a misheard word, and the whole thing comes back. There is no
+    per-line patch route because there is no per-line resource — the transcript
+    is one JSON column.
+
+    The body is validated against §4.1 (see :func:`_validate_transcript_payload`)
+    and a malformed one is a 400: this text becomes a Seedance prompt, so
+    storing garbage would only defer the failure to a paid generation.
+
+    Also resets the lifecycle: a hand-fixed transcript is ``ready`` (or
+    ``empty`` when the operator submits no lines) and the previous
+    ``transcript_error`` is cleared — the whole point of editing a *failed*
+    transcription by hand is to make the project usable again.
+
+    Accepted on any project, including one that was never transcribed: pasting
+    a transcript in by hand is the documented fallback when the model is down.
+    """
+    project = _get_project_or_404(pid, db)
+    cleaned = _validate_transcript_payload(body)
+
+    project.transcript = cleaned
+    project.transcript_status = (
+        _TRANSCRIPT_READY if cleaned["lines"] else _TRANSCRIPT_EMPTY
+    )
+    project.transcript_error = None
+    db.commit()
+    db.refresh(project)
+    log.info(
+        "Transcript for project %s edited by hand: %d line(s), status=%s",
+        pid, len(cleaned["lines"]), project.transcript_status,
+    )
+    return _transcript_response(project)
+
+
+@router.post(
+    "/projects/{pid}/localisation-prompt",
+    response_model=LocalisationPromptResponse,
+)
+def build_localisation_prompt(
+    pid: str,
+    language: str = Form(...),
+    swap_character: bool = Form(False),
+    hook_sec: Optional[float] = Form(None),
+    db: Session = Depends(get_db),
+) -> LocalisationPromptResponse:
+    """Translate the hook and assemble the Seedance prompt for a localisation run.
+
+    The "Перевести" button behind the New Run form. It slices the cached
+    transcript to the hook window, translates those lines into *language*, and
+    returns the prompt text (plus per-segment prompts when the hook is cut into
+    more than one swap segment) for the operator to edit and submit through the
+    ordinary ``create_run`` path.
+
+    **Writes nothing to the database.** No transcript is updated, no run is
+    created, no segment is touched — the returned text is a suggestion, and the
+    run the operator eventually submits is the only record of what was used.
+    That also makes the call freely repeatable: try a language, read the
+    warnings, try another.
+
+    *swap_character* picks the template: True = "речь + смена персонажа" (the
+    classic face swap AND the language change; a reference image is expected),
+    False = "только речь" (the person on screen is preserved).
+
+    The hook window comes from three places, in this order (see
+    :func:`_resolve_hook_sec` for the full note):
+
+    * *hook_sec*, this request's override — highest precedence, this call only,
+      never persisted, re-segments nothing. It only changes which lines are
+      translated, so it can legitimately ask for more dialogue than the clips
+      can say, and warns when it does.
+    * the ANALYZED window — the default. Where the project's swap SegmentDefs
+      actually end is what a run will actually generate, so that is what the
+      script is cut to.
+    * the STORED ``VideoProject.hook_sec`` — the operator's intent. It bounds
+      the analyzed window and drives the NEXT analysis, and it is the fallback
+      when there are no swap segments to measure. Use ``PATCH /projects/{pid}``
+      + ``POST /projects/{pid}/analyze`` to actually move the hook.
+
+    Status codes:
+        200: prompt assembled (possibly with *warnings* — they never block).
+        400: unknown language code, or a hook_sec override that is not a
+            positive finite number.
+        404: no such project.
+        409: ``transcript_status`` is not ``ready`` — nothing to translate yet.
+        422: the hook window contains no speech, so there is nothing to
+            re-speak (a wordless hook is a legal transcript, not an error, but
+            it is not translatable).
+        502: the translation model failed or returned an unusable answer.
+    """
+    project = _get_project_or_404(pid, db)
+
+    target_language = _validate_language(language)
+    if target_language is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"language is required and must be one of "
+                f"{sorted(languages.LANGUAGES)} — it is the language the hook "
+                "will be re-spoken in"
+            ),
+        )
+    swap_segments = _project_swap_segments(pid, db)
+    hook = _resolve_hook_sec(project, _validate_hook_sec(hook_sec), swap_segments)
+    hook_segments = _hook_swap_segments(swap_segments, hook)
+
+    if project.transcript_status != _TRANSCRIPT_READY:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Transcript is not ready (status: {project.transcript_status!r}) "
+                "— run POST /transcribe first, or paste a transcript with PATCH "
+                "/transcript"
+            ),
+        )
+
+    transcript = project.transcript or {}
+    source_language = str(transcript.get("source_language") or "")
+    window_lines = localisation.slice_lines(transcript.get("lines") or [], 0.0, hook)
+    if not window_lines:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No speech in the first {hook:.1f}s of this video, so there is "
+                "nothing to translate. Widen the hook (hook_sec) or write the "
+                "prompt by hand."
+            ),
+        )
+
+    try:
+        translated_lines = localisation.translate_lines(
+            window_lines,
+            source_language=source_language,
+            target_language=target_language,
+        )
+        prompt = localisation.build_prompt(
+            lines=translated_lines,
+            source_language=source_language,
+            target_language=target_language,
+            swap_character=swap_character,
+        )
+        # Per-segment prompts ONLY when the hook was cut into several swap
+        # segments (a hook longer than the model's per-clip ceiling, or one
+        # hand-split in the Segment Editor). Each segment gets its OWN share of
+        # the dialogue, because each is generated as its own clip: handing all
+        # of it to every segment would make each clip try to say the whole hook.
+        #
+        # The split is a partition by line MIDPOINT, not an overlap slice —
+        # every line belongs to exactly one segment. See
+        # _assign_lines_to_segments for why overlap semantics duplicate a
+        # boundary-straddling line into two clips and lose a line that falls in
+        # a keep gap.
+        by_segment, dropped_lines = _assign_lines_to_segments(
+            translated_lines, hook_segments
+        )
+        segment_prompts: dict[str, str] = {}
+        if len(hook_segments) > 1:
+            for segment in hook_segments:
+                segment_prompts[segment.id] = localisation.build_prompt(
+                    lines=by_segment[segment.id],
+                    source_language=source_language,
+                    target_language=target_language,
+                    swap_character=swap_character,
+                )
+        else:
+            # No overrides means the run prompt is what the (single) swap
+            # segment receives, so an unassigned line is not lost — the clip
+            # still says it, mistimed at worst. Claiming otherwise would be a
+            # lie; the coverage warning already names the uncovered stretch.
+            dropped_lines = []
+    except localisation.LocalisationError as exc:
+        # An upstream/model failure, not a bad request: 502 tells the operator
+        # to retry or fall back to writing the prompt by hand (§8), rather than
+        # sending them hunting for a mistake in their own input.
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    warnings = _localisation_warnings(
+        window_lines=window_lines,
+        translated_lines=translated_lines,
+        hook=hook,
+        hook_segments=hook_segments,
+        dropped_lines=dropped_lines,
+        source_language=source_language,
+        target_language=target_language,
+    )
+
+    log.info(
+        "Built localisation prompt for project %s: %s -> %s, hook=%.1fs "
+        "(stored intent=%s), %d line(s), %d segment prompt(s), %d line(s) in "
+        "an uncovered gap, %d warning(s), swap_character=%s",
+        pid, source_language or "?", target_language, hook, project.hook_sec,
+        len(translated_lines), len(segment_prompts), len(dropped_lines),
+        len(warnings), swap_character,
+    )
+    return LocalisationPromptResponse(
+        source_language=source_language,
+        target_language=target_language,
+        hook_sec=hook,
+        prompt=prompt,
+        segment_prompts=segment_prompts,
+        lines=translated_lines,
+        warnings=warnings,
+    )
+
+
+def _project_swap_segments(pid: str, db: Session) -> list:
+    """Every swap SegmentDef of a project, in index order. Read-only.
+
+    Keep segments are excluded everywhere downstream for one reason: they are
+    never generated, so neither a prompt nor a share of the hook window means
+    anything for one. Fetched once per request because both the hook window
+    itself (:func:`_analyzed_hook_sec`) and the per-segment split are derived
+    from the same list.
+    """
+    return list(
+        db.execute(
+            select(SegmentDef)
+            .where(SegmentDef.project_id == pid, SegmentDef.action == "swap")
+            .order_by(SegmentDef.index)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _hook_swap_segments(swap_segments: list, hook: float) -> list:
+    """The swap segments that start inside ``[0, hook)``, in index order.
+
+    Normally exactly one (hook_split lays down a single swap segment over the
+    hook), so the caller returns ``segment_prompts={}`` and puts the whole
+    dialogue in the run prompt. More than one means the hook was chunked — by
+    the segmentation cap, or by an operator splitting it in the Segment Editor
+    — and each chunk is generated as its own clip, so each needs its own share
+    of the dialogue.
+    """
+    return [s for s in swap_segments if float(s.start_sec) < hook]

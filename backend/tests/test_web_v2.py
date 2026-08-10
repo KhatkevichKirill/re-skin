@@ -25,11 +25,14 @@ os.environ["DATA_DIR"] = _data_tmp
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
+from app import ai_models
 from app.db import Base, get_db
 from app.models import Run, RunSegment, SegmentDef, VideoProject
 from app.state_machine import ProjectStatus, RunStatus, SegmentStatus
@@ -509,3 +512,513 @@ class TestRunStatusFragment:
     def test_run_fragment_unknown_id_404(self, client):
         resp = client.get("/v2/runs/no-such-run/status-fragment")
         assert resp.status_code == 404
+
+
+def _localisation_project(session, **kwargs) -> VideoProject:
+    defaults = dict(status=ProjectStatus.ready, project_type="localisation")
+    defaults.update(kwargs)
+    return _make_project(session, **defaults)
+
+
+_TRANSCRIPT = {
+    "schema_version": 1,
+    "model": "gemini-2.5-pro",
+    "prompt_version": "transcribe/v1",
+    "source_language": "en",
+    "lines": [
+        {
+            "id": 1,
+            "start": 0.0,
+            "end": 2.4,
+            "speaker": "off-screen interviewer (camera person)",
+            "on_screen": False,
+            "text": "Hey, what are you doing?",
+        },
+        {
+            "id": 2,
+            "start": 2.4,
+            "end": 6.0,
+            "speaker": "the woman in the red jacket",
+            "on_screen": True,
+            "text": "I'm, uh, listening to my textbook.",
+        },
+    ],
+    "on_screen_text": [{"start": 0.0, "end": 3.0, "text": "SPEECHIFY"}],
+}
+
+
+class TestLocalisationCreateProjectForm:
+    def test_dashboard_offers_the_localisation_type(self, client):
+        html = client.get("/v2/").text
+        assert 'value="localisation"' in html
+        assert "Localisation" in html
+
+    def test_hook_sec_field_is_present_but_hidden_by_default(self, client):
+        """The field exists for every render; JS reveals it for the hook-split
+        type only, so a face-swap operator never sees it."""
+        html = client.get("/v2/").text
+        assert 'name="hook_sec"' in html
+        assert 'id="new-project-hook-group" style="display:none"' in html
+
+    def test_only_the_localisation_option_asks_for_a_hook(self, client):
+        html = client.get("/v2/").text
+        assert 'value="localisation"' in html
+        # data-hook drives the reveal; exactly one type is hook-split today.
+        assert html.count('data-hook="1"') == 1
+        assert 'data-hook="0"' in html
+
+    def test_mute_source_default_comes_from_the_registry(self, client):
+        """default_mute_source is True only for localisation — the checkbox is
+        stamped from the selected option's data-mute."""
+        html = client.get("/v2/").text
+        assert 'id="new-project-mute-source"' in html
+        assert html.count('data-mute="1"') == 1
+        assert 'data-mute="0"' in html
+
+
+class TestLocalisationNewRunForm:
+    def test_defaults_helper_surfaces_the_localisation_spec(self, db_session):
+        from app.web_v2 import _new_run_defaults
+
+        project = _localisation_project(db_session)
+        ctx = _new_run_defaults(project)
+
+        assert ctx["is_localisation"] is True
+        assert ctx["default_audio_mode"] == "seedance"
+        # Gemini Omni emits no audio and is therefore unusable here.
+        assert ctx["models_without_audio"] == ["gemini-omni"]
+        assert ctx["default_model"] != "gemini-omni"
+        assert ai_models.spec_for(ctx["default_model"]).produces_audio is True
+        # Both templates travel to the client so the mode radio can swap them.
+        assert set(ctx["localisation_prompts"]) == {"keep", "swap"}
+        assert "{dialogue}" in ctx["localisation_prompts"]["swap"]
+        assert "{dialogue}" in ctx["localisation_prompts"]["keep"]
+
+    def test_default_mode_matches_the_registry_default_prompt(self, db_session):
+        """The radio and the pre-filled textarea must never disagree."""
+        from app.project_types import spec_for
+        from app.web_v2 import _new_run_defaults
+
+        project = _localisation_project(db_session)
+        ctx = _new_run_defaults(project)
+        assert (
+            ctx["localisation_prompts"][ctx["default_localisation_mode"]]
+            == spec_for("localisation").default_prompt
+        )
+
+    def test_other_types_flag_no_model_and_stay_on_original_audio(self, db_session):
+        from app.web_v2 import _new_run_defaults
+
+        project = _make_project(db_session, project_type="face_swap")
+        ctx = _new_run_defaults(project)
+        assert ctx["is_localisation"] is False
+        assert ctx["models_without_audio"] == []
+        assert ctx["default_audio_mode"] == "original"
+
+    def test_mute_source_still_wins_for_non_localisation_types(self, db_session):
+        """The pre-existing "Remove original audio" behaviour is unchanged."""
+        from app.web_v2 import _new_run_defaults
+
+        project = _make_project(db_session, project_type="face_swap", mute_source=True)
+        assert _new_run_defaults(project)["default_audio_mode"] == "seedance"
+
+    def test_form_marks_the_audio_less_model_unusable(self, client, db_session):
+        p = _localisation_project(db_session)
+        _make_segment_def(db_session, p.id, 0)
+        html = client.get(f"/v2/projects/{p.id}").text
+
+        assert '<option value="gemini-omni" disabled>' in html
+        assert "generates no audio" in html
+        assert '<option value="seedance-2-5" selected>' in html
+
+    def test_other_types_still_offer_every_model(self, client, db_session):
+        p = _make_project(db_session, status=ProjectStatus.ready)
+        _make_segment_def(db_session, p.id, 0)
+        html = client.get(f"/v2/projects/{p.id}").text
+        assert '<option value="gemini-omni" disabled>' not in html
+
+    def test_form_preselects_generated_audio_and_warns_about_original(
+        self, client, db_session
+    ):
+        p = _localisation_project(db_session)
+        _make_segment_def(db_session, p.id, 0)
+        html = client.get(f"/v2/projects/{p.id}").text
+
+        assert '<option value="seedance" selected>' in html
+        assert 'id="audio-localisation-warning"' in html
+        assert "untranslated source soundtrack" in html
+        assert "var LOCALISATION_RUN = true;" in html
+
+    def test_form_offers_both_localisation_modes(self, client, db_session):
+        p = _localisation_project(db_session)
+        _make_segment_def(db_session, p.id, 0)
+        html = client.get(f"/v2/projects/{p.id}").text
+
+        assert 'name="localisation_mode" value="keep"' in html
+        assert 'name="localisation_mode" value="swap"' in html
+        assert "Speech only" in html
+        assert "Speech + character" in html
+        # The reference input is called out as required for the swap mode.
+        assert 'id="ref-localisation-required"' in html
+
+    def test_translate_button_disabled_without_a_ready_transcript(
+        self, client, db_session
+    ):
+        p = _localisation_project(db_session)
+        _make_segment_def(db_session, p.id, 0)
+        html = client.get(f"/v2/projects/{p.id}").text
+
+        assert 'id="translate-btn"' in html
+        assert "disabled>Translate</button>" in html
+        assert "No transcript yet" in html
+
+    def test_translate_button_enabled_once_the_transcript_is_ready(
+        self, client, db_session
+    ):
+        p = _localisation_project(
+            db_session, transcript_status="ready", transcript=_TRANSCRIPT
+        )
+        _make_segment_def(db_session, p.id, 0)
+        html = client.get(f"/v2/projects/{p.id}").text
+
+        assert ">Translate</button>" in html
+        assert "disabled>Translate</button>" not in html
+        assert "/localisation-prompt" in html
+
+    def test_empty_transcript_keeps_translate_disabled_with_a_reason(
+        self, client, db_session
+    ):
+        p = _localisation_project(db_session, transcript_status="empty")
+        _make_segment_def(db_session, p.id, 0)
+        html = client.get(f"/v2/projects/{p.id}").text
+
+        assert "disabled>Translate</button>" in html
+        assert "No speech was found in this video" in html
+
+
+    def test_no_localisation_panel_on_other_types(self, client, db_session):
+        p = _make_project(db_session, status=ProjectStatus.ready)
+        _make_segment_def(db_session, p.id, 0)
+        html = client.get(f"/v2/projects/{p.id}").text
+
+        assert 'id="localisation-panel"' not in html
+        assert 'id="translate-btn"' not in html
+        assert "var LOCALISATION_RUN = false;" in html
+
+    def test_status_fragment_carries_the_same_localisation_form(
+        self, client, db_session
+    ):
+        p = _localisation_project(
+            db_session, transcript_status="ready", transcript=_TRANSCRIPT
+        )
+        _make_segment_def(db_session, p.id, 0)
+        html = client.get(f"/v2/projects/{p.id}/status-fragment").text
+
+        assert 'id="localisation-panel"' in html
+        assert '<option value="seedance" selected>' in html
+        assert "disabled>Translate</button>" not in html
+
+
+class TestTranscriptPanel:
+    def test_absent_for_non_localisation_projects(self, client, db_session):
+        p = _make_project(db_session, status=ProjectStatus.ready)
+        html = client.get(f"/v2/projects/{p.id}").text
+        assert 'id="transcript-card"' not in html
+
+    def test_never_requested_offers_transcribe(self, client, db_session):
+        p = _localisation_project(db_session)
+        html = client.get(f"/v2/projects/{p.id}").text
+
+        assert 'id="transcript-card"' in html
+        assert "not transcribed yet" in html.lower()
+        assert ">Transcribe</button>" in html
+        assert "/transcribe" in html
+        # Nothing to poll for (the refresh helper still names the URL).
+        assert f'hx-get="/v2/projects/{p.id}/transcript-fragment"' not in html
+
+    def test_pending_polls_itself(self, client, db_session):
+        p = _localisation_project(db_session, transcript_status="pending")
+        html = client.get(f"/v2/projects/{p.id}").text
+
+        assert f'hx-get="/v2/projects/{p.id}/transcript-fragment"' in html
+        assert 'hx-trigger="every 3s"' in html
+        assert "Transcribing" in html
+
+    def test_running_polls_itself(self, client, db_session):
+        p = _localisation_project(db_session, transcript_status="running")
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+        assert 'hx-trigger="every 3s"' in html
+
+    def test_ready_stops_polling_and_lists_the_lines(self, client, db_session):
+        p = _localisation_project(
+            db_session, transcript_status="ready", transcript=_TRANSCRIPT
+        )
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+
+        # Terminal state → the polling wrapper is gone (same rule as the
+        # merges/tail-edit fragments).
+        assert "hx-trigger" not in html
+        # Detected language, timestamps, speakers and the verbatim text.
+        assert 'id="transcript-source-language"' in html
+        assert 'value="en"' in html
+        assert "off-screen interviewer (camera person)" in html
+        assert "the woman in the red jacket" in html
+        assert "Hey, what are you doing?" in html
+        assert 'value="0.0"' in html and 'value="2.4"' in html
+        # Inline editing saves the whole dict back via PATCH.
+        assert "saveTranscript" in html
+        assert "method: 'PATCH'" in html
+
+    def test_ready_with_no_lines_says_so(self, client, db_session):
+        p = _localisation_project(
+            db_session,
+            transcript_status="ready",
+            transcript={"schema_version": 1, "source_language": "en", "lines": []},
+        )
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+        assert "no lines" in html.lower()
+        assert "hx-trigger" not in html
+
+    def test_empty_is_a_success_not_an_error(self, client, db_session):
+        p = _localisation_project(db_session, transcript_status="empty")
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+
+        assert "No speech found in this video" in html
+        assert "alert-danger" not in html
+        assert "hx-trigger" not in html
+        assert ">Transcribe again</button>" in html
+
+    def test_failed_shows_the_error_and_stays_usable(self, client, db_session):
+        p = _localisation_project(
+            db_session,
+            transcript_status="failed",
+            transcript_error="kie.ai returned 401: invalid key",
+        )
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+
+        assert "Transcription failed" in html
+        assert "kie.ai returned 401: invalid key" in html
+        assert "hx-trigger" not in html
+        assert ">Transcribe again</button>" in html
+
+    def test_malformed_lines_do_not_break_the_render(self, client, db_session):
+        """The transcript is model-written and operator-edited JSON — a missing
+        timestamp must render as a blank input, not 500 the project page."""
+        p = _localisation_project(
+            db_session,
+            transcript_status="ready",
+            transcript={
+                "lines": [
+                    {"id": 1, "text": "no timestamps here"},
+                    "not even a dict",
+                    {"id": 2, "start": "oops", "end": None, "speaker": None, "text": None},
+                ]
+            },
+        )
+        resp = client.get(f"/v2/projects/{p.id}/transcript-fragment")
+        assert resp.status_code == 200
+        assert "no timestamps here" in resp.text
+
+    def test_fragment_unknown_project_404(self, client):
+        assert client.get("/v2/projects/nope/transcript-fragment").status_code == 404
+
+
+class TestTranscriptLifecycleRegressions:
+    """Regressions for the five lifecycle bugs a review caught after the
+    feature was first written — every one of which shipped past a fully green
+    suite, because the breakage lived in WHEN a fragment re-renders rather than
+    in what any single render produces.
+
+    The invariant underneath all of them: #status-content must never re-render
+    on a timer (it wraps the New Run form, whose prompt and per-segment
+    textareas hold typed work), so anything in that form which depends on the
+    transcript has to be refreshed out-of-band by the panel's own poll.
+    """
+
+    # -- Bug 1: the Translate button never enabled without a page reload ----
+
+    def test_status_fragment_never_polls_once_the_run_form_is_live(
+        self, client, db_session
+    ):
+        """The rule the out-of-band gate exists to work around. If this ever
+        starts polling, a 3s timer silently eats the operator's prompt."""
+        p = _localisation_project(db_session, transcript_status="ready")
+        html = client.get(f"/v2/projects/{p.id}/status-fragment").text
+        assert 'id="new-run-form"' in html
+        assert "hx-trigger" not in html
+
+    def test_polling_fragment_carries_an_out_of_band_translate_gate(
+        self, client, db_session
+    ):
+        p = _localisation_project(db_session, transcript_status="running")
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+        assert 'id="translate-gate" hx-swap-oob="true"' in html
+        assert 'id="translate-btn"' in html
+
+    def test_the_gate_converges_in_both_directions(self, client, db_session):
+        """Enabled when the transcript lands, disabled again when a
+        re-transcription starts — both without reloading the page."""
+        running = _localisation_project(db_session, transcript_status="running")
+        html = client.get(f"/v2/projects/{running.id}/transcript-fragment").text
+        gate = html[html.index('id="translate-gate"'):]
+        assert "disabled" in gate
+        assert "Transcription is still running" in gate
+
+        ready = _localisation_project(
+            db_session, transcript_status="ready", transcript=_TRANSCRIPT
+        )
+        html = client.get(f"/v2/projects/{ready.id}/transcript-fragment").text
+        gate = html[html.index('id="translate-gate"'):]
+        assert "disabled" not in gate
+        assert 'id="translate-disabled-reason"' not in gate
+
+    def test_no_out_of_band_gate_when_the_run_form_is_not_on_the_page(
+        self, client, db_session
+    ):
+        """An OOB swap whose target does not exist is a silent no-op at best;
+        the New Run form only exists once the project is ready."""
+        p = _localisation_project(
+            db_session, status=ProjectStatus.analyzing, transcript_status="pending"
+        )
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+        assert "hx-swap-oob" not in html
+
+    # -- Bug 2: the panel froze, and its button double-charged --------------
+
+    def test_promised_transcription_polls_and_offers_no_second_run(
+        self, client, db_session
+    ):
+        """transcript_status is "pending" from project creation, so the window
+        where the panel used to render a Transcribe button next to an already
+        promised job no longer exists — one click there paid for a second
+        model call on the same video."""
+        p = _localisation_project(
+            db_session, status=ProjectStatus.created, transcript_status="pending"
+        )
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+
+        assert 'hx-trigger="every 3s"' in html
+        assert "Transcription is queued" in html
+        assert ">Transcribe</button>" not in html
+        assert ">Transcribe again</button>" not in html
+
+    def test_analysis_failure_stops_the_poll_and_hands_back_control(
+        self, client, db_session
+    ):
+        """"pending" on a failed analysis is terminal — nothing will ever pick
+        it up, so polling forever would be pure waste."""
+        p = _localisation_project(
+            db_session, status=ProjectStatus.failed, transcript_status="pending"
+        )
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+
+        assert "hx-trigger" not in html
+        assert "Transcription never started" in html
+        # A way out exists — the label reads "again" because the status column
+        # says "pending", but no job was ever queued for it.
+        assert "requestTranscript(" in html
+        assert ">Transcribe again</button>" in html
+
+    # -- Bug 3: a dead transcription had no way out ------------------------
+
+    def test_a_running_transcription_can_be_restarted_but_asks_first(
+        self, client, db_session
+    ):
+        """RQ kills a job at TRANSCRIBE_JOB_TIMEOUT without writing "failed",
+        and any deploy restarts the worker — so "running" can outlive its job
+        and must not be a dead end. Restarting costs a second model call, so it
+        confirms."""
+        p = _localisation_project(db_session, transcript_status="running")
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+
+        assert "Restart transcription" in html
+        assert "window.confirm" in html or "confirm(" in html
+        assert "costs a second model call" in html
+
+    # -- Bug 7: the documented hand-paste fallback was unreachable ----------
+
+    @pytest.mark.parametrize(
+        "status,transcript",
+        [
+            (None, None),
+            ("failed", None),
+            ("empty", None),
+            ("ready", _TRANSCRIPT),
+        ],
+    )
+    def test_every_settled_state_can_be_hand_edited(
+        self, client, db_session, status, transcript
+    ):
+        """docs/localisation.md §8: a failed transcription must leave the
+        project usable because the operator can type the lines in. That needs
+        the table, the language field, Save and Add line in every non-polling
+        state — not only in "ready"."""
+        p = _localisation_project(
+            db_session, transcript_status=status, transcript=transcript
+        )
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+
+        assert 'id="transcript-lines"' in html
+        assert 'id="transcript-source-language"' in html
+        assert ">Save transcript</button>" in html
+        assert 'id="transcript-add-line"' in html
+
+    def test_a_polling_state_renders_nothing_typeable(self, client, db_session):
+        """The panel replaces its own innerHTML every 3s, so an input next to
+        the spinner would lose a keystroke every three seconds."""
+        p = _localisation_project(db_session, transcript_status="running")
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+
+        assert 'id="transcript-lines"' not in html
+        assert 'id="transcript-source-language"' not in html
+        assert ">Save transcript</button>" not in html
+
+    def test_broken_line_ids_are_repaired_for_the_editor(
+        self, client, db_session
+    ):
+        """PATCH /transcript refuses a line without a unique id (a translation
+        is rejoined on them), so a transcript that lost one would render fine
+        and then 400 the moment the operator pressed Save."""
+        p = _localisation_project(
+            db_session,
+            transcript_status="ready",
+            transcript={
+                "source_language": "en",
+                "lines": [
+                    {"id": 1, "start": 0.0, "end": 1.0, "text": "first"},
+                    {"start": 1.0, "end": 2.0, "text": "no id at all"},
+                    {"id": 1, "start": 2.0, "end": 3.0, "text": "duplicate id"},
+                ],
+            },
+        )
+        html = client.get(f"/v2/projects/{p.id}/transcript-fragment").text
+
+        ids = re.findall(r'data-line-id="(\d+)"', html)
+        assert len(ids) == 3
+        assert len(set(ids)) == 3, f"ids must be unique for PATCH, got {ids}"
+        # The valid stored id is kept where it was — a translation matches on it.
+        assert ids[0] == "1"
+
+    # -- Bugs 9 and 10: client validation and error rendering ---------------
+
+    def test_hook_input_agrees_with_the_server_about_zero(self, client):
+        """_validate_hook_sec rejects 0 with a 400, so the browser must not
+        accept it and turn an inline form error into a server error."""
+        html = client.get("/v2/").text
+        assert 'id="new-project-hook-sec"' in html
+        assert 'min="0.1"' in html
+        assert 'min="0"' not in html
+
+    def test_error_bodies_are_rendered_through_the_shared_formatter(
+        self, client, db_session
+    ):
+        """FastAPI's own 422 sends `detail` as an ARRAY of objects, which
+        concatenates to "[object Object]" — exactly the error class where the
+        field name is the whole point."""
+        assert "function apiErrorText(" in client.get("/v2/").text
+
+        p = _localisation_project(db_session, transcript_status="ready")
+        html = client.get(f"/v2/projects/{p.id}").text
+        assert "apiErrorText(" in html
+        assert "data.detail ||" not in html
+        assert "b.detail ||" not in html

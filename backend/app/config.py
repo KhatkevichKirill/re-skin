@@ -86,12 +86,46 @@ class Settings:
     # App configuration
     DEFAULT_RESOLUTION: str = os.getenv("DEFAULT_RESOLUTION", "480p")
     MAX_REFERENCE_IMAGES: int = int(os.getenv("MAX_REFERENCE_IMAGES", "2"))
+    # Global cap on swap-segment length. Still read by the v1 pipeline
+    # (app/pipeline.py); the v2 path takes its cap from the project instead
+    # (VideoProject.max_segment_sec, NULL = ai_models.UNIVERSAL_MAX_SEGMENT_SEC).
     SEGMENT_MAX_SECONDS: int = int(os.getenv("SEGMENT_MAX_SECONDS", "15"))
+
+    # Subtitle-removal projects auto-cut on scene changes (PySceneDetect) instead
+    # of running face detection. Minimum scene length in seconds — the
+    # `--min-scene-len 4s` default. Shorter cuts are merged into their neighbour.
+    SCENE_MIN_LEN_SECONDS: float = float(os.getenv("SCENE_MIN_LEN_SECONDS", "4"))
 
     # Upload size cap (MiB).  Applies to source video and reference image uploads.
     # Set high enough for 1080p source videos (several hundred MB typical).
     # Nginx client_max_body_size must be >= this value.
     MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "1024"))
+
+    # --- Localisation (see docs/localisation.md, app/localisation.py) ---
+    # Video-capable model that transcribes the source and labels speakers by
+    # what is visible on screen. Called on the OpenAI-compatible kie.ai route
+    # (POST https://api.kie.ai/{model}/v1/chat/completions), so the value is
+    # both the model id AND a URL path segment.
+    LOCALISATION_TRANSCRIBE_MODEL: str = os.getenv(
+        "LOCALISATION_TRANSCRIBE_MODEL", "gemini-2.5-pro"
+    )
+    # Text model that rewrites the transcript into the target language. Called
+    # on the kie.ai Responses route (POST https://api.kie.ai/codex/v1/responses)
+    # where the model id travels in the BODY.
+    LOCALISATION_TRANSLATE_MODEL: str = os.getenv(
+        "LOCALISATION_TRANSLATE_MODEL", "gpt-5-6-luna"
+    )
+    # Default localised-hook length in seconds when a project leaves hook_sec
+    # NULL. Consumed at analyze time (same contract as max_segment_sec).
+    LOCALISATION_DEFAULT_HOOK_SEC: float = float(
+        os.getenv("LOCALISATION_DEFAULT_HOOK_SEC", "10")
+    )
+    # Per-request timeout for both LLM calls. Transcribing a 10s clip takes
+    # ~30-60s; the 60s default on the shared KieClient is too tight once the
+    # model has to fetch and decode the video, so these calls override it.
+    LOCALISATION_TIMEOUT_SEC: float = float(
+        os.getenv("LOCALISATION_TIMEOUT_SEC", "600")
+    )
 
 
 settings = Settings()

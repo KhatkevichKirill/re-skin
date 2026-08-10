@@ -18,6 +18,52 @@
         enctype="multipart/form-data"
       >
 
+        <!-- Project type -->
+        <div class="form-group">
+          <label for="new-project-type">Project type</label>
+          {# Options come from app/project_types.py — a type added there shows up
+             here (and carries its own form defaults) with no edit to this file.
+             data-hook marks the types analysed by cutting a hook off the front
+             (project_types.SEG_HOOK_SPLIT), which is the only thing hook_sec
+             means; data-mute is the type's default_mute_source. #}
+          <select id="new-project-type" name="project_type" onchange="onProjectTypeChange()">
+            {% for pt in project_types %}
+            <option value="{{ pt.key }}" {% if pt.key == default_project_type %}selected{% endif %}
+                    data-hint="{{ pt.hint }}"
+                    data-hook="{{ 1 if pt.segmentation == 'hook_split' else 0 }}"
+                    data-mute="{{ 1 if pt.default_mute_source else 0 }}">{{ pt.label }}</option>
+            {% endfor %}
+          </select>
+          <p class="hint" id="project-type-hint"></p>
+        </div>
+
+        <!-- Hook length — only meaningful for the hook-split (localisation) flow -->
+        <div class="form-group" id="new-project-hook-group" style="display:none">
+          <label for="new-project-hook-sec">Hook length (s)</label>
+          {# min is 0.1, not 0: api_v2._validate_hook_sec REJECTS 0 with a 400
+             (a zero-length hook is a segment no model can generate), so a
+             browser that accepts it here would only move the refusal to the
+             server. Blank still means "use the default" — an empty number input
+             posts "" and never trips min. #}
+          <input type="number" id="new-project-hook-sec" name="hook_sec"
+                 min="0.1" step="0.1" placeholder="{{ "%g"|format(localisation_default_hook_sec) }}" />
+          <p class="hint">
+            How much of the front of the video is the <strong>hook</strong> — the only part
+            that gets re-generated in the new language. Analysis cuts one <em>swap</em>
+            segment over <code>[0, hook]</code> and leaves the rest as one <em>keep</em>
+            segment, delivered as the original, untranslated footage.
+            Leave blank for the {{ "%g"|format(localisation_default_hook_sec) }}s default.
+            Applied when the video is <strong>analyzed</strong>, so it is the value at
+            creation time that matters (change it later on the project page and
+            re-analyze).
+            <br />
+            Keep it at or above the minimum clip length of the model you intend to run
+            (Seedance 2.5 needs <strong>4s</strong>): a shorter hook is padded forward at
+            submit time and the generated clip is <em>not</em> trimmed back, so the
+            delivered hook comes out longer than the number you typed here.
+          </p>
+        </div>
+
         <!-- Source -->
         <div class="form-group">
           <label>Video source <span style="color:#dc3545">*</span></label>
@@ -34,6 +80,23 @@
             </div>
           </div>
           <p class="hint">The prompt and reference images are entered when you create a Run, not here.</p>
+        </div>
+
+        <!-- Remove original audio -->
+        <div class="form-group">
+          <label style="font-weight:400">
+            {# Checked state is (re)set from the selected type's
+               default_mute_source by onProjectTypeChange(); still free to flip. #}
+            <input type="checkbox" id="new-project-mute-source" name="mute_source" value="true" />
+            Remove original audio
+          </label>
+          <p class="hint">
+            Uploads the clips to the AI model <strong>without</strong> the source soundtrack, so it
+            writes audio from your prompt instead of reacting to what it hears. Use this when the
+            model keeps reproducing the original audio even though the prompt says not to — telling
+            it in words is unreliable, muting the input is not.
+            The source file is not changed and you can flip this later on the project page.
+          </p>
         </div>
 
         <!-- Max segment length (analysis-time segmentation cap) -->
@@ -94,6 +157,7 @@ function handleProjectCreated(event) {
       <tr>
         <th style="width:28px"></th>
         <th>Name</th>
+        <th>Type</th>
         <th>Source</th>
         <th>Status</th>
         <th>Created</th>
@@ -113,6 +177,7 @@ function handleProjectCreated(event) {
           {% if project.name %}<strong>{{ project.name }}</strong>{% else %}<em class="text-muted">unnamed</em>{% endif %}
           <div><code style="font-size:11px;color:var(--color-muted)">{{ project.id[:8] }}…</code></div>
         </td>
+        <td style="font-size:12px">{{ project.project_type | project_type_label }}</td>
         <td style="max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="{{ project.source_ref }}">
           {{ project.source_ref }}
         </td>
@@ -204,3 +269,28 @@ function deleteRun(rid, btn) {
 </script>
 
 {% endblock %}
+
+<script>
+// Project type drives two other fields on this form: the hook-length input is
+// meaningful only for the hook-split (localisation) flow, and each type carries
+// its own default for "Remove original audio". Both are read off the selected
+// <option>'s data-* attributes, which the server rendered from
+// app/project_types.py — so adding a type needs no change here.
+function onProjectTypeChange() {
+  var sel = document.getElementById('new-project-type');
+  var hint = document.getElementById('project-type-hint');
+  if (!sel || !hint) return;
+  var opt = sel.options[sel.selectedIndex];
+  hint.textContent = (opt && opt.dataset.hint) || '';
+
+  var hookGroup = document.getElementById('new-project-hook-group');
+  if (hookGroup) {
+    hookGroup.style.display = (opt && opt.dataset.hook === '1') ? '' : 'none';
+  }
+  var mute = document.getElementById('new-project-mute-source');
+  if (mute) mute.checked = !!(opt && opt.dataset.mute === '1');
+}
+
+document.addEventListener('DOMContentLoaded', onProjectTypeChange);
+onProjectTypeChange();
+</script>

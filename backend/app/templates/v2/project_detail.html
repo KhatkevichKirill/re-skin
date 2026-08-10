@@ -61,6 +61,106 @@
         segments by hand) for a new cap to matter.
       </p>
     </div>
+
+    <!-- Remove original audio (read at SUBMIT time — no re-analysis needed) -->
+    <div class="form-group">
+      <label style="display:flex; gap:8px; align-items:center; cursor:pointer">
+        <input type="checkbox" id="project-mute-source"
+               {% if project.mute_source %}checked{% endif %}
+               onchange="saveProjectMuteSource('{{ project.id }}')" />
+        <span>Remove original audio</span>
+        <span id="project-mute-source-status" class="text-muted" style="font-size:12px"></span>
+      </label>
+      <p class="hint">
+        Uploads every swap clip to the AI model <strong>video-only</strong>, so it can't hear
+        the source soundtrack and writes audio from your prompt instead. Use this when the
+        model keeps reproducing the original audio even though the prompt says not to —
+        telling it in words is unreliable, muting the input is not. The source file is not
+        changed, and unlike the two settings above this one applies to the
+        <strong>next run</strong> with no re-analysis.
+      </p>
+    </div>
+
+    {# ── Hook length — localisation only (docs/localisation.md §5) ──────────
+       Lives next to "Max segment length" because the two are the same kind of
+       setting: both are consumed at ANALYZE time and neither changes a segment
+       that is already cut. The clamp warning underneath is forward-looking —
+       what the NEXT analysis would do with the value in the box. #}
+    {% if hook_visible %}
+    <div class="form-group">
+      <label for="project-hook-sec">Hook length (s)</label>
+      <div style="display:flex; gap:8px; align-items:center; max-width:480px">
+        {# min is 0.1, not 0, for the same reason the create form's field uses
+           it: api_v2._validate_hook_sec rejects 0 with a 400. Blank still means
+           "use the default" — an empty number input never trips min. The value
+           is the RAW stored float (blank when NULL) so the box shows the
+           operator's own choice, not the resolved default. #}
+        <input type="number" id="project-hook-sec" min="0.1" step="0.1" style="flex:1"
+               value="{% if project.hook_sec is not none %}{{ "%g"|format(project.hook_sec) }}{% endif %}"
+               placeholder="{{ "%g"|format(hook_default_sec) }} (default)" />
+        <button type="button" class="btn btn-primary btn-sm"
+                onclick="saveProjectHookSec('{{ project.id }}')">Save</button>
+        <span id="project-hook-sec-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+      <p class="hint">
+        How much of the front of the video is the <strong>hook</strong> — the only part
+        re-generated in the new language. Analysis cuts one <em>swap</em> segment over
+        <code>[0, hook]</code> and leaves the rest as one <em>keep</em> segment, which is
+        delivered as the original, untranslated footage.
+        Leave blank for the {{ "%g"|format(hook_default_sec) }}s default.
+        <strong>This only takes effect the next time the video is analyzed</strong> —
+        saving it re-cuts nothing, so use <em>Re-analyze video</em> below for a new hook
+        to matter.
+      </p>
+
+      {% if hook_clamp_reason %}
+      {# The clamp, stated before it happens. hook_planned_sec is what analysis
+         WILL cut from the value in the box above — never silently. #}
+      <div class="alert alert-warning" id="project-hook-clamp" style="margin-top:8px">
+        <strong>The next analysis will cut a {{ "%.1f"|format(hook_planned_sec) }}s hook, not
+        {{ "%.1f"|format(hook_requested_sec) }}s{% if hook_is_default %} (the default){% endif %}.</strong>
+        {% if hook_clamp_reason == "cap" %}
+        A hook may not be longer than this project's <strong>Max segment length</strong>
+        ({{ "%g"|format(hook_cap_sec) }}s) — that cap is what keeps every proposed segment
+        generatable by the models this project can run on. Raise it above to
+        {{ "%g"|format(hook_requested_sec) }}s or more (and re-analyze) to get the hook you asked
+        for, or lower the hook to match the cap.
+        {% elif hook_clamp_reason == "duration" %}
+        The source video is only {{ "%.1f"|format(project.duration_sec) }}s long, so the hook
+        is the whole clip. Nothing is lost — there is simply no more video to re-speak.
+        {% elif hook_clamp_reason == "floor" %}
+        {{ "%g"|format(hook_floor_sec) }}s is the shortest clip any model in the registry will
+        generate, so a shorter hook would produce a segment no run could submit. Analysis
+        pads it up instead.
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# ── Re-analyze ─────────────────────────────────────────────────────────
+       The apply button for both analyze-time settings above. Rendered for every
+       project type and every status: the cap applies to all of them, and a
+       FAILED project is exactly the one that most needs re-analyzing. It is
+       never disabled by status — the endpoint answers 409 with the reason, and
+       a message from the server beats a button greyed out by a page render that
+       may be minutes stale. #}
+    <div class="form-group" style="margin-bottom:0; padding-top:14px; border-top:1px solid var(--color-border, #e2e2e2)">
+      <label>Re-analyze</label>
+      <div style="display:flex; gap:8px; align-items:center">
+        <button type="button" class="btn btn-warning" id="reanalyze-btn"
+                onclick="reanalyzeProject('{{ project.id }}')">Re-analyze video</button>
+        <span id="reanalyze-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+      <p class="hint">
+        Re-cuts the segments from scratch with the settings above.
+        <strong>This deletes every segment</strong> — including every boundary, swap/keep
+        flag and pre/post-roll you edited by hand — and with them every run's per-segment
+        generation history. Runs themselves survive: a finished run keeps its row, its
+        delivered video and its Drive link. It asks for confirmation first, and is refused
+        while the project is already analyzing or while any run of it is still working.
+      </p>
+    </div>
   </div>
 </div>
 
@@ -83,7 +183,10 @@ function patchProject(pid, body, statusEl, okMsg) {
       return true;
     }
     return r.json().then(function (b) {
-      statusEl.textContent = 'Error: ' + (b.detail || r.status);
+      // apiErrorText (base.html), not b.detail: a 422 from FastAPI's own body
+      // validation sends detail as an array of objects, which concatenates to
+      // "[object Object]".
+      statusEl.textContent = 'Error: ' + apiErrorText(b, r);
       return false;
     });
   })
@@ -102,6 +205,19 @@ var _maxSegmentSaved = (function () {
   return sel ? sel.value : '';
 })();
 
+function saveProjectMuteSource(pid) {
+  var box = document.getElementById('project-mute-source');
+  var wanted = box.checked;
+  patchProject(pid, { mute_source: wanted },
+               document.getElementById('project-mute-source-status'),
+               wanted ? 'Original audio removed.' : 'Original audio kept.')
+  .then(function (ok) {
+    // Roll the checkbox back if the server rejected the change, so what's on
+    // screen never disagrees with what the next run will actually do.
+    if (!ok) box.checked = !wanted;
+  });
+}
+
 function saveProjectMaxSegment(pid) {
   var sel = document.getElementById('project-max-segment');
   var raw = sel.value;
@@ -115,6 +231,62 @@ function saveProjectMaxSegment(pid) {
   .then(function (ok) {
     if (ok) _maxSegmentSaved = raw;
     else sel.value = _maxSegmentSaved;
+  });
+}
+
+{% if hook_visible %}
+// Hook length — the localisation twin of saveProjectMaxSegment above: same
+// PATCH, same status line, same "Applies on the next analysis." sentence,
+// because it is the same analyze-time contract.
+//
+// Emitted under the same `hook_visible` gate as the field it drives, so this
+// function never exists on a page without #project-hook-sec to act on.
+function saveProjectHookSec(pid) {
+  var inp = document.getElementById('project-hook-sec');
+  var raw = (inp.value || '').trim();
+  // Blank = "no explicit hook" → NULL, which both analysis and the translate
+  // endpoint read as the configured default. Never send "" or 0.
+  var wanted = raw === '' ? null : parseFloat(raw);
+  patchProject(pid, { hook_sec: wanted },
+               document.getElementById('project-hook-sec-status'),
+               (wanted === null ? 'Cleared — using the default.' : 'Set to ' + wanted + 's.')
+                 + ' Applies on the next analysis.');
+}
+{% endif %}
+
+// Re-analyze: the only way an analyze-time setting (max segment length, hook
+// length) can be made to take effect after creation. Destructive — see the hint
+// text next to the button — so it confirms first. Never pre-disabled by status:
+// the endpoint answers 409 with the actual reason, which beats a button greyed
+// out by a page render that may be minutes stale.
+function reanalyzeProject(pid) {
+  if (!window.confirm(
+    'Re-analyze this video?\n\n'
+    + 'Every segment is deleted and re-cut from scratch — including boundaries you '
+    + 'edited by hand — and every run loses its per-segment breakdown. Finished runs '
+    + 'keep their delivered video.'
+  )) return;
+  var statusEl = document.getElementById('reanalyze-status');
+  var btn = document.getElementById('reanalyze-btn');
+  statusEl.textContent = 'Starting…';
+  btn.disabled = true;
+  fetch('/api/v2/projects/' + encodeURIComponent(pid) + '/analyze', { method: 'POST' })
+  .then(function (r) {
+    if (r.ok) {
+      statusEl.textContent = 'Analysis queued — reloading…';
+      // Reload rather than poll: the whole page (segments, runs, transcript
+      // panel) is about to change, and #status-content polls from `analyzing`.
+      setTimeout(function () { window.location.reload(); }, 800);
+      return;
+    }
+    btn.disabled = false;
+    return r.json().then(function (b) {
+      statusEl.textContent = 'Error: ' + apiErrorText(b, r);
+    });
+  })
+  .catch(function (e) {
+    btn.disabled = false;
+    statusEl.textContent = 'Network error: ' + e;
   });
 }
 </script>
@@ -156,6 +328,11 @@ function saveProjectMaxSegment(pid) {
       </div>
     </div>
   </div>
+</div>
+
+<!-- ── Transcript panel (localisation projects; polling target) ── -->
+<div id="project-transcript-content">
+  {% include "partials/project_transcript_panel.html" %}
 </div>
 
 <!-- ── Status-driven content (polling target) ── -->

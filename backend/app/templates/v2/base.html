@@ -6,6 +6,38 @@
   <title>{% block title %}re-skin v2{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css" />
   <script src="/static/htmx.min.js" defer></script>
+  <script>
+// One place that turns any FastAPI error body into a sentence for a human.
+//
+// `detail` is a plain string for every HTTPException the app raises, but for
+// FastAPI's OWN request-validation failures (422) it is an ARRAY of objects —
+// and every `'…' + body.detail` renders that as "[object Object]", i.e. exactly
+// nothing, for the one class of error where the field name is the whole point.
+// Defined here (not per-fragment) so every fetch() error path on every page
+// formats errors the same way; HTMX fragments are swapped in long after this
+// has run.
+function apiErrorText(body, response) {
+  var fallback = (response && response.status)
+    ? ('HTTP ' + response.status) : 'request failed';
+  var detail = body ? body.detail : null;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    var parts = detail.map(function (item) {
+      if (typeof item === 'string') return item;
+      if (!item || typeof item !== 'object') return String(item);
+      var where = Array.isArray(item.loc) ? item.loc.join('.') : '';
+      var msg = item.msg || item.message || '';
+      if (!msg) { try { return JSON.stringify(item); } catch (e) { return String(item); } }
+      return where ? (where + ': ' + msg) : msg;
+    }).filter(function (s) { return s; });
+    if (parts.length) return parts.join('; ');
+  }
+  if (detail && typeof detail === 'object') {
+    try { return JSON.stringify(detail); } catch (e) { /* fall through */ }
+  }
+  return fallback;
+}
+  </script>
 </head>
 <body>
   <header class="site-header">
