@@ -2168,3 +2168,175 @@ class TestPublicResultLink:
         tok = make_result_token(run.id)
         r = client.get(f"/public/runs/{run.id}/result", params={"token": tok})
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Per-project segmentation cap (max_segment_sec)
+# ---------------------------------------------------------------------------
+
+
+class TestMaxSegmentSec:
+    """The analyze-time segmentation cap: settable at create, patchable after.
+
+    NULL is a real value meaning "use the universal default", so it must survive
+    a round-trip as NULL rather than being coerced to a number — freezing today's
+    default into every row would silently diverge if the registry changes.
+    """
+
+    _LINK = "https://drive.google.com/file/d/FAKE_ID/view"
+
+    def _create(self, client, **data):
+        return client.post(
+            "/api/v2/projects", data={"gdrive_link": self._LINK, **data}
+        )
+
+    def test_omitted_stays_null(self, client):
+        resp = self._create(client)
+        assert resp.status_code == 201
+        pid = resp.json()["project_id"]
+        assert client.get(f"/api/v2/projects/{pid}").json()["max_segment_sec"] is None
+
+    def test_accepted_at_create(self, client):
+        resp = self._create(client, max_segment_sec=30)
+        assert resp.status_code == 201
+        pid = resp.json()["project_id"]
+        assert client.get(f"/api/v2/projects/{pid}").json()["max_segment_sec"] == 30.0
+
+    def test_above_the_longest_model_is_400(self, client):
+        """No backend could generate a 45s clip, so this is rejected rather than
+        clamped — silently halving what the operator asked for is worse."""
+        resp = self._create(client, max_segment_sec=45)
+        assert resp.status_code == 400
+        assert "max_segment_sec" in resp.json()["detail"]
+
+    def test_below_the_shortest_generatable_clip_is_400(self, client):
+        """A cap under every model's min_duration_sec is still billed at that
+        floor per segment, so a 2s cap quietly multiplies spend."""
+        resp = self._create(client, max_segment_sec=2)
+        assert resp.status_code == 400
+        assert "max_segment_sec" in resp.json()["detail"]
+
+    def test_nan_is_400(self, client):
+        """NaN parses as a float and Postgres stores it happily; analysis then
+        dies in math.ceil(dur / nan) and every re-analysis repeats it."""
+        resp = self._create(client, max_segment_sec="nan")
+        assert resp.status_code == 400
+
+    def test_infinity_is_400(self, client):
+        resp = self._create(client, max_segment_sec="inf")
+        assert resp.status_code == 400
+
+    def test_patch_sets_it(self, client):
+        pid = self._create(client).json()["project_id"]
+        resp = client.patch(
+            f"/api/v2/projects/{pid}", json={"max_segment_sec": 15}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["max_segment_sec"] == 15.0
+
+    def test_patch_null_clears_it(self, client):
+        """Explicit null means "back to the universal default", which is
+        different from omitting the field."""
+        pid = self._create(client, max_segment_sec=30).json()["project_id"]
+        resp = client.patch(
+            f"/api/v2/projects/{pid}", json={"max_segment_sec": None}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["max_segment_sec"] is None
+
+    def test_patch_omitting_the_field_leaves_it_alone(self, client):
+        """A name-only PATCH must not wipe the cap — the whole reason the
+        endpoint checks model_fields_set instead of `is not None`."""
+        pid = self._create(client, max_segment_sec=30).json()["project_id"]
+        resp = client.patch(f"/api/v2/projects/{pid}", json={"name": "renamed"})
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "renamed"
+        assert resp.json()["max_segment_sec"] == 30.0
+
+    def test_patch_out_of_range_is_400_and_does_not_persist(self, client):
+        pid = self._create(client, max_segment_sec=15).json()["project_id"]
+        assert client.patch(
+            f"/api/v2/projects/{pid}", json={"max_segment_sec": 999}
+        ).status_code == 400
+        assert client.get(
+            f"/api/v2/projects/{pid}"
+        ).json()["max_segment_sec"] == 15.0
+
+
+# ---------------------------------------------------------------------------
+# create_run — Seedance 2.5 as a selectable model
+# ---------------------------------------------------------------------------
+
+
+class TestCreateRunSeedance25:
+    @pytest.fixture()
+    def ready_project(self, SessionFactory, tmp_path):
+        src = tmp_path / "src.mp4"
+        src.write_bytes(_tiny_video_bytes())
+        with SessionFactory() as s:
+            project = VideoProject(
+                source_type="upload",
+                source_ref="src.mp4",
+                source_local_path=str(src),
+                status=ProjectStatus.ready,
+                duration_sec=30.0,
+                width=1080,
+                height=1920,
+                fps=25.0,
+                aspect_ratio="9:16",
+            )
+            s.add(project)
+            s.flush()
+            s.add(
+                SegmentDef(project_id=project.id, index=0, start_sec=0.0,
+                           end_sec=10.0, has_face=True, action="swap")
+            )
+            s.commit()
+            return project.id
+
+    def _create_run(self, client, pid, **data):
+        return client.post(
+            f"/api/v2/projects/{pid}/runs",
+            data={"name": "c1", "prompt": "swap", **data},
+        )
+
+    def test_seedance_2_5_is_accepted(self, client, ready_project, enqueue_spy):
+        resp = self._create_run(
+            client, ready_project, model="seedance-2-5", resolution="720p"
+        )
+        assert resp.status_code == 201, resp.text
+        rid = resp.json()["run_id"]
+        run = client.get(f"/api/v2/runs/{rid}").json()
+        assert run["model"] == "seedance-2-5"
+        assert run["resolution"] == "720p"
+
+    def test_1080p_is_rejected_for_seedance_2_5(
+        self, client, ready_project, enqueue_spy
+    ):
+        """2.5 tops out at 720p. Rejecting at the API is better than silently
+        coercing: the operator asked for production quality and would not know
+        they did not get it."""
+        resp = self._create_run(
+            client, ready_project, model="seedance-2-5", resolution="1080p"
+        )
+        assert resp.status_code == 400
+        assert "1080p" in resp.json()["detail"]
+
+    def test_seedance_2_5_keeps_a_requested_generated_audio_mode(
+        self, client, ready_project, enqueue_spy
+    ):
+        """Unlike Gemini Omni, 2.5 does emit audio, so audio_mode is not forced."""
+        resp = self._create_run(
+            client, ready_project, model="seedance-2-5", resolution="720p",
+            audio_mode="seedance",
+        )
+        assert resp.status_code == 201
+        rid = resp.json()["run_id"]
+        assert client.get(f"/api/v2/runs/{rid}").json()["audio_mode"] == "seedance"
+
+    def test_unknown_model_is_400(self, client, ready_project, enqueue_spy):
+        resp = self._create_run(
+            client, ready_project, model="seedance-9", resolution="720p"
+        )
+        assert resp.status_code == 400
+        assert "model must be one of" in resp.json()["detail"]

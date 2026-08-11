@@ -238,6 +238,147 @@ class TestCreateTask:
 
 
 # ---------------------------------------------------------------------------
+# create_task — Seedance 2.5
+# ---------------------------------------------------------------------------
+
+
+class TestCreateTaskSeedance25:
+    """2.5's per-model rules are enforced at this boundary, not just upstream.
+
+    The point of validating here is failing BEFORE the clip has been cut and
+    uploaded: a bad duration or a `generate_audio` a model rejects otherwise
+    surfaces as an opaque kie.ai 4xx/500 after we have already paid for the
+    upload.
+    """
+
+    _MODEL = "bytedance/seedance-2-5"
+
+    @staticmethod
+    def _mock_ok():
+        respx.post(f"{JOBS_BASE}/api/v1/jobs/createTask").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "msg": "success",
+                    "data": {"taskId": "task-25", "recordId": "rec-25"},
+                },
+            )
+        )
+
+    @respx.mock
+    def test_accepts_the_follow_input_duration_sentinel(self):
+        """-1 ("match the input video") is the ONLY duration 2.5 accepts, and it
+        must survive into the payload as -1 rather than being clamped to 4."""
+        self._mock_ok()
+        client = _make_client()
+        task_id = client.create_task(
+            prompt="x",
+            reference_image_urls=[],
+            reference_video_urls=["https://vid.test/seg.mp4"],
+            resolution="720p",
+            aspect_ratio="adaptive",
+            duration=-1,
+            model=self._MODEL,
+        )
+        assert task_id == "task-25"
+        body = json.loads(respx.calls.last.request.content)
+        assert body["input"]["duration"] == -1
+        assert body["input"]["aspect_ratio"] == "adaptive"
+
+    def test_rejects_a_concrete_duration(self):
+        """A 2.5 request carrying a real length 500s upstream — catch it here."""
+        client = _make_client()
+        with pytest.raises(ValueError, match="duration must be -1"):
+            client.create_task(
+                prompt="x",
+                reference_image_urls=[],
+                reference_video_urls=[],
+                duration=10,
+                model=self._MODEL,
+            )
+
+    @respx.mock
+    def test_generate_audio_is_sent_when_asked(self):
+        self._mock_ok()
+        client = _make_client()
+        client.create_task(
+            prompt="x",
+            reference_image_urls=[],
+            reference_video_urls=[],
+            duration=-1,
+            model=self._MODEL,
+            generate_audio=True,
+        )
+        assert json.loads(respx.calls.last.request.content)["input"][
+            "generate_audio"
+        ] is True
+
+    @respx.mock
+    def test_generate_audio_false_is_sent_not_dropped(self):
+        """False is a real instruction ("write no audio"), not an absence."""
+        self._mock_ok()
+        client = _make_client()
+        client.create_task(
+            prompt="x",
+            reference_image_urls=[],
+            reference_video_urls=[],
+            duration=-1,
+            model=self._MODEL,
+            generate_audio=False,
+        )
+        assert json.loads(respx.calls.last.request.content)["input"][
+            "generate_audio"
+        ] is False
+
+    @respx.mock
+    def test_generate_audio_omitted_when_not_passed(self):
+        """A 2.0 request must stay byte-identical to what it has always been, so
+        the key is absent rather than sent as null/false."""
+        self._mock_ok()
+        client = _make_client()
+        client.create_task(
+            prompt="x",
+            reference_image_urls=[],
+            reference_video_urls=[],
+            duration=9,
+        )
+        assert "generate_audio" not in json.loads(
+            respx.calls.last.request.content
+        )["input"]
+
+    def test_generate_audio_rejected_for_a_model_without_the_switch(self):
+        """The 2.0 family rejects the field, so passing it is a caller bug we
+        want as a ValueError here, not as a 4xx after the upload."""
+        client = _make_client()
+        with pytest.raises(ValueError, match="generate_audio is not supported"):
+            client.create_task(
+                prompt="x",
+                reference_image_urls=[],
+                reference_video_urls=[],
+                duration=9,
+                model="bytedance/seedance-2",
+                generate_audio=True,
+            )
+
+    def test_an_unknown_model_id_is_validated_as_the_default(self):
+        """A kie id absent from the registry falls back to the default spec's
+        rules rather than skipping validation entirely.
+
+        No respx mock: validation must reject this before any HTTP call is made.
+        """
+        client = _make_client()
+        with pytest.raises(ValueError, match="between 4 and 15"):
+            client.create_task(
+                prompt="x",
+                reference_image_urls=[],
+                reference_video_urls=[],
+                duration=99,
+                model="bytedance/some-future-model",
+            )
+
+
+# ---------------------------------------------------------------------------
 # create_omni_task
 # ---------------------------------------------------------------------------
 

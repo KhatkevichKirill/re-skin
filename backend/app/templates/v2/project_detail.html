@@ -17,7 +17,7 @@
 <div class="card">
   <div class="card-header"><h2>Project settings</h2></div>
   <div class="card-body">
-    <div class="form-group" style="margin-bottom:0">
+    <div class="form-group">
       <label for="project-name">Project name</label>
       <div style="display:flex; gap:8px; align-items:center; max-width:480px">
         <input type="text" id="project-name" value="{{ project.name or '' }}"
@@ -27,28 +27,95 @@
       </div>
       <p class="hint">A human-readable label shown in the projects list. Leave blank to clear.</p>
     </div>
+
+    {# NULL means "the universal 10s default", so the blank option is selected
+       for both NULL and an explicit 10. Compare the RAW float, never `| int`:
+       Python's 15.0 == 15 already matches the "15" option, whereas truncating
+       would make an off-menu 10.5 look like the default and would rewrite a
+       12.5 cap to 12 the moment the operator re-picked it. `%g` renders 15.0 as
+       "15" and 12.5 as "12.5" for display. #}
+    {% set cur_seg_cap = project.max_segment_sec %}
+    <div class="form-group" style="margin-bottom:0">
+      <label for="project-max-segment">Max segment length</label>
+      <div style="display:flex; gap:8px; align-items:center; max-width:480px">
+        <select id="project-max-segment" style="flex:1"
+                onchange="saveProjectMaxSegment('{{ project.id }}')">
+          <option value="" {% if cur_seg_cap is none or cur_seg_cap == 10 %}selected{% endif %}>10s — works with every model (default)</option>
+          <option value="15" {% if cur_seg_cap == 15 %}selected{% endif %}>15s — Seedance 2.0 and 2.5 only</option>
+          <option value="30" {% if cur_seg_cap == 30 %}selected{% endif %}>30s — Seedance 2.5 only (fewer seams, longer clips)</option>
+          {% if cur_seg_cap is not none and cur_seg_cap not in (10, 15, 30) %}
+          <option value="{{ cur_seg_cap }}" selected>{{ "%g"|format(cur_seg_cap) }}s — custom (set via the API)</option>
+          {% endif %}
+        </select>
+        <span id="project-max-segment-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+      <p class="hint">
+        The longest a single swap segment may be. Longer segments mean fewer stitch seams
+        and less identity drift across cuts, but they <strong>lock the project to the models
+        that can generate them</strong>: a run on a model with a lower per-clip limit cannot
+        produce the over-long segments, so it delivers the <strong>original, un-swapped
+        footage</strong> for them and flags the run as partly swapped. Timing and audio still
+        line up.
+        <strong>This only takes effect the next time the video is analyzed</strong> — it
+        changes nothing for the segments already cut, so re-analyze the project (or edit the
+        segments by hand) for a new cap to matter.
+      </p>
+    </div>
   </div>
 </div>
 
 <script>
-function saveProjectName(pid) {
-  var inp = document.getElementById('project-name');
-  var statusEl = document.getElementById('project-name-status');
+// Shared PATCH /api/v2/projects/{pid} helper: writes progress/errors into
+// *statusEl* and resolves true/false so a caller can roll its control back when
+// the server rejected the change (what's on screen must never disagree with what
+// the next run will do).
+function patchProject(pid, body, statusEl, okMsg) {
   statusEl.textContent = 'Saving…';
-  fetch('/api/v2/projects/' + encodeURIComponent(pid), {
+  return fetch('/api/v2/projects/' + encodeURIComponent(pid), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: inp.value }),
+    body: JSON.stringify(body),
   })
   .then(function (r) {
     if (r.ok) {
-      statusEl.textContent = 'Saved.';
-      setTimeout(function () { statusEl.textContent = ''; }, 2500);
-    } else {
-      return r.json().then(function (b) { statusEl.textContent = 'Error: ' + (b.detail || r.status); });
+      statusEl.textContent = okMsg || 'Saved.';
+      setTimeout(function () { statusEl.textContent = ''; }, 4000);
+      return true;
     }
+    return r.json().then(function (b) {
+      statusEl.textContent = 'Error: ' + (b.detail || r.status);
+      return false;
+    });
   })
-  .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
+  .catch(function (e) { statusEl.textContent = 'Network error: ' + e; return false; });
+}
+
+function saveProjectName(pid) {
+  var inp = document.getElementById('project-name');
+  patchProject(pid, { name: inp.value },
+               document.getElementById('project-name-status'));
+}
+
+// Last value the server accepted, so a rejected PATCH can be rolled back.
+var _maxSegmentSaved = (function () {
+  var sel = document.getElementById('project-max-segment');
+  return sel ? sel.value : '';
+})();
+
+function saveProjectMaxSegment(pid) {
+  var sel = document.getElementById('project-max-segment');
+  var raw = sel.value;
+  // Blank = "no explicit cap" → NULL, which the backend reads as the universal
+  // 10s default. Never send "" or 0.
+  var wanted = (raw === '') ? null : parseFloat(raw);
+  patchProject(pid, { max_segment_sec: wanted },
+               document.getElementById('project-max-segment-status'),
+               (wanted === null ? 'Set to 10s (default).' : 'Set to ' + wanted + 's.')
+                 + ' Applies on the next analysis.')
+  .then(function (ok) {
+    if (ok) _maxSegmentSaved = raw;
+    else sel.value = _maxSegmentSaved;
+  });
 }
 </script>
 

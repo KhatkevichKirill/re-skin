@@ -35,6 +35,10 @@ class ProjectResponse(BaseModel):
     fps: Optional[float] = None
     aspect_ratio: Optional[str] = None
 
+    # Analyze-time segmentation cap. NULL = the universal default (see
+    # ai_models.UNIVERSAL_MAX_SEGMENT_SEC).
+    max_segment_sec: Optional[float] = None
+
     error_message: Optional[str] = None
     created_at: datetime
 
@@ -52,9 +56,15 @@ class ProjectListItem(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
-    """Editable project settings."""
+    """Editable project settings.
+
+    ``max_segment_sec`` distinguishes "not sent" from "sent as null" via
+    ``model_fields_set`` — null is a real value here, meaning "clear the cap back
+    to the universal default", so it cannot be treated as absence.
+    """
 
     name: Optional[str] = None
+    max_segment_sec: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------

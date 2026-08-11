@@ -16,8 +16,13 @@ process_run(run_id, *, kie=None, gdrive=None)
     Then stitch everything together and deliver to Google Drive.
     Transitions: queued → processing → stitching → delivering → done.
 
-Shared helpers (resolve_reference_urls, _map_aspect, _clamp_duration,
-MIN_SWAP_VIDEO_SEC) are imported from pipeline.py — single source of truth.
+Per-model facts — kie model id, resolutions, clip-length limits, how the output
+duration and aspect ratio are derived, whether an audio switch exists — all come
+from :mod:`app.ai_models`. Do not reintroduce a per-model dict here.
+
+``resolve_reference_urls`` and ``_map_omni_aspect`` are still imported from
+pipeline.py (the frozen v1 module) — the first is genuinely shared, the second is
+pure source-geometry logic with no model dimension to it.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
+from . import ai_models
 from . import media as media_mod
 from . import face as face_mod
 from .config import settings
@@ -37,13 +43,7 @@ from .gdrive_client import GDriveClient
 from .kie_client import KieClient
 from .models import Run, RunSegment, SegmentDef, VideoProject
 from .pipeline import (
-    MIN_SWAP_VIDEO_SEC,
-    OMNI_MAX_CLIP_SECONDS,
-    _clamp_duration,
-    _map_aspect,
     _map_omni_aspect,
-    _omni_resolution,
-    _snap_omni_duration,
     resolve_reference_urls,
 )
 from .state_machine import ProjectStatus, RunStatus, SegmentStatus, transition
@@ -85,15 +85,6 @@ STITCH_CUT_CONCURRENCY = int(os.getenv("STITCH_CUT_CONCURRENCY", "2"))
 # pressure low on a single-core VPS; raise to 4-6 if upload bandwidth allows.
 SUBMIT_CONCURRENCY = int(os.getenv("SUBMIT_CONCURRENCY", "2"))
 
-# Maps a Run.model value to the kie.ai model id sent in create_task's payload.
-# "seedance-fast" and "seedance-mini" are Seedance 2.0 variants — same
-# createTask input schema as the base model, just a different model id — so
-# they fall through the existing non-omni path everywhere else in this module.
-_SEEDANCE_KIE_MODEL = {
-    "seedance": "bytedance/seedance-2",
-    "seedance-fast": "bytedance/seedance-2-fast",
-    "seedance-mini": "bytedance/seedance-2-mini",
-}
 
 def _default_kie() -> KieClient:
     return KieClient()
@@ -101,6 +92,29 @@ def _default_kie() -> KieClient:
 
 def _default_gdrive() -> GDriveClient:
     return GDriveClient()
+
+
+def effective_segment_cap_sec(max_segment_sec: Optional[float]) -> float:
+    """The segmentation cap analysis will actually apply to a project.
+
+    ``VideoProject.max_segment_sec`` is a *preference*: NULL means "no explicit
+    choice" and resolves to the smallest per-clip ceiling in the registry (so the
+    segmentation is runnable on every model), and any value is bounded by the
+    largest ceiling any model offers (segmenting beyond that produces segments
+    nothing can generate).
+
+    Exposed as a function, not inlined, so callers outside the pipeline — the API
+    validating a PATCH, the project page telling the operator what analysis will
+    do — resolve the cap the way analysis will rather than approximating it.
+
+    NULL is tested with ``is None``, not ``or`` — 0.0 is falsy but it is a
+    *value*, and a project whose cap really is 0 should be visibly broken rather
+    than quietly redrawn as the default.
+    """
+    cap = max_segment_sec
+    if cap is None:
+        cap = ai_models.UNIVERSAL_MAX_SEGMENT_SEC
+    return min(float(cap), ai_models.ABSOLUTE_MAX_SEGMENT_SEC)
 
 
 # ---------------------------------------------------------------------------
@@ -156,13 +170,22 @@ def analyze_project(project_id: str, *, detector=None) -> None:
             # Propose segments — create SegmentDef rows.
             #
             # The model is chosen per-Run (a project's segmentation is reused
-            # across runs), so we cap segments at the MOST restrictive model
-            # limit: every swap segment must fit both Seedance (<=15s) and Gemini
-            # Omni (<=10s). Capping here means any run on this project is valid
-            # regardless of which model it picks. Bump OMNI_MAX_CLIP_SECONDS if
-            # Gemini ever lifts the 10s ceiling.
-            max_segment_sec = min(
-                float(settings.SEGMENT_MAX_SECONDS), OMNI_MAX_CLIP_SECONDS
+            # across runs), so the cap is a property of the PROJECT, not of the
+            # run's model. NULL means the universal default: the smallest
+            # per-clip ceiling across every model in the registry (10s, Gemini
+            # Omni), so a project cut that way is runnable on anything.
+            #
+            # Setting it higher trades model portability for fewer stitch seams
+            # — the point of Seedance 2.5, which takes 30s clips. A run on a
+            # shorter-limit model then marks the over-long segments failed with
+            # RunSegment.source_fallback and the stitch substitutes the original
+            # footage for them (see _submit_swap_segment_isolated).
+            max_segment_sec = effective_segment_cap_sec(project.max_segment_sec)
+            log.info(
+                "project_id=%s segmentation cap=%.1fs (project setting=%s) — "
+                "models able to run it: %s",
+                project_id, max_segment_sec, project.max_segment_sec,
+                ",".join(ai_models.models_supporting_segment_len(max_segment_sec)),
             )
             proposed = face_mod.propose_segments(
                 local,
@@ -247,6 +270,7 @@ def _submit_swap_segment_isolated(
     clip_dst: str,
     ref_urls: list,
     prompt_override: Optional[str],
+    generate_audio: Optional[bool] = None,
     kie: KieClient,
     kie_factory: Optional[Callable[[], KieClient]] = None,
 ) -> Optional[dict]:
@@ -258,47 +282,114 @@ def _submit_swap_segment_isolated(
     Returns a "resubmit recipe" dict ``{task_id, recipe}`` where ``recipe`` holds
     everything :func:`_create_swap_task` needs to re-create the task against the
     same already-uploaded clip (used by the in-poll retry path). Returns ``None``
-    when the segment was skipped (marked failed — e.g. a Gemini segment over the
-    10s limit).
+    when the segment was skipped (marked failed — e.g. a segment longer than the
+    selected model's per-clip ceiling).
+
+    *generate_audio* is the already-decided answer to "ask this model to write an
+    audio track?" — computed once per run in :func:`process_run` and carried
+    verbatim into the recipe so an in-poll resubmit rebuilds the identical
+    request. ``None`` means "don't send the field", i.e. leave the model on its
+    own default.
+
     Logs per-segment timing for observability.
     """
     t0 = time.monotonic()
     thread_kie = kie_factory() if kie_factory is not None else kie
-    is_omni = run_model == "gemini-omni"
+    model_spec = ai_models.spec_for(run_model)
+    is_omni = ai_models.is_omni(run_model)
 
     # Recompute clip bounds from primitive data (mirrors _clip_bounds logic).
     clip_start = max(0.0, sd_start_sec - sd_pre_roll_sec)
     clip_end = min(duration_sec, sd_end_sec + sd_post_roll_sec)
-    if clip_end - clip_start < MIN_SWAP_VIDEO_SEC:
-        clip_end = min(duration_sec, clip_start + MIN_SWAP_VIDEO_SEC)
-        if clip_end - clip_start < MIN_SWAP_VIDEO_SEC:
-            clip_start = max(0.0, clip_end - MIN_SWAP_VIDEO_SEC)
-
-    if is_omni:
-        # Gemini Omni rejects clips longer than 10s. Project segmentation already
-        # caps swap segments at <=10s, but pre/post-roll can push the cut past the
-        # limit — trim the clip back to 10s so we never upload an over-long video.
-        # If the *segment itself* exceeds 10s (e.g. a stale segmentation built with
-        # a larger cap), skip the swap entirely and fall back to the original clip
-        # rather than swapping only its first 10s and desyncing the timeline.
-        if (sd_end_sec - sd_start_sec) > OMNI_MAX_CLIP_SECONDS + 0.05:
+    # Pad up to the MODEL's minimum reference-clip length, not a global constant:
+    # the Seedance 2.0 family accepts ~2s, but 2.5 in video-editing mode demands
+    # a 4-30s input and rejects the whole request below that. Grow forward first,
+    # then backward if the source runs out.
+    model_min_clip = model_spec.min_clip_sec
+    if clip_end - clip_start < model_min_clip:
+        clip_end = min(duration_sec, clip_start + model_min_clip)
+        if clip_end - clip_start < model_min_clip:
+            clip_start = max(0.0, clip_end - model_min_clip)
+        if clip_end - clip_start < model_min_clip - 0.05:
+            # The whole source is shorter than this model's floor — nothing we
+            # can pad to. Deterministic (a retry cannot lengthen the video), so
+            # fall back to the original footage rather than block the run.
             with get_session() as session:
                 rs = session.get(RunSegment, rs_id)
                 _skip_segment(
                     rs,
-                    f"segment {sd_index} is {sd_end_sec - sd_start_sec:.1f}s > "
-                    f"{OMNI_MAX_CLIP_SECONDS:.0f}s Gemini Omni limit — using "
-                    "original clip",
+                    f"source is {duration_sec:.1f}s < {model_min_clip:.0f}s "
+                    f"{model_spec.label} minimum; original footage used",
                     session,
+                    source_fallback=True,
                 )
             log.warning(
-                "segment idx=%d (%.1fs) exceeds Gemini Omni %.0fs limit — "
-                "skipping swap, using original clip",
-                sd_index, sd_end_sec - sd_start_sec, OMNI_MAX_CLIP_SECONDS,
+                "segment idx=%d: source %.1fs is shorter than the %s %.1fs "
+                "minimum clip length — swap skipped, ORIGINAL footage used",
+                sd_index, duration_sec, model_spec.label, model_min_clip,
             )
             return None
-        if clip_end - clip_start > OMNI_MAX_CLIP_SECONDS:
-            clip_end = clip_start + OMNI_MAX_CLIP_SECONDS
+
+    # Every model has a hard per-clip ceiling (AIModelSpec.max_clip_sec: 10s for
+    # Gemini Omni, 15s for the Seedance 2.0 family, 30s for 2.5). The project's
+    # segmentation cap (VideoProject.max_segment_sec) is chosen independently of
+    # the run's model, so a project segmented at 30s for Seedance 2.5 can be run
+    # on a 15s model — this guard is what keeps that safe. Two distinct cases:
+    #   - the *segment itself* is over the ceiling: skip the swap entirely.
+    #     Swapping only its first N seconds would desync the timeline against
+    #     the untouched soundtrack. Deterministic, so the ORIGINAL footage is
+    #     substituted at stitch time (source_fallback=True) rather than blocking
+    #     the run forever.
+    #   - only pre/post-roll pushed the *clip* over: trim the clip back to the
+    #     ceiling. The segment still fits; we just carry less surrounding
+    #     context into the generation.
+    model_max_clip = model_spec.max_clip_sec
+    seg_len = sd_end_sec - sd_start_sec
+    if seg_len > model_max_clip + 0.05:
+        # Kept short: the run UI truncates rs.error_message. The segment index is
+        # deliberately absent — the message is rendered inside that segment's own
+        # panel, right under its "Segment N" heading.
+        with get_session() as session:
+            rs = session.get(RunSegment, rs_id)
+            _skip_segment(
+                rs,
+                f"{seg_len:.1f}s > {model_max_clip:.0f}s {model_spec.label} "
+                "limit; original footage used instead",
+                session,
+                source_fallback=True,
+            )
+        log.warning(
+            "segment idx=%d (%.1fs) exceeds the %s %.0fs per-clip limit — "
+            "swap skipped, ORIGINAL footage will be stitched for this segment. "
+            "Split it or choose a longer-clip model to get it swapped.",
+            sd_index, seg_len, model_spec.label, model_max_clip,
+        )
+        return None
+    if clip_end - clip_start > model_max_clip:
+        # Trim order matters, and "shorten from the end" is the wrong answer.
+        # clip_start = sd_start_sec - pre_roll_sec, so a bare
+        # `clip_end = clip_start + model_max_clip` spends the budget on pre-roll
+        # and drops real segment footage off the tail: with max_clip=10, a 9.5s
+        # segment, pre_roll=2.0 and post_roll=0.5 the segment passes the skip
+        # check above and then loses its final 1.5s, while 2.0s of pre-roll
+        # survives. The generated clip is concatenated whole, so that swaps
+        # footage the operator never marked and leaves footage they did marked
+        # un-swapped.
+        #
+        # So give back the ROLL CONTEXT first — post-roll before pre-roll, since
+        # trailing context matters less to the generation than the lead-in — and
+        # never cut into [sd_start_sec, sd_end_sec] itself.
+        # (min(duration_sec, ...) only matters for a segment whose end sits past
+        # the source's own end — never cut past EOF, or the uploaded clip is
+        # shorter than the duration we then request.)
+        clip_end = min(duration_sec, max(sd_end_sec, clip_start + model_max_clip))
+        if clip_end - clip_start > model_max_clip:
+            clip_start = min(sd_start_sec, clip_end - model_max_clip)
+        if clip_end - clip_start > model_max_clip:
+            # The segment itself is now the whole clip, so the only thing that
+            # can still be over is the +0.05 epsilon the skip check allows —
+            # ≤50ms, under one frame at any fps we handle. Clamp and move on.
+            clip_end = clip_start + model_max_clip
 
     # Gemini Omni fails when its reference clip carries an audio track; send it
     # video-only (the original audio is re-applied during stitch via the
@@ -336,6 +427,10 @@ def _submit_swap_segment_isolated(
         "project_aspect_ratio": project_aspect_ratio,
         "project_width": project_width,
         "project_height": project_height,
+        # Carried so an in-poll resubmit bills the same request as the initial
+        # submit — a retry that flipped the audio switch would hand back a clip
+        # that does not match its siblings.
+        "generate_audio": generate_audio,
     }
     task_id = _create_swap_task(kie=thread_kie, **recipe)
 
@@ -370,15 +465,22 @@ def _create_swap_task(
     project_aspect_ratio: Optional[str],
     project_width: Optional[int],
     project_height: Optional[int],
+    generate_audio: Optional[bool] = None,
 ) -> str:
     """Create a Seedance/Omni task for an already-uploaded swap clip.
 
     Shared by the initial submit and the in-poll retry path so both build
     identical request parameters. Does no DB or file work — pure API call.
+
+    *generate_audio* is decided once per run by the caller; ``None`` (the
+    default) means "omit the field", which is mandatory for models that do not
+    accept it.
     """
-    if run_model == "gemini-omni":
-        # clip was already trimmed to <= OMNI_MAX_CLIP_SECONDS at cut time; send
-        # its full (video-only) length as the trim range.
+    spec = ai_models.spec_for(run_model)
+
+    if spec.family == "omni":
+        # clip was already trimmed to <= the model's max_clip_sec at cut time;
+        # send its full (video-only) length as the trim range.
         trim_end = round(clip_end - clip_start, 2)
         return kie.create_omni_task(
             prompt=effective_prompt,
@@ -386,20 +488,40 @@ def _create_swap_task(
             video_url=clip_url,
             video_start=0,
             video_end=trim_end,
-            resolution=_omni_resolution(run_resolution),
+            resolution=ai_models.resolution_or_default(run_model, run_resolution),
             aspect_ratio=_map_omni_aspect(
                 project_aspect_ratio, project_width, project_height
             ),
-            duration=_snap_omni_duration(clip_start, clip_end),
+            duration=ai_models.duration_for(run_model, clip_start, clip_end),
         )
+
+    # `generate_audio` is 2.5-only — the 2.0 family rejects the field, so the key
+    # must be absent from their payload entirely. create_task enforces the
+    # capability itself and would raise if we passed the field to a 2.0 model.
+    extra: dict = {}
+    if spec.supports_generate_audio and generate_audio is not None:
+        extra["generate_audio"] = bool(generate_audio)
+
     return kie.create_task(
         prompt=effective_prompt,
         reference_image_urls=ref_urls,
         reference_video_urls=[clip_url],
-        resolution=run_resolution or settings.DEFAULT_RESOLUTION,
-        aspect_ratio=_map_aspect(project_aspect_ratio),
-        duration=_clamp_duration(clip_start, clip_end),
-        model=_SEEDANCE_KIE_MODEL.get(run_model, "bytedance/seedance-2"),
+        # Never send a resolution this model cannot do (e.g. a 1080p run
+        # switched to Seedance 2.5, which stops at 720p) — the registry
+        # substitutes the closest supported tier that does not exceed the
+        # request (720p here), not the model's cheapest.
+        resolution=ai_models.resolution_or_default(
+            run_model, run_resolution or settings.DEFAULT_RESOLUTION
+        ),
+        # A model that derives its geometry from the input video (Seedance 2.5 in
+        # video-editing mode, which is every submission we make) REQUIRES
+        # "adaptive" + duration -1 and 500s on anything else — even a ratio that
+        # matches the source. Both come from the registry so the pair can never
+        # be sent half-right.
+        aspect_ratio=ai_models.aspect_for(run_model, project_aspect_ratio),
+        duration=ai_models.duration_for(run_model, clip_start, clip_end),
+        model=ai_models.kie_model_id(run_model),
+        **extra,
     )
 
 
@@ -466,6 +588,9 @@ def _poll_pending_tasks(
                     # Clear any interim "attempt N failed; retrying" message now
                     # that the segment has succeeded.
                     rs.error_message = None
+                    # A real swap landed — this segment is no longer standing in
+                    # with its original footage.
+                    rs.source_fallback = False
                     transition(rs, SegmentStatus.completed)
                     poll_session.commit()
                 log.info("RunSegment idx %d completed", meta["index"])
@@ -676,6 +801,23 @@ def process_run(
             pending: dict[str, dict] = {}  # task_id -> {rs_id, index, deadline}
             submit_work: list[dict] = []   # segments queued for concurrent submit
 
+            # Should the model write its own audio track? Only Seedance 2.5
+            # exposes the switch; for everyone else this value is computed and
+            # then dropped by _create_swap_task, which must not send the field.
+            #
+            # Decided once per run so every segment of a run bills the same
+            # request. `audio_mode="original"` means the stitch overlays the
+            # source soundtrack on top, so generated audio would be paid for and
+            # then discarded — ask for silence. `audio_mode="seedance"` keeps
+            # each clip's own audio, so it has to exist.
+            run_audio_mode = run.audio_mode or "original"
+            generate_audio = run_audio_mode != "original"
+            if ai_models.spec_for(run.model).supports_generate_audio:
+                log.info(
+                    "run_id=%s generate_audio=%s (model=%s audio_mode=%s)",
+                    run_id, generate_audio, run.model, run_audio_mode,
+                )
+
             for sd in seg_defs:
                 if sd.action != "swap":
                     continue
@@ -727,6 +869,9 @@ def process_run(
                                 rs.local_result_path = result_dst
                                 # Clear any stale failure message from a prior run.
                                 rs.error_message = None
+                                # A real swap landed — this segment is no longer
+                                # standing in with its original footage.
+                                rs.source_fallback = False
                                 try:
                                     transition(rs, SegmentStatus.completed)
                                 except Exception:
@@ -782,6 +927,11 @@ def process_run(
                     rs.error_message = None
                     rs.seedance_task_id = None
                     rs.seedance_result_url = None
+                    # Clear the deterministic-failure flag too: this segment is
+                    # about to be submitted again, possibly after being split or
+                    # with a different model, and a stale flag would make the
+                    # stitch prefer the original footage over a real swap.
+                    rs.source_fallback = False
                     session.flush()
 
                 # Resolve effective refs for this segment (override takes priority).
@@ -815,6 +965,7 @@ def process_run(
                     "clip_dst": os.path.join(c_dir, f"clip_{sd.index:04d}.mp4"),
                     "ref_urls": list(effective_ref_urls),
                     "prompt_override": rs.prompt_override,
+                    "generate_audio": generate_audio,
                 })
 
             # Commit so that newly created RunSegment rows are visible to the
@@ -851,9 +1002,12 @@ def process_run(
                 for work, fut in submit_futures:
                     result = fut.result()
                     if result is None:
-                        # Segment skipped at submit time (e.g. a Gemini segment
-                        # over the 10s limit). It was already marked failed; the
-                        # run will be marked incomplete (not stitched).
+                        # Segment skipped at submit time — deterministically
+                        # un-generatable on this model (too long for its
+                        # max_clip_sec, or a source shorter than its
+                        # min_clip_sec). It was already marked failed with
+                        # source_fallback set, so the completeness gate lets the
+                        # run through and the stitch uses the original footage.
                         continue
                     pending[result["task_id"]] = {
                         "rs_id": work["rs_id"],
@@ -908,18 +1062,32 @@ def process_run(
             )
 
             # ---------------------------------------------------------------
-            # Completeness gate — never stitch a mix of swapped + original clips.
+            # Completeness gate — never stitch a mix of swapped + original clips,
+            # EXCEPT where the mix is deliberate and unavoidable.
             # If any swap segment did not complete (failed after retries, timed
             # out, or was skipped), stop here and mark the run `incomplete`. The
             # completed segments' results stay on disk; the operator re-runs the
             # failed segment(s) and the full video is stitched only once every
             # swap segment is completed.
+            #
+            # A segment carrying `source_fallback` could not be generated by this
+            # run's model for a deterministic reason (it is longer than the
+            # model's max_clip_sec, or the source is shorter than its
+            # min_clip_sec), so retrying is futile and blocking would block
+            # forever. Those pass the gate and the stitch substitutes the
+            # original footage for them; everything else — transient task
+            # failures, timeouts — still blocks, because a retry there produces
+            # the real swap. See _skip_segment.
             # ---------------------------------------------------------------
             incomplete_idx: list[int] = []
+            fallback_idx: list[int] = []
             for sd in seg_defs:
                 if sd.action != "swap":
                     continue
                 rs = rs_map.get(sd.id)
+                if rs is not None and rs.source_fallback:
+                    fallback_idx.append(sd.index)
+                    continue
                 if (
                     rs is None
                     or rs.status != SegmentStatus.completed
@@ -977,14 +1145,34 @@ def process_run(
                 # in the original seg_defs order so the stitch list is always
                 # correctly ordered.
 
+                def _cut_source(sd: SegmentDef) -> str:
+                    """Cut this segment's ORIGINAL footage out of the source video.
+
+                    Shared by "keep" segments and by swap segments falling back to
+                    the source, so both produce a byte-identical clip at the same
+                    path — only one of the two branches can apply to a given index.
+                    """
+                    dst = os.path.join(c_dir, f"clip_{sd.index:04d}.mp4")
+                    media_mod.cut_clip(source, sd.start_sec, sd.end_sec, dst)
+                    return dst
+
                 def _cut_or_lookup(sd: SegmentDef) -> str:
                     """Return the clip path for this segment (cut if needed)."""
                     if sd.action == "keep":
-                        keep_dst = os.path.join(c_dir, f"clip_{sd.index:04d}.mp4")
-                        media_mod.cut_clip(source, sd.start_sec, sd.end_sec, keep_dst)
-                        return keep_dst
-                    # swap segment — must be completed (guaranteed by the gate)
+                        return _cut_source(sd)
                     rs = session.get(RunSegment, rs_map[sd.id].id)
+                    # Deterministically un-generatable on this model: the gate let
+                    # the run through on the understanding that we substitute the
+                    # original footage here. Timing is exact — the cut spans the
+                    # segment's own start/end — so the soundtrack stays in sync
+                    # either way.
+                    if rs.source_fallback:
+                        log.info(
+                            "segment %d: using original footage (swap skipped: %s)",
+                            sd.index, rs.error_message,
+                        )
+                        return _cut_source(sd)
+                    # Otherwise the segment must be completed (guaranteed by the gate).
                     if (
                         rs.status == SegmentStatus.completed
                         and rs.local_result_path
@@ -1019,10 +1207,11 @@ def process_run(
                 log.info("Stitching %d clips → %s (%dx%d @ %.2ffps)",
                          len(clip_paths), final_dst, width, height, fps)
                 audio_mode = run.audio_mode if run.audio_mode else "original"
-                # Gemini Omni clips are sent video-only and produce no audio, so
-                # the only sensible track is the original source audio overlaid
-                # on top. Force "original" even if the run requested "seedance".
-                if run.model == "gemini-omni":
+                # A model that produces no audio at all (Gemini Omni: its clips
+                # are sent video-only and it returns silent video) leaves the
+                # original source track as the only sensible soundtrack. Force
+                # "original" even if the run requested "seedance".
+                if not ai_models.spec_for(run.model).produces_audio:
                     audio_mode = "original"
                 media_mod.stitch(
                     clip_paths, audio_source=source, dst=final_dst,
@@ -1030,6 +1219,12 @@ def process_run(
                     audio_mode=audio_mode,
                 )
                 run.result_local_path = final_dst
+
+            # Record how much of the delivered video is original footage rather
+            # than a generated swap. Written on every stitch (not only when
+            # non-zero) so 0 positively means "checked, fully swapped" and NULL
+            # keeps meaning "not recorded".
+            run.source_fallback_segments = len(fallback_idx)
             session.flush()
 
             log.info(
@@ -1078,9 +1273,36 @@ def process_run(
             raise
 
 
-def _skip_segment(rs: RunSegment, reason: str, session) -> None:
-    """Mark a RunSegment failed (skipped); the run falls back to the original clip."""
+def _skip_segment(
+    rs: RunSegment, reason: str, session, *, source_fallback: bool = False
+) -> None:
+    """Mark a RunSegment failed, with *reason* recorded for the UI.
+
+    Two different outcomes, chosen by *source_fallback* — the distinction is the
+    whole point, so pass it deliberately rather than by default:
+
+    ``source_fallback=False`` (default) — a TRANSIENT failure: task error,
+    timeout, missing result url. The completeness gate in :func:`process_run`
+    requires every swap segment to be ``completed``, so the run is left
+    ``incomplete`` with no delivered video and the operator retries. That is
+    correct here: a retry produces the real swap, and shipping the original
+    footage instead would silently throw it away.
+
+    ``source_fallback=True`` — a DETERMINISTIC failure the run's model can never
+    satisfy: the segment is longer than the model's ``max_clip_sec``, or the
+    source is shorter than its ``min_clip_sec``. Retrying cannot help, so
+    blocking would block forever. The gate lets the run through and the stitch
+    substitutes the original source footage for this segment (safe on the
+    timeline: the original clip has exactly the segment's duration, so nothing
+    desyncs against the soundtrack — unlike a partial swap, which is why we still
+    never do that). The delivered video is then only partly swapped, which
+    ``Run.source_fallback_segments`` surfaces; the operator's fix is to split the
+    segment or pick a model that can generate it.
+
+    The status is ``failed`` either way — the swap genuinely did not happen.
+    """
     rs.error_message = reason
+    rs.source_fallback = source_fallback
     if rs.status != SegmentStatus.failed:
         try:
             transition(rs, SegmentStatus.failed)

@@ -15,7 +15,7 @@
     <tr data-run-id="{{ run.id }}">
       <td>{% if run.name %}{{ run.name }}{% else %}<em class="text-muted">unnamed</em>{% endif %}</td>
       <td><span class="badge badge-{{ run.status }}">{{ run.status }}</span></td>
-      <td>{% if run.model == "gemini-omni" %}Gemini Omni{% else %}Seedance{% endif %}</td>
+      <td>{{ run.model | model_label }}</td>
       <td>{{ run.resolution }}</td>
       <td class="text-muted" style="white-space:nowrap">{{ run.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
       <td class="text-right" style="white-space:nowrap">
