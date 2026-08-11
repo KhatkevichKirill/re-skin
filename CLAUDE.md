@@ -113,10 +113,16 @@ When the user asks for a lint or health check:
 
 | Term | Meaning |
 |------|---------|
+| **Project type** | What an operator is doing to a video: `face_swap` (default, InsightFace-detected), `subtitle_removal` (PySceneDetect scene cuts, all marked swap), `cover_change` (blank slate) or `localisation` (hook split off the front). Decides analysis segmentation + which model/prompt the New Run form pre-fills. Registry: `app/ai_models.py`'s sibling `app/project_types.py` |
 | **Segment / SegmentDef** | Contiguous time interval in source video, marked swap or keep. SegmentDef is the v2 version (reusable, shared across Runs) |
 | **Run** | One character attempt on a Project: prompt + refs + model → one stitched result video |
-| **Seedance** | AI video face-swap model accessed via kie.ai |
+| **Run language** | Spoken language of the delivered creative (`EN/ES/PT/JA/DE`). On a `localisation` run it is the translation target; elsewhere it is metadata. Registry: `app/languages.py` |
+| **Seedance** | AI video face-swap model accessed via kie.ai. Variants: 2.0 (+ Fast/Mini, 15s clips) and **2.5** (30s clips, explicit audio switch, 720p max) |
 | **Gemini Omni** | Google's AI video model (alternative to Seedance, per-Run selectable) |
+| **AI model registry** | `app/ai_models.py` — the single source of truth for every per-model fact (kie id, resolutions, clip-length limits, duration/aspect rules, audio switch). Adding a model = one spec + one `ALTER TYPE` |
+| **hook** | The opening seconds of a `localisation` project — the only part re-generated, re-spoken in the target language (`VideoProject.hook_sec`, consumed at analyze time) |
+| **mute_source** | Project flag ("Remove original audio"): swap clips are uploaded video-only (`-an`) so the model writes audio from the prompt instead of reacting to the source track |
+| **source fallback** | A swap segment the run's model cannot generate (too long / source too short). Deterministic, so the run is not blocked: the stitch substitutes the segment's ORIGINAL footage and `Run.source_fallback_segments` records how much of the delivery is un-swapped |
 | **pre_roll / post_roll** | Extra seconds around a segment for Seedance context; trimmed from output |
 | **analyze** | Pipeline phase: InsightFace detection → segment proposal |
 | **process** | Pipeline phase: Seedance/Gemini submit → poll → stitch → deliver |

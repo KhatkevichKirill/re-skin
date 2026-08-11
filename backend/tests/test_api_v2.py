@@ -12,6 +12,7 @@ Strategy
 from __future__ import annotations
 
 import io
+import json
 import os
 import subprocess
 import sys
@@ -89,6 +90,7 @@ def client(engine, SessionFactory, monkeypatch):
 
     monkeypatch.setattr(api_v2_module, "enqueue_analyze_project", lambda pid: None)
     monkeypatch.setattr(api_v2_module, "enqueue_process_run", lambda rid: None)
+    monkeypatch.setattr(api_v2_module, "enqueue_transcribe_project", lambda pid: None)
 
     from app.main import app
 
@@ -121,7 +123,11 @@ def enqueue_spy(monkeypatch):
     """Returns dicts that record calls to enqueue functions."""
     import app.api_v2 as api_v2_module
 
-    calls: dict[str, list[str]] = {"analyze_project": [], "process_run": []}
+    calls: dict[str, list[str]] = {
+        "analyze_project": [],
+        "process_run": [],
+        "transcribe_project": [],
+    }
 
     monkeypatch.setattr(
         api_v2_module,
@@ -132,6 +138,11 @@ def enqueue_spy(monkeypatch):
         api_v2_module,
         "enqueue_process_run",
         lambda rid: calls["process_run"].append(rid),
+    )
+    monkeypatch.setattr(
+        api_v2_module,
+        "enqueue_transcribe_project",
+        lambda pid: calls["transcribe_project"].append(pid),
     )
     return calls
 
@@ -2340,3 +2351,1465 @@ class TestCreateRunSeedance25:
         )
         assert resp.status_code == 400
         assert "model must be one of" in resp.json()["detail"]
+
+
+def _line(line_id, start, end, text, speaker="the woman in the red jacket", **extra):
+    """One docs/localisation.md §4.1 transcript line."""
+    line = {
+        "id": line_id,
+        "start": start,
+        "end": end,
+        "speaker": speaker,
+        "on_screen": True,
+        "text": text,
+    }
+    line.update(extra)
+    return line
+
+
+def _transcript(lines, *, source_language="en", **extra):
+    """A §4.1 transcript envelope around *lines*."""
+    doc = {
+        "schema_version": 1,
+        "model": "gemini-2.5-pro",
+        "prompt_version": "transcribe/v1",
+        "created_at": "2026-08-09T12:00:00+00:00",
+        "source_language": source_language,
+        "lines": lines,
+        "on_screen_text": [],
+    }
+    doc.update(extra)
+    return doc
+
+
+# Two short lines inside a 10s hook. Lengths are chosen so the crude
+# chars-per-second estimate in api_v2._localisation_warnings finds them
+# plausible in a Latin-script target — a warning here would be noise, and the
+# warning tests below make their own over/under-long lines on purpose.
+_HOOK_LINES = [
+    _line(1, 0.0, 2.5, "Hey, what are you doing?"),
+    _line(2, 2.5, 6.0, "I'm just listening to my emails.", speaker="the man"),
+]
+
+
+def _localisation_project(session, **kwargs):
+    """A ready localisation project whose transcript is ready to translate."""
+    defaults = dict(
+        status=ProjectStatus.ready,
+        project_type="localisation",
+        source_local_path="/tmp/source.mp4",
+        transcript=_transcript(_HOOK_LINES),
+        transcript_status="ready",
+    )
+    defaults.update(kwargs)
+    return _make_project(session, **defaults)
+
+
+@pytest.fixture()
+def fake_translate(monkeypatch):
+    """Replace the kie.ai translation call — no live network in tests.
+
+    Honours the real contract of localisation.translate_lines (same ids, same
+    order, ``text`` replaced, ``source_text`` carrying the original) so the
+    endpoint is exercised exactly as it would be in production. Returns the
+    list of calls it received.
+    """
+    calls: list[dict] = []
+
+    def _translate(lines, *, source_language, target_language, model=None):
+        calls.append(
+            {
+                "lines": lines,
+                "source_language": source_language,
+                "target_language": target_language,
+            }
+        )
+        out = []
+        for line in lines:
+            translated = dict(line)
+            translated["source_text"] = line["text"]
+            translated["text"] = f"<{target_language}> {line['text']}"
+            out.append(translated)
+        return out
+
+    monkeypatch.setattr(api_v2_module.localisation, "translate_lines", _translate)
+    return calls
+
+
+class TestProjectHookSec:
+    """The analyze-time hook length (docs/localisation.md §3.1, §5).
+
+    Same contract as max_segment_sec: NULL means "no explicit choice" (analysis
+    falls back to settings.LOCALISATION_DEFAULT_HOOK_SEC) and the value is
+    consumed at ANALYZE time, so changing it re-cuts nothing. Unlike
+    max_segment_sec it has no upper bound — a hook longer than the video is
+    clamped at analyze time, not rejected — but 0 and NaN are refused, because
+    neither can ever produce a segment.
+    """
+
+    DEFAULT = settings.LOCALISATION_DEFAULT_HOOK_SEC
+
+    # -- POST /api/v2/projects -------------------------------------------
+
+    def test_omitted_is_stored_as_null(self, spy_client, SessionFactory):
+        """NULL, not the resolved default — the default stays in one place."""
+        client, _spy = spy_client
+        response = client.post(
+            "/api/v2/projects",
+            data={"project_type": "localisation"},
+            files={"video_file": ("clip.mp4", io.BytesIO(_tiny_video_bytes()), "video/mp4")},
+        )
+        assert response.status_code == 201, response.text
+
+        session = SessionFactory()
+        project = session.get(VideoProject, response.json()["project_id"])
+        session.close()
+        assert project.hook_sec is None
+
+    def test_localisation_is_marked_pending_from_creation(
+        self, spy_client, SessionFactory
+    ):
+        """NULL must mean exactly "nobody asked for a transcript".
+
+        A localisation project is transcribed automatically once analysis
+        returns, so leaving transcript_status NULL for the whole analyze window
+        made NULL mean two things at once — and the panel, reading it, offered
+        a Transcribe button next to a job that was already promised. One click
+        there paid for a second full model call on the same video.
+        """
+        client, _spy = spy_client
+        response = client.post(
+            "/api/v2/projects",
+            data={"project_type": "localisation"},
+            files={"video_file": ("clip.mp4", io.BytesIO(_tiny_video_bytes()), "video/mp4")},
+        )
+        assert response.status_code == 201, response.text
+
+        session = SessionFactory()
+        project = session.get(VideoProject, response.json()["project_id"])
+        session.close()
+        assert project.transcript_status == "pending"
+        assert project.transcript is None
+
+    def test_other_project_types_are_not_marked_pending(
+        self, spy_client, SessionFactory
+    ):
+        """Nothing transcribes a face-swap project, so a "pending" there would
+        poll a panel that is never rendered and never resolves."""
+        client, _spy = spy_client
+        response = client.post(
+            "/api/v2/projects",
+            data={"project_type": "face_swap"},
+            files={"video_file": ("clip.mp4", io.BytesIO(_tiny_video_bytes()), "video/mp4")},
+        )
+        assert response.status_code == 201, response.text
+
+        session = SessionFactory()
+        project = session.get(VideoProject, response.json()["project_id"])
+        session.close()
+        assert project.transcript_status is None
+
+    def test_create_with_explicit_hook(self, spy_client, SessionFactory):
+        client, _spy = spy_client
+        response = client.post(
+            "/api/v2/projects",
+            data={"project_type": "localisation", "hook_sec": 12.5},
+            files={"video_file": ("clip.mp4", io.BytesIO(_tiny_video_bytes()), "video/mp4")},
+        )
+        assert response.status_code == 201, response.text
+
+        session = SessionFactory()
+        project = session.get(VideoProject, response.json()["project_id"])
+        session.close()
+        assert project.hook_sec == 12.5
+
+    def test_blank_form_value_is_stored_as_null(self, spy_client, SessionFactory):
+        """The create form posts its input verbatim: "" must mean unset, not 0."""
+        client, _spy = spy_client
+        response = client.post(
+            "/api/v2/projects",
+            data={"project_type": "localisation", "hook_sec": ""},
+            files={"video_file": ("clip.mp4", io.BytesIO(_tiny_video_bytes()), "video/mp4")},
+        )
+        assert response.status_code == 201, response.text
+
+        session = SessionFactory()
+        project = session.get(VideoProject, response.json()["project_id"])
+        session.close()
+        assert project.hook_sec is None
+
+    def test_create_gdrive_with_hook(self, spy_client, SessionFactory):
+        client, _spy = spy_client
+        response = client.post(
+            "/api/v2/projects",
+            data={
+                "gdrive_link": "https://drive.google.com/file/d/FAKE_ID/view",
+                "project_type": "localisation",
+                "hook_sec": 8,
+            },
+        )
+        assert response.status_code == 201, response.text
+
+        session = SessionFactory()
+        project = session.get(VideoProject, response.json()["project_id"])
+        session.close()
+        assert project.hook_sec == 8.0
+
+    def test_zero_is_a_value_and_is_rejected(self, client, SessionFactory):
+        """0.0 is NOT "unset": a zero-length hook has no speech and no segment.
+
+        This is the whole reason blank/absent maps to None rather than 0.0 —
+        the two have to stay distinguishable, and only one of them is legal.
+        """
+        response = client.post(
+            "/api/v2/projects",
+            data={"project_type": "localisation", "hook_sec": 0},
+            files={"video_file": ("clip.mp4", io.BytesIO(_tiny_video_bytes()), "video/mp4")},
+        )
+        assert response.status_code == 400
+        assert "hook_sec" in response.json()["detail"]
+
+    @pytest.mark.parametrize("value", [-1, -0.5, "nan", "inf", "-inf"])
+    def test_create_out_of_range_is_400(self, client, value):
+        response = client.post(
+            "/api/v2/projects",
+            data={"project_type": "localisation", "hook_sec": value},
+            files={"video_file": ("clip.mp4", io.BytesIO(_tiny_video_bytes()), "video/mp4")},
+        )
+        assert response.status_code == 400, response.text
+        assert "hook_sec" in response.json()["detail"]
+
+    def test_a_hook_longer_than_any_segment_cap_is_allowed(
+        self, spy_client, SessionFactory
+    ):
+        """No ceiling: analysis clamps a too-long hook, it is not a bad request."""
+        client, _spy = spy_client
+        response = client.post(
+            "/api/v2/projects",
+            data={"project_type": "localisation", "hook_sec": 600},
+            files={"video_file": ("clip.mp4", io.BytesIO(_tiny_video_bytes()), "video/mp4")},
+        )
+        assert response.status_code == 201, response.text
+
+        session = SessionFactory()
+        project = session.get(VideoProject, response.json()["project_id"])
+        session.close()
+        assert project.hook_sec == 600.0
+
+    # -- GET / PATCH /api/v2/projects/{pid} -------------------------------
+
+    def test_get_exposes_the_field(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready, hook_sec=7.0)
+        body = client.get(f"/api/v2/projects/{project.id}").json()
+        assert body["hook_sec"] == 7.0
+
+    def test_patch_sets_and_persists(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        resp = client.patch(f"/api/v2/projects/{project.id}", json={"hook_sec": 12})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["hook_sec"] == 12.0
+        assert client.get(f"/api/v2/projects/{project.id}").json()["hook_sec"] == 12.0
+
+    def test_patch_explicit_null_clears_it(self, client, db_session):
+        """`{"hook_sec": null}` resets to the settings default.
+
+        NULL is a value here, not "omitted" — update_project tells the two apart
+        via model_fields_set, exactly as it does for max_segment_sec.
+        """
+        project = _make_project(db_session, status=ProjectStatus.ready, hook_sec=12.0)
+        resp = client.patch(f"/api/v2/projects/{project.id}", json={"hook_sec": None})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["hook_sec"] is None
+
+        db_session.expire_all()
+        assert db_session.get(VideoProject, project.id).hook_sec is None
+
+    def test_patch_without_the_key_leaves_it_untouched(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready, hook_sec=12.0)
+        resp = client.patch(f"/api/v2/projects/{project.id}", json={"name": "renamed"})
+        assert resp.status_code == 200
+        assert resp.json()["hook_sec"] == 12.0
+
+    @pytest.mark.parametrize("value", [0, -3])
+    def test_patch_out_of_range_is_400_and_stores_nothing(
+        self, client, db_session, value
+    ):
+        project = _make_project(db_session, status=ProjectStatus.ready, hook_sec=12.0)
+        resp = client.patch(
+            f"/api/v2/projects/{project.id}", json={"hook_sec": value}
+        )
+        assert resp.status_code == 400, resp.text
+        assert "hook_sec" in resp.json()["detail"]
+
+        db_session.expire_all()
+        assert db_session.get(VideoProject, project.id).hook_sec == 12.0
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"hook_sec": NaN}',
+            b'{"hook_sec": "nan"}',
+            b'{"hook_sec": Infinity}',
+            b'{"hook_sec": "inf"}',
+            b'{"hook_sec": -Infinity}',
+        ],
+    )
+    def test_patch_nan_and_infinity_are_400(self, client, db_session, body):
+        """Same trap max_segment_sec fell into: Pydantic parses these to floats.
+
+        A NaN hook survives every `<` comparison in slice_lines (so the hook
+        window silently comes back empty) and poisons the analyze-time clamp.
+        The chained-comparison guard rejects it; a `value <= 0 or value == inf`
+        guard would not have.
+        """
+        project = _make_project(db_session, status=ProjectStatus.ready, hook_sec=12.0)
+        resp = client.patch(
+            f"/api/v2/projects/{project.id}",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "hook_sec" in resp.json()["detail"]
+
+        db_session.expire_all()
+        assert db_session.get(VideoProject, project.id).hook_sec == 12.0
+
+    def test_patch_does_not_reanalyze_or_recut_segments(self, spy_client, db_session):
+        """hook_sec is consumed at ANALYZE time — a PATCH is inert on an
+        already-analyzed project: no re-enqueue, no re-cut. Same contract as
+        max_segment_sec, and the reason both docstrings say so.
+        """
+        client, spy = spy_client
+        project = _make_project(
+            db_session, status=ProjectStatus.ready, project_type="localisation",
+            hook_sec=10.0,
+        )
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+        _make_segment_def(
+            db_session, project.id, 1, start_sec=10.0, end_sec=30.0,
+            action="keep", has_face=False,
+        )
+        before = [
+            (sd.index, sd.start_sec, sd.end_sec, sd.action)
+            for sd in sorted(project.segments, key=lambda s: s.index)
+        ]
+
+        resp = client.patch(f"/api/v2/projects/{project.id}", json={"hook_sec": 20})
+        assert resp.status_code == 200
+        assert resp.json()["hook_sec"] == 20.0
+
+        assert spy["analyze_project"] == []
+
+        db_session.expire_all()
+        after_project = db_session.get(VideoProject, project.id)
+        after = [
+            (sd.index, sd.start_sec, sd.end_sec, sd.action)
+            for sd in sorted(after_project.segments, key=lambda s: s.index)
+        ]
+        assert after == before
+
+
+class TestTranscribeProject:
+    """POST /projects/{pid}/transcribe — 202, status=pending, enqueue."""
+
+    def test_enqueues_and_marks_pending(self, spy_client, db_session):
+        client, spy = spy_client
+        project = _make_project(
+            db_session,
+            status=ProjectStatus.ready,
+            source_local_path="/tmp/source.mp4",
+            transcript_status="failed",
+            transcript_error="kie.ai timed out",
+        )
+
+        resp = client.post(f"/api/v2/projects/{project.id}/transcribe")
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["status"] == "pending"
+        assert body["error"] is None
+
+        assert spy["transcribe_project"] == [project.id]
+
+        db_session.expire_all()
+        stored = db_session.get(VideoProject, project.id)
+        assert stored.transcript_status == "pending"
+        assert stored.transcript_error is None
+
+    def test_rerun_keeps_the_previous_transcript_readable(self, spy_client, db_session):
+        """"Распознать заново" must not blank the panel while the job runs."""
+        client, _spy = spy_client
+        project = _localisation_project(db_session)
+
+        resp = client.post(f"/api/v2/projects/{project.id}/transcribe")
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "pending"
+        assert resp.json()["transcript"]["lines"][0]["text"] == _HOOK_LINES[0]["text"]
+
+    def test_no_local_source_is_409(self, spy_client, db_session):
+        """A Drive project before analysis has nothing on disk to transcribe."""
+        client, spy = spy_client
+        project = _make_project(
+            db_session, source_type="gdrive", source_ref="https://drive/x",
+            source_local_path=None,
+        )
+
+        resp = client.post(f"/api/v2/projects/{project.id}/transcribe")
+        assert resp.status_code == 409, resp.text
+        assert spy["transcribe_project"] == []
+
+        db_session.expire_all()
+        assert db_session.get(VideoProject, project.id).transcript_status is None
+
+    @pytest.mark.parametrize(
+        "project_status",
+        [
+            ProjectStatus.created,
+            ProjectStatus.analyzing,
+            ProjectStatus.ready,
+            ProjectStatus.failed,
+        ],
+    )
+    def test_409_detail_never_leaks_a_python_repr(
+        self, spy_client, db_session, project_status
+    ):
+        """The panel puts this detail straight into a browser alert.
+
+        `f"{project.status!r}"` renders `<ProjectStatus.ready: 'ready'>` — a
+        Python repr shown to an operator. The bare value is what belongs there.
+        """
+        client, _spy = spy_client
+        project = _make_project(
+            db_session, source_type="gdrive", source_ref="https://drive/x",
+            source_local_path=None, status=project_status,
+        )
+
+        detail = client.post(
+            f"/api/v2/projects/{project.id}/transcribe"
+        ).json()["detail"]
+        assert "ProjectStatus" not in detail
+        assert "<" not in detail
+        assert f"project status: {project_status.value}" in detail
+
+    def test_409_before_analysis_says_to_wait(self, spy_client, db_session):
+        client, _spy = spy_client
+        project = _make_project(
+            db_session, source_type="gdrive", source_ref="https://drive/x",
+            source_local_path=None, status=ProjectStatus.analyzing,
+        )
+        detail = client.post(
+            f"/api/v2/projects/{project.id}/transcribe"
+        ).json()["detail"]
+        assert "wait" in detail
+
+    @pytest.mark.parametrize(
+        "project_status", [ProjectStatus.ready, ProjectStatus.failed]
+    )
+    def test_409_after_analysis_points_at_re_analysis_not_at_waiting(
+        self, spy_client, db_session, project_status
+    ):
+        """Telling an operator to "wait for analysis" on a project that is
+        already `ready` is advice they can never act on: analysis has finished
+        and no file arrived. Re-analysis is what fetches it again."""
+        client, _spy = spy_client
+        project = _make_project(
+            db_session, source_type="gdrive", source_ref="https://drive/x",
+            source_local_path=None, status=project_status,
+        )
+        detail = client.post(
+            f"/api/v2/projects/{project.id}/transcribe"
+        ).json()["detail"]
+        assert "wait" not in detail
+        assert f"/api/v2/projects/{project.id}/analyze" in detail
+
+    def test_unknown_project_is_404(self, client):
+        assert client.post("/api/v2/projects/nope/transcribe").status_code == 404
+
+
+class TestGetTranscript:
+    def test_never_requested_is_all_null(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        resp = client.get(f"/api/v2/projects/{project.id}/transcript")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": None, "error": None, "transcript": None}
+
+    def test_returns_the_stored_transcript_verbatim(self, client, db_session):
+        project = _localisation_project(db_session)
+        body = client.get(f"/api/v2/projects/{project.id}/transcript").json()
+        assert body["status"] == "ready"
+        assert body["transcript"] == _transcript(_HOOK_LINES)
+
+    def test_failed_surfaces_the_error(self, client, db_session):
+        project = _make_project(
+            db_session, transcript_status="failed", transcript_error="upload failed"
+        )
+        body = client.get(f"/api/v2/projects/{project.id}/transcript").json()
+        assert body["status"] == "failed"
+        assert body["error"] == "upload failed"
+
+    def test_empty_is_a_status_not_an_error(self, client, db_session):
+        """No speech is a legal outcome — status "empty", no error text."""
+        project = _make_project(
+            db_session,
+            transcript_status="empty",
+            transcript=_transcript([], source_language="en"),
+        )
+        body = client.get(f"/api/v2/projects/{project.id}/transcript").json()
+        assert body["status"] == "empty"
+        assert body["error"] is None
+        assert body["transcript"]["lines"] == []
+
+    def test_unknown_project_is_404(self, client):
+        assert client.get("/api/v2/projects/nope/transcript").status_code == 404
+
+
+class TestPatchTranscript:
+    """Operator fix-ups. The transcript becomes a Seedance prompt, so a
+    malformed edit is refused (400) rather than stored and discovered later."""
+
+    def test_accepts_a_corrected_transcript(self, client, db_session):
+        project = _make_project(
+            db_session, transcript_status="failed", transcript_error="kie.ai 500"
+        )
+        fixed = _transcript(
+            [_line(1, 0.0, 2.0, "Эй, что ты делаешь?", speaker="the woman")],
+            source_language="ru",
+        )
+
+        resp = client.patch(f"/api/v2/projects/{project.id}/transcript", json=fixed)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "ready"
+        # A hand-fixed transcript clears the failure that prompted the edit.
+        assert body["error"] is None
+        assert body["transcript"]["lines"][0]["text"] == "Эй, что ты делаешь?"
+        assert body["transcript"]["source_language"] == "ru"
+
+        db_session.expire_all()
+        stored = db_session.get(VideoProject, project.id)
+        assert stored.transcript_status == "ready"
+        assert stored.transcript_error is None
+        assert stored.transcript["lines"][0]["speaker"] == "the woman"
+
+    def test_no_lines_is_stored_as_empty(self, client, db_session):
+        project = _localisation_project(db_session)
+        resp = client.patch(
+            f"/api/v2/projects/{project.id}/transcript", json=_transcript([])
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "empty"
+
+    def test_envelope_keys_survive_the_round_trip(self, client, db_session):
+        """model/prompt_version/created_at record which model produced it —
+        an operator edit must not strip them."""
+        project = _localisation_project(db_session)
+        doc = _transcript(_HOOK_LINES, extra_key="kept")
+        body = client.patch(
+            f"/api/v2/projects/{project.id}/transcript", json=doc
+        ).json()
+        assert body["transcript"]["model"] == "gemini-2.5-pro"
+        assert body["transcript"]["prompt_version"] == "transcribe/v1"
+        assert body["transcript"]["created_at"] == "2026-08-09T12:00:00+00:00"
+        assert body["transcript"]["extra_key"] == "kept"
+
+    def test_line_order_is_preserved_not_resorted(self, client, db_session):
+        """format_dialogue merges consecutive same-speaker lines, so re-ordering
+        would silently change the prompt the operator just proof-read."""
+        project = _localisation_project(db_session)
+        doc = _transcript(
+            [_line(1, 5.0, 6.0, "second half"), _line(2, 0.0, 1.0, "first half")]
+        )
+        body = client.patch(
+            f"/api/v2/projects/{project.id}/transcript", json=doc
+        ).json()
+        assert [ln["id"] for ln in body["transcript"]["lines"]] == [1, 2]
+
+    def test_on_screen_defaults_to_false_when_omitted(self, client, db_session):
+        project = _localisation_project(db_session)
+        line = _line(1, 0.0, 1.0, "hi")
+        line.pop("on_screen")
+        body = client.patch(
+            f"/api/v2/projects/{project.id}/transcript", json=_transcript([line])
+        ).json()
+        assert body["transcript"]["lines"][0]["on_screen"] is False
+
+    def test_on_screen_text_is_validated_and_kept(self, client, db_session):
+        project = _localisation_project(db_session)
+        doc = _transcript(
+            _HOOK_LINES,
+            on_screen_text=[{"start": 0.0, "end": 3.0, "text": "Speechify"}],
+        )
+        body = client.patch(
+            f"/api/v2/projects/{project.id}/transcript", json=doc
+        ).json()
+        assert body["transcript"]["on_screen_text"] == [
+            {"start": 0.0, "end": 3.0, "text": "Speechify"}
+        ]
+
+    @pytest.mark.parametrize(
+        "payload, expect_in_detail",
+        [
+            ([{"id": 1}], "lines"),                                  # not an object
+            ({"source_language": "en"}, "lines"),                    # no lines key
+            ({"lines": "nope"}, "lines"),                            # lines not a list
+            ({"lines": ["nope"]}, "lines[0]"),                       # line not an object
+            ({"lines": [{"start": 0, "end": 1, "speaker": "a", "text": "t"}]}, "id"),
+            ({"lines": [{"id": "1", "start": 0, "end": 1, "speaker": "a", "text": "t"}]}, "id"),
+            ({"lines": [{"id": 0, "start": 0, "end": 1, "speaker": "a", "text": "t"}]}, "id"),
+            ({"lines": [{"id": True, "start": 0, "end": 1, "speaker": "a", "text": "t"}]}, "id"),
+            ({"lines": [{"id": 1, "start": 2, "end": 1, "speaker": "a", "text": "t"}]}, "end"),
+            ({"lines": [{"id": 1, "start": -1, "end": 1, "speaker": "a", "text": "t"}]}, "start"),
+            ({"lines": [{"id": 1, "start": "x", "end": 1, "speaker": "a", "text": "t"}]}, "start"),
+            ({"lines": [{"id": 1, "end": 1, "speaker": "a", "text": "t"}]}, "start"),
+            ({"lines": [{"id": 1, "start": 0, "end": 1, "speaker": "a", "text": "  "}]}, "text"),
+            ({"lines": [{"id": 1, "start": 0, "end": 1, "speaker": "a"}]}, "text"),
+            ({"lines": [{"id": 1, "start": 0, "end": 1, "text": "t"}]}, "speaker"),
+            ({"lines": [{"id": 1, "start": 0, "end": 1, "speaker": "", "text": "t"}]}, "speaker"),
+            ({"lines": [], "on_screen_text": "nope"}, "on_screen_text"),
+            ({"lines": [], "on_screen_text": [{"start": 3, "end": 1, "text": "x"}]}, "on_screen_text[0]"),
+            ({"lines": [], "source_language": 5}, "source_language"),
+        ],
+    )
+    def test_garbage_is_400(self, client, db_session, payload, expect_in_detail):
+        project = _localisation_project(db_session)
+        resp = client.patch(
+            f"/api/v2/projects/{project.id}/transcript", json=payload
+        )
+        assert resp.status_code == 400, resp.text
+        assert expect_in_detail in resp.json()["detail"]
+
+        # …and the previous transcript is still the one on file.
+        db_session.expire_all()
+        stored = db_session.get(VideoProject, project.id)
+        assert stored.transcript == _transcript(_HOOK_LINES)
+        assert stored.transcript_status == "ready"
+
+    def test_duplicate_ids_are_400(self, client, db_session):
+        """Translation rejoins on the id — a duplicate loses a line silently."""
+        project = _localisation_project(db_session)
+        doc = _transcript([_line(1, 0.0, 1.0, "a"), _line(1, 1.0, 2.0, "b")])
+        resp = client.patch(f"/api/v2/projects/{project.id}/transcript", json=doc)
+        assert resp.status_code == 400
+        assert "duplicate" in resp.json()["detail"]
+
+    def test_nan_timestamp_is_400(self, client, db_session):
+        """NaN survives every `<` in slice_lines, so the line would vanish from
+        the hook window with nothing to show for it."""
+        project = _localisation_project(db_session)
+        body = (
+            b'{"lines": [{"id": 1, "start": NaN, "end": 1.0, '
+            b'"speaker": "a", "text": "t"}]}'
+        )
+        resp = client.patch(
+            f"/api/v2/projects/{project.id}/transcript",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "finite" in resp.json()["detail"]
+
+    def test_accepts_a_transcript_on_a_never_transcribed_project(
+        self, client, db_session
+    ):
+        """Pasting one in by hand is the documented fallback (§8)."""
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        resp = client.patch(
+            f"/api/v2/projects/{project.id}/transcript", json=_transcript(_HOOK_LINES)
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "ready"
+
+    def test_unknown_project_is_404(self, client):
+        resp = client.patch(
+            "/api/v2/projects/nope/transcript", json=_transcript(_HOOK_LINES)
+        )
+        assert resp.status_code == 404
+
+
+class TestLocalisationPrompt:
+    """POST /projects/{pid}/localisation-prompt (docs/localisation.md §4.4).
+
+    Every test stubs localisation.translate_lines — the real one is a kie.ai
+    call, and nothing here may touch the network. build_prompt is NOT stubbed:
+    it renders the real app.project_types templates, so a broken template is a
+    failing test rather than a surprise in production.
+    """
+
+    def _post(self, client, pid, **data):
+        payload = {"language": "es"}
+        payload.update(data)
+        return client.post(f"/api/v2/projects/{pid}/localisation-prompt", data=payload)
+
+    def test_single_segment_hook_puts_everything_in_the_prompt(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(db_session)
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+        _make_segment_def(
+            db_session, project.id, 1, start_sec=10.0, end_sec=30.0,
+            action="keep", has_face=False,
+        )
+
+        resp = self._post(client, project.id, language="es")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        assert body["source_language"] == "en"
+        assert body["target_language"] == "es"
+        assert body["hook_sec"] == settings.LOCALISATION_DEFAULT_HOOK_SEC
+        # The usual case: one swap segment, so no per-segment overrides at all.
+        assert body["segment_prompts"] == {}
+        # Both lines, in the proven "**Speaker:**" dialogue shape.
+        assert "<es> Hey, what are you doing?" in body["prompt"]
+        assert "<es> I'm just listening to my emails." in body["prompt"]
+        assert "**the woman in the red jacket:**" in body["prompt"]
+        assert body["warnings"] == []
+
+    def test_returns_translated_lines_with_their_source(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(db_session)
+        body = self._post(client, project.id, language="es").json()
+
+        assert [ln["id"] for ln in body["lines"]] == [1, 2]
+        assert body["lines"][0]["text"] == "<es> Hey, what are you doing?"
+        assert body["lines"][0]["source_text"] == "Hey, what are you doing?"
+        assert body["lines"][0]["speaker"] == "the woman in the red jacket"
+
+    def test_swap_character_picks_a_different_template(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(db_session)
+        swap = self._post(client, project.id, swap_character="true").json()["prompt"]
+        keep = self._post(client, project.id, swap_character="false").json()["prompt"]
+
+        assert swap != keep
+        # Both still carry the dialogue and the language pair.
+        for prompt in (swap, keep):
+            assert "<es> Hey, what are you doing?" in prompt
+            assert "from english to spanish" in prompt
+
+    def test_only_the_hook_window_is_translated(
+        self, client, db_session, fake_translate
+    ):
+        """Lines past the hook belong to the tail, which is never regenerated."""
+        project = _localisation_project(
+            db_session,
+            transcript=_transcript(
+                _HOOK_LINES + [_line(3, 20.0, 22.0, "This is in the tail.")]
+            ),
+        )
+
+        body = self._post(client, project.id).json()
+        assert [ln["id"] for ln in body["lines"]] == [1, 2]
+        assert "This is in the tail." not in body["prompt"]
+        # The translator was never asked to pay for the tail either.
+        assert [ln["id"] for ln in fake_translate[0]["lines"]] == [1, 2]
+
+    def test_hook_sec_override_widens_the_window(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(
+            db_session,
+            transcript=_transcript(
+                _HOOK_LINES + [_line(3, 20.0, 22.0, "This is in the tail.")]
+            ),
+        )
+
+        body = self._post(client, project.id, hook_sec=25).json()
+        assert body["hook_sec"] == 25.0
+        assert [ln["id"] for ln in body["lines"]] == [1, 2, 3]
+
+    def test_stored_hook_sec_is_the_default_window(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(
+            db_session,
+            hook_sec=3.0,
+            transcript=_transcript(_HOOK_LINES),
+        )
+        body = self._post(client, project.id).json()
+        assert body["hook_sec"] == 3.0
+        # Line 2 starts at 2.5s, so it overlaps a 3s hook and comes along.
+        assert [ln["id"] for ln in body["lines"]] == [1, 2]
+
+    def test_unusable_stored_hook_sec_falls_back_to_the_default(
+        self, client, db_session, fake_translate
+    ):
+        """A 0 written straight into the column (or by an older build) must not
+        turn every translate call into a 422 the operator cannot act on."""
+        project = _localisation_project(db_session, hook_sec=0.0)
+        body = self._post(client, project.id).json()
+        assert body["hook_sec"] == settings.LOCALISATION_DEFAULT_HOOK_SEC
+
+    def test_multi_segment_hook_splits_the_dialogue(
+        self, client, db_session, fake_translate
+    ):
+        """A hook longer than the per-clip cap is cut into several swap
+        segments, and each is generated as its OWN clip — so each gets only its
+        own lines. Handing all of it to every segment would make each clip try
+        to say the whole hook.
+        """
+        project = _localisation_project(db_session, hook_sec=20.0)
+        first = _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+        second = _make_segment_def(
+            db_session, project.id, 1, start_sec=10.0, end_sec=20.0
+        )
+        _make_segment_def(
+            db_session, project.id, 2, start_sec=20.0, end_sec=30.0,
+            action="keep", has_face=False,
+        )
+        project.transcript = _transcript(
+            [
+                _line(1, 0.0, 4.0, "Front half of the hook.", speaker="the woman"),
+                _line(2, 12.0, 16.0, "Back half of the hook.", speaker="the man"),
+            ]
+        )
+        db_session.commit()
+
+        body = self._post(client, project.id).json()
+
+        assert set(body["segment_prompts"]) == {first.id, second.id}
+        assert "Front half" in body["segment_prompts"][first.id]
+        assert "Back half" not in body["segment_prompts"][first.id]
+        assert "Back half" in body["segment_prompts"][second.id]
+        assert "Front half" not in body["segment_prompts"][second.id]
+        # The run prompt still carries the whole hook: it is the fallback for
+        # any segment not in the map.
+        assert "Front half" in body["prompt"]
+        assert "Back half" in body["prompt"]
+
+    def test_keep_segments_never_get_a_prompt(
+        self, client, db_session, fake_translate
+    ):
+        """Keep segments are never generated, so a prompt for one is dead text."""
+        project = _localisation_project(db_session, hook_sec=20.0)
+        swap_a = _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+        swap_b = _make_segment_def(db_session, project.id, 1, start_sec=10.0, end_sec=20.0)
+        keep = _make_segment_def(
+            db_session, project.id, 2, start_sec=20.0, end_sec=30.0,
+            action="keep", has_face=False,
+        )
+
+        body = self._post(client, project.id).json()
+        assert keep.id not in body["segment_prompts"]
+        assert set(body["segment_prompts"]) == {swap_a.id, swap_b.id}
+
+    def test_a_silent_hook_segment_still_gets_its_own_empty_prompt(
+        self, client, db_session, fake_translate
+    ):
+        """A swap segment with no speech in it gets a prompt with an EMPTY
+        dialogue block, not no prompt at all.
+
+        Leaving it out of the map would make it fall back to the run prompt,
+        i.e. the WHOLE hook's dialogue — and that clip would try to say all of
+        it a second time. Silence is the correct instruction for a silent
+        stretch of the hook.
+        """
+        project = _localisation_project(db_session, hook_sec=20.0)
+        speaking = _make_segment_def(
+            db_session, project.id, 0, start_sec=0.0, end_sec=10.0
+        )
+        silent = _make_segment_def(
+            db_session, project.id, 1, start_sec=10.0, end_sec=20.0
+        )
+
+        body = self._post(client, project.id).json()
+        assert silent.id in body["segment_prompts"]
+        assert "<es> Hey, what are you doing?" in body["segment_prompts"][speaking.id]
+        assert "<es> Hey, what are you doing?" not in body["segment_prompts"][silent.id]
+        assert "**" not in body["segment_prompts"][silent.id]  # no dialogue at all
+
+    def test_writes_nothing_to_the_database(
+        self, client, db_session, SessionFactory, fake_translate
+    ):
+        """The whole point of the endpoint: it returns text, it does not record
+        anything. The run the operator submits afterwards is the only record.
+        """
+        project = _localisation_project(db_session, hook_sec=8.0)
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=8.0)
+        before = {
+            "transcript": json.dumps(project.transcript, sort_keys=True),
+            "transcript_status": project.transcript_status,
+            "transcript_error": project.transcript_error,
+            "hook_sec": project.hook_sec,
+            "name": project.name,
+        }
+
+        assert self._post(client, project.id, language="ja").status_code == 200
+
+        session = SessionFactory()
+        after_project = session.get(VideoProject, project.id)
+        assert json.dumps(after_project.transcript, sort_keys=True) == before["transcript"]
+        assert after_project.transcript_status == before["transcript_status"]
+        assert after_project.transcript_error == before["transcript_error"]
+        assert after_project.hook_sec == before["hook_sec"]
+        assert after_project.name == before["name"]
+        # No run, and no new segment, was created behind the operator's back.
+        assert session.query(Run).filter(Run.project_id == project.id).count() == 0
+        assert (
+            session.query(SegmentDef).filter(SegmentDef.project_id == project.id).count()
+            == 1
+        )
+        session.close()
+
+    @pytest.mark.parametrize("status", [None, "pending", "running", "failed", "empty"])
+    def test_transcript_not_ready_is_409(
+        self, client, db_session, fake_translate, status
+    ):
+        project = _localisation_project(db_session, transcript_status=status)
+        resp = self._post(client, project.id)
+        assert resp.status_code == 409, resp.text
+        assert "not ready" in resp.json()["detail"]
+        assert fake_translate == []
+
+    def test_no_speech_in_the_hook_is_422(self, client, db_session, fake_translate):
+        """A wordless hook is a legal transcript, but there is nothing to say."""
+        project = _localisation_project(
+            db_session,
+            transcript=_transcript([_line(1, 30.0, 32.0, "Only speech in the tail.")]),
+        )
+        resp = self._post(client, project.id)
+        assert resp.status_code == 422, resp.text
+        assert "No speech" in resp.json()["detail"]
+        assert fake_translate == []
+
+    def test_hook_sec_override_of_zero_is_400(self, client, db_session, fake_translate):
+        project = _localisation_project(db_session)
+        resp = self._post(client, project.id, hook_sec=0)
+        assert resp.status_code == 400, resp.text
+        assert "hook_sec" in resp.json()["detail"]
+        assert fake_translate == []
+
+    @pytest.mark.parametrize("language", ["fr", "klingon", "   "])
+    def test_unknown_language_is_400(
+        self, client, db_session, fake_translate, language
+    ):
+        """An unrecognised code is refused, never silently treated as English.
+
+        Whitespace is in here deliberately: it is non-empty, so it reaches the
+        handler (unlike "" — see below) and has to be caught there.
+        """
+        project = _localisation_project(db_session)
+        resp = self._post(client, project.id, language=language)
+        assert resp.status_code == 400, resp.text
+        assert "language" in resp.json()["detail"]
+        assert fake_translate == []
+
+    @pytest.mark.parametrize("data", [{}, {"language": ""}])
+    def test_absent_language_is_a_422_from_the_form(
+        self, client, db_session, fake_translate, data
+    ):
+        """FastAPI's own validation — the field is required, not defaulted.
+
+        An EMPTY form value counts as absent to FastAPI (it maps ``""`` to a
+        missing required Form field), so a blank <select> is a 422 rather than
+        the handler's 400. Both refuse it; pinning which one keeps the UI's
+        error handling honest.
+        """
+        project = _localisation_project(db_session)
+        resp = client.post(
+            f"/api/v2/projects/{project.id}/localisation-prompt", data=data
+        )
+        assert resp.status_code == 422
+        assert fake_translate == []
+
+    def test_translation_failure_is_502(self, client, db_session, monkeypatch):
+        """A model outage is not the operator's mistake — and §8 says the
+        fallback is writing the prompt by hand, so nothing is stored."""
+        def _boom(lines, **kwargs):
+            raise api_v2_module.localisation.LocalisationError("kie.ai returned 401")
+
+        monkeypatch.setattr(api_v2_module.localisation, "translate_lines", _boom)
+        project = _localisation_project(db_session)
+
+        resp = self._post(client, project.id)
+        assert resp.status_code == 502, resp.text
+        assert "kie.ai returned 401" in resp.json()["detail"]
+
+    def test_unknown_project_is_404(self, client, fake_translate):
+        resp = self._post(client, "nope")
+        assert resp.status_code == 404
+
+    # -- warnings ---------------------------------------------------------
+
+    def test_warns_when_a_line_straddles_the_hook_boundary(
+        self, client, db_session, fake_translate
+    ):
+        """slice_lines takes overlapping lines, so this one is translated whole
+        — but the hook segment ends mid-sentence."""
+        project = _localisation_project(
+            db_session,
+            hook_sec=10.0,
+            transcript=_transcript([_line(1, 8.0, 14.0, "Half in, half out of it.")]),
+        )
+        body = self._post(client, project.id).json()
+        straddle = [w for w in body["warnings"] if "cut mid-sentence" in w]
+        assert len(straddle) == 1
+        assert "10.0s hook boundary" in straddle[0]
+
+    def test_no_straddle_warning_when_a_line_ends_on_the_boundary(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(
+            db_session,
+            hook_sec=10.0,
+            transcript=_transcript([_line(1, 8.0, 10.0, "Ends right on it.")]),
+        )
+        body = self._post(client, project.id).json()
+        assert [w for w in body["warnings"] if "cut mid-sentence" in w] == []
+
+    def test_warns_when_the_translation_will_overrun(
+        self, client, db_session, fake_translate
+    ):
+        """The failure that actually shipped: a literal EN→JA hook that took far
+        longer to say than the shot allowed."""
+        project = _localisation_project(
+            db_session,
+            transcript=_transcript(
+                [
+                    _line(
+                        1, 0.0, 1.0,
+                        "This is a very long sentence for one single second of footage.",
+                    )
+                ]
+            ),
+        )
+        body = self._post(client, project.id, language="ja").json()
+        assert any("will overrun" in w for w in body["warnings"])
+
+    def test_warns_when_the_translation_looks_too_short(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(
+            db_session,
+            transcript=_transcript([_line(1, 0.0, 9.0, "Hi.")]),
+        )
+        body = self._post(client, project.id).json()
+        assert any("check nothing was dropped" in w for w in body["warnings"])
+
+    def test_warns_when_source_and_target_match(
+        self, client, db_session, fake_translate
+    ):
+        """Almost always a mis-picked dropdown — a whole generation spent
+        reproducing the original."""
+        project = _localisation_project(db_session)  # source_language="en"
+        body = self._post(client, project.id, language="en").json()
+        assert any("no-op" in w for w in body["warnings"])
+        # Advisory only: the prompt still comes back.
+        assert body["prompt"]
+
+    def test_warns_when_the_hook_override_overruns_the_analyzed_segments(
+        self, client, db_session, fake_translate
+    ):
+        """hook_sec is a per-call override that re-segments nothing, so it can
+        ask for more dialogue than the generated clip is able to say — the
+        "whole script in one clip" failure the per-segment split prevents."""
+        project = _localisation_project(
+            db_session,
+            hook_sec=10.0,
+            transcript=_transcript(
+                [
+                    _line(1, 0.0, 9.0, "Inside the analyzed hook."),
+                    _line(2, 11.0, 18.0, "Past the end of it."),
+                ]
+            ),
+        )
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+        _make_segment_def(
+            db_session, project.id, 1, start_sec=10.0, end_sec=30.0,
+            action="keep", has_face=False,
+        )
+
+        body = self._post(client, project.id, hook_sec=20.0).json()
+        overrun = [w for w in body["warnings"] if "only cover" in w]
+        assert len(overrun) == 1
+        assert "20.0s" in overrun[0] and "10.0s" in overrun[0]
+        # Advisory only — the prompt still comes back with the wider window.
+        assert "Past the end of it" in body["prompt"]
+
+    def test_warns_when_no_swap_segment_covers_the_hook(
+        self, client, db_session, fake_translate
+    ):
+        """A project analyzed under another type (or with the hook flipped to
+        keep) would receive a prompt no clip is ever handed."""
+        project = _localisation_project(db_session)
+        _make_segment_def(
+            db_session, project.id, 0, start_sec=0.0, end_sec=30.0,
+            action="keep", has_face=False,
+        )
+
+        body = self._post(client, project.id).json()
+        assert any("nothing will be generated" in w for w in body["warnings"])
+        assert body["prompt"]
+
+    def test_warnings_never_block_the_response(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(
+            db_session,
+            hook_sec=10.0,
+            transcript=_transcript([_line(1, 9.0, 12.0, "Hi.")], source_language="en"),
+        )
+        resp = self._post(client, project.id, language="en")
+        assert resp.status_code == 200
+        assert len(resp.json()["warnings"]) >= 2
+        assert resp.json()["prompt"]
+
+
+class TestLocalisationSegmentAssignment:
+    """Every hook line belongs to EXACTLY ONE swap segment.
+
+    A per-segment prompt REPLACES the run prompt (pipeline_v2 submits
+    ``prompt_override if prompt_override else run_prompt``), so the run prompt
+    is NOT a fallback for a segment that got one. That makes the split a
+    partition problem, and localisation.slice_lines — whose semantics are
+    OVERLAP — the wrong tool for it: overlap duplicates a boundary-straddling
+    line into both clips and loses a line that falls in a keep gap. The rule is
+    the line's MIDPOINT.
+
+    Both shapes below are reachable by hand-splitting the hook in the Segment
+    Editor, which is exactly what the new hook editor invites.
+    """
+
+    def _post(self, client, pid, **data):
+        payload = {"language": "es"}
+        payload.update(data)
+        return client.post(f"/api/v2/projects/{pid}/localisation-prompt", data=payload)
+
+    def _split_hook_project(self, session):
+        """swap[0,5] + swap[5,10], with a line straddling the 5s seam."""
+        project = _localisation_project(
+            session,
+            hook_sec=10.0,
+            transcript=_transcript(
+                [
+                    _line(1, 0.0, 4.8, "Before the seam.", speaker="the woman"),
+                    _line(2, 4.8, 5.4, "Right on the seam.", speaker="the woman"),
+                    _line(3, 5.4, 9.5, "After the seam.", speaker="the man"),
+                ]
+            ),
+        )
+        first = _make_segment_def(session, project.id, 0, start_sec=0.0, end_sec=5.0)
+        second = _make_segment_def(session, project.id, 1, start_sec=5.0, end_sec=10.0)
+        return project, first, second
+
+    def test_a_straddling_line_lands_in_exactly_one_segment(
+        self, client, db_session, fake_translate
+    ):
+        """The duplication bug: with overlap semantics the 4.8-5.4s line was in
+        BOTH overrides, both clips generated it, and the stitched hook said the
+        sentence twice."""
+        project, first, second = self._split_hook_project(db_session)
+
+        prompts = self._post(client, project.id).json()["segment_prompts"]
+        assert set(prompts) == {first.id, second.id}
+
+        occurrences = sum(
+            "Right on the seam." in prompts[sid] for sid in (first.id, second.id)
+        )
+        assert occurrences == 1
+        # Midpoint 5.1s falls in [5, 10), so the SECOND clip speaks it.
+        assert "Right on the seam." in prompts[second.id]
+        assert "Right on the seam." not in prompts[first.id]
+
+    def test_every_line_is_assigned_and_none_are_shared(
+        self, client, db_session, fake_translate
+    ):
+        project, first, second = self._split_hook_project(db_session)
+        prompts = self._post(client, project.id).json()["segment_prompts"]
+
+        assert "Before the seam." in prompts[first.id]
+        assert "Before the seam." not in prompts[second.id]
+        assert "After the seam." in prompts[second.id]
+        assert "After the seam." not in prompts[first.id]
+
+    def test_a_straddling_line_is_still_warned_about(
+        self, client, db_session, fake_translate
+    ):
+        """Assigned whole to one clip, but the stitch still cuts through it —
+        the same advisory the hook edge has always had."""
+        project, _first, _second = self._split_hook_project(db_session)
+        warnings = self._post(client, project.id).json()["warnings"]
+
+        seam = [w for w in warnings if "5.0s boundary between two swap segments" in w]
+        assert len(seam) == 1
+        assert "Line 2" in seam[0]
+        assert "cut mid-sentence" in seam[0]
+
+    def test_a_line_ending_on_a_seam_is_not_warned_about(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(
+            db_session,
+            hook_sec=10.0,
+            transcript=_transcript([_line(1, 2.0, 5.0, "Ends right on the seam.")]),
+        )
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=5.0)
+        _make_segment_def(db_session, project.id, 1, start_sec=5.0, end_sec=10.0)
+
+        warnings = self._post(client, project.id).json()["warnings"]
+        assert [w for w in warnings if "cut mid-sentence" in w] == []
+
+    # -- the keep gap ------------------------------------------------------
+
+    def _gapped_hook_project(self, session):
+        """swap[0,3] + keep[3,5] + swap[5,10] — the hand-split shape."""
+        project = _localisation_project(
+            session,
+            hook_sec=10.0,
+            transcript=_transcript(
+                [
+                    _line(1, 0.0, 2.5, "In the first swap.", speaker="the woman"),
+                    _line(2, 3.2, 4.6, "Stranded in the gap.", speaker="the woman"),
+                    _line(3, 5.5, 9.0, "In the second swap.", speaker="the man"),
+                ]
+            ),
+        )
+        first = _make_segment_def(session, project.id, 0, start_sec=0.0, end_sec=3.0)
+        _make_segment_def(
+            session, project.id, 1, start_sec=3.0, end_sec=5.0,
+            action="keep", has_face=False,
+        )
+        second = _make_segment_def(session, project.id, 2, start_sec=5.0, end_sec=10.0)
+        return project, first, second
+
+    def test_a_line_in_a_keep_gap_reaches_no_segment_prompt(
+        self, client, db_session, fake_translate
+    ):
+        project, first, second = self._gapped_hook_project(db_session)
+        body = self._post(client, project.id).json()
+
+        prompts = body["segment_prompts"]
+        assert set(prompts) == {first.id, second.id}
+        assert "Stranded in the gap." not in prompts[first.id]
+        assert "Stranded in the gap." not in prompts[second.id]
+        # It stays in the run prompt so the operator can see what is at stake —
+        # they can fix the segmentation, but not text they were never shown.
+        assert "Stranded in the gap." in body["prompt"]
+
+    def test_a_line_in_a_keep_gap_is_warned_about_by_name(
+        self, client, db_session, fake_translate
+    ):
+        """The silent failure: nothing generates this line, and the first sign
+        used to be a delivered hook missing a sentence."""
+        project, _first, _second = self._gapped_hook_project(db_session)
+        warnings = self._post(client, project.id).json()["warnings"]
+
+        stranded = [w for w in warnings if "will not be spoken at all" in w]
+        assert len(stranded) == 1
+        assert "Line 2" in stranded[0]
+        assert "3.2s to 4.6s" in stranded[0]
+
+    def test_the_coverage_warning_measures_the_union_not_the_last_end(
+        self, client, db_session, fake_translate
+    ):
+        """max(end_sec) reads 10s here — the hole in the middle was invisible."""
+        project, _first, _second = self._gapped_hook_project(db_session)
+        warnings = self._post(client, project.id).json()["warnings"]
+
+        coverage = [w for w in warnings if "only cover" in w]
+        assert len(coverage) == 1
+        assert "10.0s" in coverage[0]      # the hook window
+        assert "only cover 8.0s" in coverage[0]  # 3 + 5, not 10
+        assert "3.0-5.0s" in coverage[0]   # and it names the gap
+
+    def test_a_gap_free_hook_raises_no_coverage_warning(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(db_session, hook_sec=10.0)
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=5.0)
+        _make_segment_def(db_session, project.id, 1, start_sec=5.0, end_sec=10.0)
+
+        warnings = self._post(client, project.id).json()["warnings"]
+        assert [w for w in warnings if "only cover" in w] == []
+        assert [w for w in warnings if "will not be spoken at all" in w] == []
+
+    def test_a_single_swap_segment_never_strands_a_line(
+        self, client, db_session, fake_translate
+    ):
+        """With one hook segment there are no per-segment prompts at all, so the
+        run prompt IS what that clip receives — nothing is lost, and claiming
+        otherwise would be a false alarm. The coverage warning still fires."""
+        project = _localisation_project(
+            db_session,
+            hook_sec=10.0,
+            transcript=_transcript([_line(1, 0.5, 1.5, "In the uncovered head.")]),
+        )
+        _make_segment_def(
+            db_session, project.id, 0, start_sec=0.0, end_sec=2.0,
+            action="keep", has_face=False,
+        )
+        _make_segment_def(db_session, project.id, 1, start_sec=2.0, end_sec=10.0)
+
+        body = self._post(client, project.id).json()
+        assert body["segment_prompts"] == {}
+        assert [w for w in body["warnings"] if "will not be spoken at all" in w] == []
+        assert any("only cover" in w for w in body["warnings"])
+
+
+class TestLocalisationHookWindow:
+    """Three numbers call themselves "the hook length"; only one is the window.
+
+    1. the per-call ``hook_sec`` form argument — an override for this call only,
+       never persisted, re-segments nothing;
+    2. the ANALYZED reality — where the project's swap segments actually end.
+       This is the DEFAULT window, because it is what a run will really
+       generate;
+    3. the STORED ``VideoProject.hook_sec`` — the operator's intent. It bounds
+       (2), it drives the next analysis, and it is the fallback when there is
+       nothing analyzed to measure.
+
+    The bug this pins: a project created with Hook length 15 under the default
+    10s segmentation cap is cut ``swap[0,10]`` while the column still says 15,
+    so the endpoint used to slice 15s of transcript into a prompt for a 10s
+    clip.
+    """
+
+    def _post(self, client, pid, **data):
+        payload = {"language": "es"}
+        payload.update(data)
+        return client.post(f"/api/v2/projects/{pid}/localisation-prompt", data=payload)
+
+    def test_the_analyzed_window_beats_the_stored_intent(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(
+            db_session,
+            hook_sec=15.0,
+            transcript=_transcript(
+                [
+                    _line(1, 0.0, 4.0, "Inside the clip that will exist."),
+                    _line(2, 11.0, 14.0, "Only inside the 15s the operator asked for."),
+                ]
+            ),
+        )
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+        _make_segment_def(
+            db_session, project.id, 1, start_sec=10.0, end_sec=30.0,
+            action="keep", has_face=False,
+        )
+
+        body = self._post(client, project.id).json()
+        assert body["hook_sec"] == 10.0
+        assert [ln["id"] for ln in body["lines"]] == [1]
+        assert "Only inside the 15s" not in body["prompt"]
+        # And the clamped window is fully covered, so no coverage alarm.
+        assert [w for w in body["warnings"] if "only cover" in w] == []
+
+    def test_the_stored_intent_is_left_alone(
+        self, client, db_session, SessionFactory, fake_translate
+    ):
+        """The column is the operator's INTENT and still drives the next
+        analysis — raise the segmentation cap, re-analyze, and 15 finally
+        happens. Reading it as reality is what was wrong, not storing it."""
+        project = _localisation_project(db_session, hook_sec=15.0)
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+
+        assert self._post(client, project.id).json()["hook_sec"] == 10.0
+
+        session = SessionFactory()
+        assert session.get(VideoProject, project.id).hook_sec == 15.0
+        session.close()
+
+    def test_the_intent_bounds_the_analyzed_window(
+        self, client, db_session, fake_translate
+    ):
+        """A project analyzed under another type can have swap segments running
+        far past the hook; those are not hook, and must not widen the window."""
+        project = _localisation_project(
+            db_session,
+            hook_sec=5.0,
+            transcript=_transcript(
+                [
+                    _line(1, 0.0, 4.0, "Inside the hook."),
+                    _line(2, 20.0, 24.0, "Deep in the tail."),
+                ]
+            ),
+        )
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=30.0)
+
+        body = self._post(client, project.id).json()
+        assert body["hook_sec"] == 5.0
+        assert [ln["id"] for ln in body["lines"]] == [1]
+
+    def test_an_unanalyzed_project_falls_back_to_the_intent(
+        self, client, db_session, fake_translate
+    ):
+        """Nothing to measure — the stored value is the only number there is."""
+        project = _localisation_project(db_session, hook_sec=4.0)
+        body = self._post(client, project.id).json()
+        assert body["hook_sec"] == 4.0
+
+    def test_a_hook_flipped_to_keep_falls_back_to_the_intent(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(db_session, hook_sec=6.0)
+        _make_segment_def(
+            db_session, project.id, 0, start_sec=0.0, end_sec=30.0,
+            action="keep", has_face=False,
+        )
+        body = self._post(client, project.id).json()
+        assert body["hook_sec"] == 6.0
+        assert any("nothing will be generated" in w for w in body["warnings"])
+
+    def test_a_hand_split_hook_keeps_its_full_analyzed_width(
+        self, client, db_session, fake_translate
+    ):
+        """swap[0,3] + keep[3,5] + swap[5,10]: the analyzed window is 10s, not
+        3s. Shrinking to the first gap would orphan the second swap segment —
+        it would drop out of the hook, get no per-segment prompt, and fall back
+        to re-speaking the whole hook."""
+        project = _localisation_project(db_session, hook_sec=10.0)
+        first = _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=3.0)
+        _make_segment_def(
+            db_session, project.id, 1, start_sec=3.0, end_sec=5.0,
+            action="keep", has_face=False,
+        )
+        second = _make_segment_def(db_session, project.id, 2, start_sec=5.0, end_sec=10.0)
+
+        body = self._post(client, project.id).json()
+        assert body["hook_sec"] == 10.0
+        assert set(body["segment_prompts"]) == {first.id, second.id}
+
+    def test_an_explicit_override_still_beats_the_analyzed_window(
+        self, client, db_session, fake_translate
+    ):
+        """The override is for retranslating against a different window on
+        purpose, so it outranks reality — and keeps its warning for doing so."""
+        project = _localisation_project(
+            db_session,
+            hook_sec=10.0,
+            transcript=_transcript(
+                [
+                    _line(1, 0.0, 4.0, "Inside the analyzed hook."),
+                    _line(2, 11.0, 14.0, "Past the end of it."),
+                ]
+            ),
+        )
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+
+        body = self._post(client, project.id, hook_sec=15).json()
+        assert body["hook_sec"] == 15.0
+        assert [ln["id"] for ln in body["lines"]] == [1, 2]
+        coverage = [w for w in body["warnings"] if "only cover" in w]
+        assert len(coverage) == 1
+        assert "10.0-15.0s" in coverage[0]
+
+    def test_an_override_narrower_than_the_analyzed_window_wins_too(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(
+            db_session,
+            hook_sec=10.0,
+            transcript=_transcript(
+                [
+                    _line(1, 0.0, 2.0, "Inside the narrowed window."),
+                    _line(2, 6.0, 9.0, "Outside it."),
+                ]
+            ),
+        )
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+
+        body = self._post(client, project.id, hook_sec=4).json()
+        assert body["hook_sec"] == 4.0
+        assert [ln["id"] for ln in body["lines"]] == [1]

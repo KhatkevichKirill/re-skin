@@ -14,6 +14,8 @@ respx==0.21.1
 insightface==1.0.1
 onnxruntime==1.23.2
 opencv-python-headless==4.13.0.92
+# PySceneDetect — subtitle-removal projects cut on scene changes (app/scene.py).
+scenedetect==0.6.7
 numpy==2.2.6
 google-api-python-client==2.140.0
 google-auth==2.36.0

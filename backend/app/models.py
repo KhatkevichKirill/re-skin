@@ -27,6 +27,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+from .project_types import DEFAULT_PROJECT_TYPE
 from .state_machine import JobStatus, ProjectStatus, RunStatus, SegmentStatus
 
 
@@ -208,12 +209,40 @@ class VideoProject(Base):
     # Human-readable label (operator-editable; nullable — falls back to source_ref)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # What the operator is doing to this video. Decides how analysis segments it
+    # and which model/prompt the New Run form is pre-filled with; see
+    # app/project_types.py for the registry.
+    project_type: Mapped[str] = mapped_column(
+        Enum(
+            "face_swap", "subtitle_removal", "cover_change", "localisation",
+            name="project_type_enum",
+        ),
+        nullable=False,
+        default=DEFAULT_PROJECT_TYPE,
+        server_default=DEFAULT_PROJECT_TYPE,
+    )
+
     # Source
     source_type: Mapped[str] = mapped_column(
         Enum("upload", "gdrive", name="project_source_type_enum"), nullable=False
     )
     source_ref: Mapped[str] = mapped_column(Text, nullable=False)
     source_local_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # "Remove original audio": when true, the swap clips uploaded to the AI
+    # model are cut video-only (ffmpeg -an) so the model can't hear — and copy
+    # or be confused by — the source soundtrack, and generates audio purely
+    # from the prompt instead. Prompt-only instructions ("do not use the
+    # original audio") are unreliable; muting the input is not.
+    #
+    # The source file itself is NOT modified and "keep" segments still carry
+    # their original audio, so both Run.audio_mode options stay meaningful:
+    # "original" overlays the untouched source track, "seedance" keeps the
+    # model-generated audio. Read at submit time, so toggling it affects every
+    # subsequent run of this project.
+    mute_source: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     # Probe metadata (populated after ffprobe)
     duration_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -245,6 +274,67 @@ class VideoProject(Base):
     # intend to run: longer segments mean fewer stitch seams, at the cost of
     # model portability.
     max_segment_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # How much of the front of the video is the "hook" (seconds) — the only
+    # part a `localisation` project re-generates. Meaningless for every other
+    # project_type, which is why it is nullable with no server_default: NULL
+    # means "use settings.LOCALISATION_DEFAULT_HOOK_SEC", so the default lives
+    # in one place in Python instead of being frozen into the schema, and no
+    # pre-existing project needs a backfill.
+    #
+    # Like max_segment_sec (and unlike mute_source, which is read at submit
+    # time) this is consumed at ANALYZE time: hook_split segmentation lays down
+    # one swap segment over [0, hook_sec] and one keep segment over the rest,
+    # and those SegmentDefs are then fixed. Changing hook_sec therefore does
+    # NOT re-cut an already-analyzed project — the project must be re-analyzed
+    # for a new hook length to take effect. (The New Run form's translate call
+    # accepts a hook_sec override for slicing the transcript only; that path
+    # writes nothing here and re-segments nothing.)
+    #
+    # The value is clamped at analyze time to what the models can actually
+    # generate — no shorter than the smallest min_clip_sec in the registry, no
+    # longer than the effective segmentation cap or the video itself — so an
+    # out-of-range number degrades to the nearest usable hook rather than
+    # producing a segment no model will accept.
+    hook_sec: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Cached transcript of the source video (the schema in docs/localisation.md
+    # §4.1: detected source_language plus timestamped, speaker-labelled,
+    # verbatim lines). It lives on the PROJECT, not the Run, because it
+    # describes the uploaded footage — one expensive video-model call is shared
+    # by every run and every target language of that footage.
+    #
+    # Operator-editable (PATCH /transcript): the transcript is an input to the
+    # translation prompt, not a pipeline artefact, so a wrong speaker label or
+    # a misheard word is fixed by hand instead of by re-running the model.
+    # JSON rather than a table: nothing ever queries into the lines, they are
+    # only ever read back whole and handed to the prompt builder.
+    transcript: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # Lifecycle of the transcription task: "pending" | "running" | "ready" |
+    # "failed" | "empty". NULL means it was never requested.
+    #
+    # "empty" is a SUCCESS, not an error — the model found no speech, which is
+    # a legal outcome for a wordless hook; the UI says so and keeps the
+    # Translate button disabled. "failed" is also non-fatal: the project stays
+    # fully usable and the operator pastes a translation by hand, exactly as
+    # before this feature existed. Transcription runs as its own RQ task AFTER
+    # analyze_project so a model outage can never fail analysis or block
+    # segmentation.
+    #
+    # Deliberately a plain VARCHAR and not an Enum: this is a side-channel
+    # task's own state, it is not part of the ProjectStatus state machine and
+    # nothing gates on it, so adding a state should be a code change rather
+    # than an irreversible `ALTER TYPE ... ADD VALUE`.
+    transcript_status: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
+
+    # Human-readable reason the last transcription attempt failed, shown in the
+    # project page's transcript panel. Text (not String(n)) because it carries
+    # raw provider error bodies, which are unbounded. Only meaningful while
+    # transcript_status == "failed"; cleared on the next successful attempt.
+    transcript_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # State
     status: Mapped[str] = mapped_column(
@@ -385,6 +475,17 @@ class Run(Base):
         default="original",
     )
     gdrive_folder_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Spoken language of the delivered creative — one of app/languages.py's
+    # codes ("en"/"es"/"pt"/"ja"/"de"), NULL when never chosen (behaves as
+    # English). On a `localisation` project it is the TRANSLATION TARGET: the
+    # language the hook is re-spoken in, and what the translate call sends to the
+    # LLM. On every other project type it is descriptive metadata only — nothing
+    # in the pipeline branches on it.
+    #
+    # Deliberately a plain VARCHAR and not an Enum: adding a language should be a
+    # one-line registry change, not an irreversible Postgres type migration.
+    language: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
 
     # State
     status: Mapped[str] = mapped_column(

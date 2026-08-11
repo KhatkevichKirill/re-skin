@@ -20,6 +20,7 @@ RQ-callable targets (v2)
 ------------------------
 run_analyze_project(project_id)   Call pipeline_v2.analyze_project with real clients.
 run_process_run(run_id)           Call pipeline_v2.process_run with real clients.
+run_transcribe_project(pid)       Call pipeline_v2.transcribe_project (localisation).
 """
 
 from __future__ import annotations
@@ -44,6 +45,10 @@ _DEFAULT_QUEUE = "default"
 # keeps running on kie.ai. Override generously (seconds); tunable via env.
 ANALYZE_JOB_TIMEOUT = int(os.getenv("ANALYZE_JOB_TIMEOUT", "1800"))      # 30 min
 PROCESS_JOB_TIMEOUT = int(os.getenv("PROCESS_JOB_TIMEOUT", "10800"))     # 3 hours
+# Transcription is one upload plus one LLM request; the model itself can take
+# minutes on a video (settings.LOCALISATION_TIMEOUT_SEC defaults to 600s), so
+# the job timeout has to clear that with room for the upload.
+TRANSCRIBE_JOB_TIMEOUT = int(os.getenv("TRANSCRIBE_JOB_TIMEOUT", "1800"))  # 30 min
 
 
 def _get_queue() -> Queue:
@@ -129,11 +134,72 @@ def run_analyze_project(project_id: str) -> None:
 
     Imports pipeline_v2 lazily so the worker process doesn't need GPU/insightface
     at import time (only at execution time).
+
+    For a ``localisation`` project this also queues the transcription job — but
+    only once analysis has RETURNED, and outside its transaction. That ordering
+    is the whole point (docs/localisation.md §8): transcription talks to a
+    third-party LLM, and an outage inside analyze_project's try block would mark
+    the project failed and destroy a perfectly good segmentation. Here the worst
+    case is a project that is ready with no transcript, which the operator works
+    around by pasting a script by hand.
     """
     from .pipeline_v2 import analyze_project
 
     log.info("run_analyze_project: project_id=%s", project_id)
     analyze_project(project_id)
+    _enqueue_transcribe_after_analyze(project_id)
+
+
+def _enqueue_transcribe_after_analyze(project_id: str) -> None:
+    """Queue transcription for a just-analysed ``localisation`` project.
+
+    Best-effort by construction: any failure here (DB hiccup, Redis down) is
+    logged and swallowed, because analysis has already succeeded by this point
+    and raising would mark the whole analyze job failed over a side channel.
+    """
+    from .db import get_session
+    from .models import VideoProject
+    from .project_types import LOCALISATION
+
+    try:
+        with get_session() as session:
+            project = session.get(VideoProject, project_id)
+            if project is None:
+                log.warning(
+                    "_enqueue_transcribe_after_analyze: project %s not found",
+                    project_id,
+                )
+                return
+            if project.project_type != LOCALISATION:
+                return
+            # "pending" is written BEFORE the enqueue so the project page never
+            # shows a stale status (or none at all) for a job that is already
+            # queued. The job itself flips it to "running".
+            project.transcript_status = "pending"
+            project.transcript_error = None
+            session.commit()
+
+        enqueue_transcribe_project(project_id)
+    except Exception:
+        log.exception(
+            "_enqueue_transcribe_after_analyze: could not queue transcription "
+            "for project %s — analysis is unaffected", project_id,
+        )
+
+
+def run_transcribe_project(project_id: str) -> None:
+    """
+    RQ-callable wrapper for :func:`pipeline_v2.transcribe_project`.
+
+    Never raises for a provider failure: transcribe_project records every such
+    outcome on the project itself (transcript_status/transcript_error), because
+    the operator's view of this feature is the project page and a job sitting in
+    RQ's failed registry is invisible there.
+    """
+    from .pipeline_v2 import transcribe_project
+
+    log.info("run_transcribe_project: project_id=%s", project_id)
+    transcribe_project(project_id)
 
 
 # Per-run processing lock: prevents two RQ jobs from processing the same run
@@ -214,6 +280,31 @@ def enqueue_analyze_project(project_id: str) -> None:
     )
     log.info(
         "Enqueued analyze_project for project_id=%s → rq_job=%s", project_id, job.id
+    )
+
+
+def enqueue_transcribe_project(project_id: str) -> None:
+    """
+    Push :func:`run_transcribe_project` onto the RQ queue.
+
+    Callers that want the UI to show the queued state set
+    ``transcript_status="pending"`` before calling (see
+    :func:`_enqueue_transcribe_after_analyze` and ``POST /transcribe``); this
+    helper stays a pure queue push, like every other enqueue_* in this module.
+
+    Parameters
+    ----------
+    project_id:
+        The UUID of the VideoProject to transcribe.
+    """
+    q = _get_queue()
+    job = q.enqueue(
+        "app.tasks.run_transcribe_project",
+        project_id,
+        job_timeout=TRANSCRIBE_JOB_TIMEOUT,
+    )
+    log.info(
+        "Enqueued transcribe_project for project_id=%s → rq_job=%s", project_id, job.id
     )
 
 

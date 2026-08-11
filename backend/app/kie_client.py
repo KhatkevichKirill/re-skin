@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -71,6 +72,12 @@ class KieTaskFailed(KieTaskError):
         super().__init__(f"Task failed: {fail_msg}")
 
 
+class KieChatError(KieError):
+    """Raised by the two synchronous LLM endpoints (:meth:`KieClient.chat_completion`
+    and :meth:`KieClient.create_response`) on HTTP errors, API error envelopes,
+    or a response whose text content cannot be located."""
+
+
 # ---------------------------------------------------------------------------
 # createTask response helpers
 # ---------------------------------------------------------------------------
@@ -96,6 +103,80 @@ def _no_task_id_msg(data) -> str:
     code = data.get("code") if isinstance(data, dict) else None
     msg = data.get("msg") if isinstance(data, dict) else None
     return f"createTask returned no taskId (code={code}, msg={msg!r}): {data}"
+
+
+def _envelope_error(data) -> str | None:
+    """Return kie.ai's error text when *data* is an error envelope, else None.
+
+    kie.ai answers a rejected LLM request with **HTTP 200** and a body of
+    ``{"code": 401, "msg": "Unauthorized ...", "data": null}`` — verified live
+    against both ``/{model}/v1/chat/completions`` and ``/codex/v1/responses``
+    with a bad key and with an unknown model. ``resp.is_success`` therefore
+    proves nothing on these routes and every caller has to sniff the body.
+
+    A successful chat/responses body carries no ``code`` key at all, so the
+    presence of a non-2xx ``code`` is the reliable discriminator.
+    """
+    if not isinstance(data, dict):
+        return f"unexpected response type {type(data).__name__}: {data!r}"
+    code = data.get("code")
+    if isinstance(code, int) and not (200 <= code < 300):
+        return f"API error code={code}, msg={data.get('msg')!r}"
+    return None
+
+
+def _extract_chat_content(data) -> str | None:
+    """Pull ``choices[0].message.content`` out of a chat/completions body.
+
+    ``content`` is normally a string; the multi-part list form (the same shape
+    requests use) is accepted too and flattened, since nothing in the spec
+    forbids a model answering that way.
+    """
+    if not isinstance(data, dict):
+        return None
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            p.get("text", "")
+            for p in content
+            if isinstance(p, dict) and isinstance(p.get("text"), str)
+        ]
+        return "".join(parts) if parts else None
+    return None
+
+
+def _extract_response_output_text(data) -> str | None:
+    """Concatenate every ``output_text`` part in a Responses API body.
+
+    ``output`` is a list whose items may be ``reasoning`` records as well as the
+    assistant ``message``, and the position of the message is **not** fixed —
+    a live ``gpt-5-6-luna`` call with ``effort=medium`` came back with the
+    message at index 0 and no reasoning item at all, so indexing ``output[1]``
+    (as the published example does) is wrong. Scan instead.
+    """
+    if not isinstance(data, dict):
+        return None
+    output = data.get("output")
+    if not isinstance(output, list):
+        return None
+    parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for part in item.get("content") or []:
+            if isinstance(part, dict) and part.get("type") == "output_text":
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+    return "".join(parts) if parts else None
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +470,164 @@ class KieClient:
         logger.info("Omni task created: taskId=%s", task_id)
         return task_id
 
+    def chat_completion(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        response_format: dict | None = None,
+        timeout_sec: float | None = None,
+    ) -> str:
+        """
+        Call a kie.ai model on the OpenAI-compatible chat route and return its text.
+
+        This is a **synchronous** endpoint — unlike :meth:`create_task` and
+        friends there is no taskId and nothing to poll; the model's answer comes
+        back in the same response. Used by :mod:`app.localisation` to transcribe
+        a source clip (see docs/localisation.md §4.2).
+
+        Two things about this route are unlike the jobs API:
+
+        * The model is a **URL path segment**, not a body field:
+          ``POST https://api.kie.ai/{model}/v1/chat/completions``. An unknown
+          slug comes back as ``code=422 "The model is not supported"``.
+        * Every media type — image, video, audio, PDF — travels in the
+          ``image_url`` envelope::
+
+              {"type": "image_url", "image_url": {"url": "<public url>"}}
+
+          Produce that URL with :meth:`upload_file`.
+
+        Args:
+            model: kie.ai model slug, e.g. ``gemini-2.5-pro``. Goes in the path.
+            messages: OpenAI-style message list. Content may be a plain string
+                or a list of ``{"type": "text"|"image_url", ...}`` parts.
+            response_format: Optional ``{"type": "json_schema", "json_schema":
+                {...}}`` block. Sent when given, but treat it as a hint, not a
+                guarantee: Gemini 2.5 Pro has been observed returning a
+                ```` ```json ```` fenced object even with ``strict: true``, so
+                callers must still parse tolerantly.
+            timeout_sec: Per-request timeout. Defaults to the client's own 60s,
+                which is usually too tight for a request carrying a video.
+
+        Returns:
+            ``choices[0].message.content`` as a string.
+
+        Raises:
+            KieChatError: On HTTP errors, on kie.ai's HTTP-200 error envelope,
+                or when the response carries no text content.
+        """
+        url = f"{self._jobs_base}/{model}/v1/chat/completions"
+        payload: dict = {"messages": messages, "stream": False}
+        if response_format is not None:
+            payload["response_format"] = response_format
+        logger.info(
+            "chat_completion (model=%s, messages=%d, json_schema=%s)",
+            model, len(messages), response_format is not None,
+        )
+
+        try:
+            data = self._chat_with_retry(url, payload, timeout_sec)
+        except KieChatError:
+            raise
+        except Exception as exc:
+            raise KieChatError(f"chat_completion failed: {exc}") from exc
+
+        err = _envelope_error(data)
+        if err:
+            raise KieChatError(f"chat_completion {model}: {err}")
+
+        content = _extract_chat_content(data)
+        if content is None:
+            raise KieChatError(
+                f"chat_completion {model}: no message content in response: "
+                f"{str(data)[:300]}"
+            )
+        logger.info(
+            "chat_completion ok (model=%s, chars=%d, usage=%s)",
+            model, len(content), data.get("usage"),
+        )
+        return content
+
+    def create_response(
+        self,
+        *,
+        model: str,
+        input_text: str,
+        reasoning_effort: str = "medium",
+        timeout_sec: float | None = None,
+    ) -> str:
+        """
+        Call a kie.ai model on the Responses route and return its text.
+
+        Also synchronous (no taskId). Used by :mod:`app.localisation` to
+        translate a transcript (see docs/localisation.md §4.2). The shape is
+        deliberately *not* shared with :meth:`chat_completion` — this route is a
+        different API, not a variant of the same one:
+
+        * the model travels in the **body**, the path is the fixed
+          ``/codex/v1/responses``;
+        * content parts are ``input_text`` / ``input_image`` — there is no
+          ``image_url`` envelope and **no** ``response_format``, so JSON output
+          has to be asked for in the prompt and parsed tolerantly;
+        * ``reasoning.effort`` defaults to ``low`` server-side, which is why
+          this method defaults it to ``medium``;
+        * the answer is an ``output`` **list** that may contain ``reasoning``
+          items before the assistant ``message``.
+
+        Args:
+            model: kie.ai model id, e.g. ``gpt-5-6-luna``. Goes in the body.
+            input_text: The single user turn, sent as one ``input_text`` part.
+            reasoning_effort: ``low`` | ``medium`` | ``high`` | ``xhigh``.
+            timeout_sec: Per-request timeout; defaults to the client's own 60s.
+
+        Returns:
+            The assistant message text (all ``output_text`` parts concatenated).
+
+        Raises:
+            KieChatError: On HTTP errors, on kie.ai's HTTP-200 error envelope,
+                or when the response carries no ``output_text``.
+        """
+        url = f"{self._jobs_base}/codex/v1/responses"
+        payload = {
+            "model": model,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": input_text}],
+                }
+            ],
+            "reasoning": {"effort": reasoning_effort},
+            "stream": False,
+        }
+        logger.info(
+            "create_response (model=%s, effort=%s, chars=%d)",
+            model, reasoning_effort, len(input_text),
+        )
+
+        try:
+            data = self._chat_with_retry(url, payload, timeout_sec)
+        except KieChatError:
+            raise
+        except Exception as exc:
+            raise KieChatError(f"create_response failed: {exc}") from exc
+
+        err = _envelope_error(data)
+        if err:
+            raise KieChatError(f"create_response {model}: {err}")
+
+        content = _extract_response_output_text(data)
+        if not content:
+            raise KieChatError(
+                f"create_response {model}: no output_text in response "
+                f"(status={data.get('status')!r}): {str(data.get('output'))[:300]}"
+            )
+        logger.info(
+            "create_response ok (model=%s, chars=%d, usage=%s)",
+            model, len(content), data.get("usage"),
+        )
+        return content
+
     def get_task(self, task_id: str) -> dict:
         """
         Fetch the current status of a task.
@@ -537,6 +776,29 @@ class KieClient:
         return resp.json()
 
     @_transient_retry
+    def _chat_with_retry(
+        self, url: str, payload: dict, timeout_sec: float | None
+    ) -> dict:
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        kwargs: dict = {}
+        if timeout_sec is not None:
+            kwargs["timeout"] = timeout_sec
+        resp = self._client.post(url, headers=headers, json=payload, **kwargs)
+        if resp.status_code >= 500:
+            resp.raise_for_status()
+        if not resp.is_success:
+            raise KieChatError(f"LLM HTTP {resp.status_code}: {resp.text[:300]}")
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise KieChatError(
+                f"LLM response is not JSON: {resp.text[:300]}"
+            ) from exc
+
+    @_transient_retry
     def _get_task_with_retry(self, url: str, task_id: str) -> dict:
         headers = {"Authorization": f"Bearer {self._api_key}"}
         resp = self._client.get(url, headers=headers, params={"taskId": task_id})
@@ -551,3 +813,26 @@ class KieClient:
         if data is None:
             raise KieTaskError(f"recordInfo response missing 'data': {body}")
         return data
+
+
+# ---------------------------------------------------------------------------
+# Module-level shared instance
+# ---------------------------------------------------------------------------
+
+_shared_client: KieClient | None = None
+_shared_client_lock = threading.Lock()
+
+
+def get_shared_client() -> KieClient:
+    """Return a lazily-created, module-level KieClient (thread-safe).
+
+    Used by callers that make a single request and have no client of their own to
+    thread through (app/localisation.py). Everything on the run path is handed an
+    explicit client so tests can inject a fake.
+    """
+    global _shared_client
+    if _shared_client is None:
+        with _shared_client_lock:
+            if _shared_client is None:
+                _shared_client = KieClient()
+    return _shared_client

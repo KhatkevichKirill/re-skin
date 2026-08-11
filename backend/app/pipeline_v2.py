@@ -35,13 +35,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 from . import ai_models
+from . import localisation as localisation_mod
 from . import media as media_mod
 from . import face as face_mod
+from . import project_types
+from . import scene as scene_mod
 from .config import settings
 from .db import get_session
 from .gdrive_client import GDriveClient
 from .kie_client import KieClient
 from .models import Run, RunSegment, SegmentDef, VideoProject
+from .project_types import spec_for
 from .pipeline import (
     _map_omni_aspect,
     resolve_reference_urls,
@@ -94,6 +98,56 @@ def _default_gdrive() -> GDriveClient:
     return GDriveClient()
 
 
+def _scene_segments(
+    video_path: str,
+    *,
+    duration_sec: float,
+    fps: float | None,
+    max_segment_sec: float,
+) -> list:
+    """Build swap ProposedSegments from PySceneDetect scene cuts.
+
+    Cuts on scene changes (min length = ``settings.SCENE_MIN_LEN_SECONDS``),
+    then splits any scene longer than *max_segment_sec* so every clip fits the
+    model's per-clip cap. A single-shot video (no cuts found) becomes one
+    full-length swap range. Every range is marked ``swap`` — the subtitle-removal
+    flow processes the whole video by default.
+    """
+    ranges = scene_mod.detect_scenes(
+        video_path, fps=fps, min_scene_len_sec=settings.SCENE_MIN_LEN_SECONDS
+    )
+    if not ranges:
+        ranges = [(0.0, duration_sec)]
+
+    # Clamp to the probed duration (the last scene's end can round slightly past
+    # it) so the partition stays within [0, duration] before the cap-split.
+    clamped = [
+        (max(0.0, s), min(e, duration_sec)) for s, e in ranges if e - s > 1e-6
+    ]
+    capped = face_mod.split_max_duration(clamped, max_sec=max_segment_sec)
+
+    return [
+        face_mod.ProposedSegment(
+            start_sec=s,
+            end_sec=e,
+            has_face=False,
+            action="swap",
+        )
+        for s, e in capped
+    ]
+
+
+# Why a hook_split hook ended up different from the length the operator asked
+# for. Returned by :func:`hook_split_plan` so callers — the segmentation below
+# AND the project page, which has to explain the clamp to the operator who is
+# looking at its consequences — branch on a value instead of re-deriving the
+# comparison and drifting from it.
+HOOK_CLAMP_NONE = ""          # got exactly what was asked for
+HOOK_CLAMP_FLOOR = "floor"    # padded UP to the shortest generatable clip
+HOOK_CLAMP_CAP = "cap"        # cut DOWN by the project's segmentation cap
+HOOK_CLAMP_DURATION = "duration"  # cut DOWN by the length of the video
+
+
 def effective_segment_cap_sec(max_segment_sec: Optional[float]) -> float:
     """The segmentation cap analysis will actually apply to a project.
 
@@ -115,6 +169,165 @@ def effective_segment_cap_sec(max_segment_sec: Optional[float]) -> float:
     if cap is None:
         cap = ai_models.UNIVERSAL_MAX_SEGMENT_SEC
     return min(float(cap), ai_models.ABSOLUTE_MAX_SEGMENT_SEC)
+
+
+def hook_split_plan(
+    *,
+    duration_sec: float | None,
+    hook_sec: float | None,
+    max_segment_sec: float,
+) -> dict:
+    """Resolve a requested hook length into the one analysis will really cut.
+
+    This is the clamp described in the docstring of
+    :func:`_hook_split_segments`, lifted out of it so that the *reason* a hook
+    changed length is a value two callers can read rather than a log line only
+    the worker ever sees:
+
+    * :func:`_hook_split_segments` uses ``effective`` to lay down the segments;
+    * ``web_v2`` uses the whole dict to tell the operator, on the page where
+      the hook is set and next to the segments it produced, that the 15s they
+      asked for became a 10s cut and which of the two bounds did it.
+
+    That second caller is the entire point. The clamp is correct but was
+    invisible: nothing outside the worker log distinguished "your hook is 10s
+    because you asked for 10s" from "your hook is 10s because your segmentation
+    cap is 10s", and the two want opposite fixes.
+
+    *duration_sec* may be ``None`` — the project page renders before analysis
+    has probed the video, and a hook can still be clamped by the cap then. With
+    an unknown duration the ceiling is the cap alone and
+    ``HOOK_CLAMP_DURATION`` can never be the answer.
+    """
+    # NULL hook_sec → the configured default. Tested with `or`, not `is None`,
+    # per docs/localisation.md §5: unlike max_segment_sec (where 0.0 is a
+    # meaningful, if wrong, operator choice worth surfacing) a 0-second hook is
+    # never anything but a mistake, and degrading it to the default beats
+    # clamping it up into a 4-second hook nobody asked for.
+    requested = float(hook_sec or settings.LOCALISATION_DEFAULT_HOOK_SEC)
+
+    floor = min(spec.min_clip_sec for spec in ai_models.AI_MODELS.values())
+    cap = float(max_segment_sec)
+    duration = None if duration_sec is None else float(duration_sec)
+    ceiling = cap if duration is None else min(cap, duration)
+
+    # max() first, then min(): on a source shorter than the floor (a 3s upload)
+    # the duration bound wins, so the hook is the whole video rather than a
+    # segment that runs off the end of it.
+    effective = min(max(requested, floor), ceiling)
+
+    if effective > requested + 1e-6:
+        reason = HOOK_CLAMP_FLOOR
+    elif effective < requested - 1e-6:
+        # Both bounds can bind at once (cap == duration); name the video, which
+        # is the one the operator cannot argue with. `<=` rather than `<` for
+        # that tie.
+        reason = (
+            HOOK_CLAMP_DURATION
+            if duration is not None and duration <= cap
+            else HOOK_CLAMP_CAP
+        )
+    else:
+        reason = HOOK_CLAMP_NONE
+
+    return {
+        "requested": requested,
+        "effective": effective,
+        "floor": floor,
+        "cap": cap,
+        "duration": duration,
+        "reason": reason,
+        # True when the request is the configured default rather than a number
+        # the operator typed, so the UI can say "default" instead of implying
+        # they chose it.
+        "defaulted": not hook_sec,
+    }
+
+
+def _hook_split_segments(
+    *,
+    duration_sec: float,
+    hook_sec: float | None,
+    max_segment_sec: float,
+) -> list:
+    """Build the localisation partition: swap over the hook, keep over the rest.
+
+    A ``localisation`` project re-generates only the **hook** — the opening
+    seconds whose speech is re-spoken in the target language. The rest of the
+    source is proposed as a single ``keep`` segment, so the delivered video is
+    the localised hook followed by the original remainder, untouched.
+
+    (In the private deployment this branch ports from, that keep segment is
+    excluded from the run's stitch plan and a language-matched tail from a clip
+    library is stitched on instead. The clip library is not part of this repo, so
+    here the remainder is simply kept — trim or replace it downstream if the
+    original tail is not what you want to deliver.)
+
+    *hook_sec* is clamped into what a model can actually generate:
+
+    ``lo`` — the smallest ``min_clip_sec`` in the model registry. A swap clip
+    shorter than that is rejected outright by the backend (Seedance 2.5 refuses
+    anything under 4s), so a 0.5s hook would produce a segment no run could
+    ever submit. Clamping up gives the operator a hook that works instead of a
+    project that fails at submit time. The floor is read off the registry rather
+    than hard-coded so adding a pickier model moves it automatically.
+
+    ``hi`` — ``min(max_segment_sec, duration_sec)``. The segmentation cap is
+    what keeps every proposed segment generatable by the models the project has
+    committed to (see the long note in analyze_project); a hook may not escape
+    it. The duration bound is the obvious one: a hook cannot be longer than the
+    video it is cut from.
+
+    Because the clamp already bounds the hook by the cap, the cap-split below is
+    a no-op today. It is applied anyway — the §5 pseudocode has it, and it is
+    the difference between "one segment that is silently too long" and "two
+    valid segments" if the clamp order is ever loosened.
+
+    A hook that covers the whole video yields the swap segment(s) alone: an
+    empty trailing keep segment would be a zero-length clip the stitch would
+    have to special-case.
+
+    The clamp itself lives in :func:`hook_split_plan` — the project page shows
+    the operator what it did, and one implementation is the only way the
+    explanation on screen can be trusted to match the segments underneath it.
+    """
+    plan = hook_split_plan(
+        duration_sec=duration_sec,
+        hook_sec=hook_sec,
+        max_segment_sec=max_segment_sec,
+    )
+    clamped = plan["effective"]
+    if plan["reason"]:
+        log.info(
+            "hook_split: hook %.2fs clamped to %.2fs by %s (floor=%.2fs, "
+            "ceiling=min(cap %.2fs, duration %.2fs))",
+            plan["requested"], clamped, plan["reason"], plan["floor"],
+            max_segment_sec, duration_sec,
+        )
+
+    proposed = [
+        face_mod.ProposedSegment(
+            start_sec=s, end_sec=e, has_face=False, action="swap",
+        )
+        for s, e in face_mod.split_max_duration(
+            [(0.0, clamped)], max_sec=max_segment_sec
+        )
+    ]
+
+    # Trailing keep segment, omitted when the hook covers the whole video. The
+    # comparison carries a tolerance because a hook clamped to exactly the
+    # duration (the usual outcome for a source shorter than the default hook)
+    # would otherwise leave a keep segment of a few float-error microseconds.
+    if duration_sec - clamped > 1e-6:
+        proposed.append(
+            face_mod.ProposedSegment(
+                start_sec=clamped,
+                end_sec=float(duration_sec),
+                has_face=False,
+                action="keep",
+            )
+        )
+    return proposed
 
 
 # ---------------------------------------------------------------------------
@@ -187,13 +400,74 @@ def analyze_project(project_id: str, *, detector=None) -> None:
                 project_id, max_segment_sec, project.max_segment_sec,
                 ",".join(ai_models.models_supporting_segment_len(max_segment_sec)),
             )
-            proposed = face_mod.propose_segments(
-                local,
-                duration_sec=info.duration_sec,
-                max_segment_sec=max_segment_sec,
-                detector=detector,
-            )
-            log.info("propose_segments returned %d segments", len(proposed))
+            # One dispatch on spec.segmentation, not a chain of booleans: the
+            # strategies are mutually exclusive, and with a field the registry
+            # decides which one runs instead of the order of this if/elif
+            # (docs/localisation.md §5). An unknown value falls through to the
+            # blank slate, which is always safe — the operator can segment by
+            # hand — rather than crashing analysis on a row written by a newer
+            # deploy.
+            spec = spec_for(project.project_type)
+            if spec.segmentation == project_types.SEG_DETECT_FACES:
+                # Face-swap: InsightFace-driven swap/keep partition.
+                proposed = face_mod.propose_segments(
+                    local,
+                    duration_sec=info.duration_sec,
+                    max_segment_sec=max_segment_sec,
+                    detector=detector,
+                )
+                log.info("propose_segments returned %d segments", len(proposed))
+            elif spec.segmentation == project_types.SEG_SCENE_DETECT:
+                # Subtitle-removal: cut on scene changes (PySceneDetect), cap each
+                # scene at the per-clip limit, and mark every scene "swap" so the
+                # whole video is processed by default. The operator can flip any
+                # scene to "keep" to skip it (e.g. a scene with no on-screen text).
+                proposed = _scene_segments(
+                    local,
+                    duration_sec=float(info.duration_sec),
+                    fps=info.fps,
+                    max_segment_sec=max_segment_sec,
+                )
+                log.info(
+                    "scene detection produced %d swap segment(s) for project_type=%s",
+                    len(proposed), project.project_type,
+                )
+            elif spec.segmentation == project_types.SEG_HOOK_SPLIT:
+                # Localisation: swap over the hook, keep over the discarded
+                # tail. Unlike the other two strategies this one looks at
+                # nothing but the clock — where the hook ends is the operator's
+                # editorial call (VideoProject.hook_sec), not something a
+                # detector can find, so no frames are read here at all.
+                proposed = _hook_split_segments(
+                    duration_sec=float(info.duration_sec),
+                    hook_sec=project.hook_sec,
+                    max_segment_sec=max_segment_sec,
+                )
+                log.info(
+                    "hook_split produced %d segment(s) for project_type=%s "
+                    "(hook_sec=%s, default=%.1fs): %s",
+                    len(proposed), project.project_type, project.hook_sec,
+                    settings.LOCALISATION_DEFAULT_HOOK_SEC,
+                    ", ".join(
+                        f"{ps.action}[{ps.start_sec:.2f},{ps.end_sec:.2f}]"
+                        for ps in proposed
+                    ),
+                )
+            else:
+                # Blank slate: one full-length "keep" segment the operator splits.
+                proposed = [
+                    face_mod.ProposedSegment(
+                        start_sec=0.0,
+                        end_sec=float(info.duration_sec),
+                        has_face=False,
+                        action="keep",
+                    )
+                ]
+                log.info(
+                    "project_type=%s — seeded 1 full-length keep segment",
+                    project.project_type,
+                )
+
 
             # Idempotent re-analyze: clear any existing SegmentDefs first so a
             # re-run replaces the segmentation instead of duplicating it.
@@ -241,6 +515,148 @@ def analyze_project(project_id: str, *, detector=None) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# transcribe_project — the localisation side channel
+# ---------------------------------------------------------------------------
+
+# video_projects.transcript_status values (docs/localisation.md §3.1). Plain
+# strings, not an enum: this is one task's own state, nothing in the
+# ProjectStatus state machine gates on it (see the column comment in models.py).
+TRANSCRIPT_PENDING = "pending"
+TRANSCRIPT_RUNNING = "running"
+TRANSCRIPT_READY = "ready"
+TRANSCRIPT_FAILED = "failed"
+TRANSCRIPT_EMPTY = "empty"
+
+
+def transcribe_project(project_id: str, *, kie=None) -> None:
+    """
+    Transcribe a project's source video into ``VideoProject.transcript``.
+
+    This is a **side channel**, not a pipeline phase. It runs as its own RQ job
+    after analysis (docs/localisation.md §8) and touches nothing analysis or a
+    run depends on: no ProjectStatus transition, no SegmentDefs, no
+    ``error_message``. A Gemini outage costs the operator the automatic
+    translation and nothing else — they paste a script by hand, exactly as they
+    did before this feature existed.
+
+    Three outcomes, all recorded on the project and none of them raised:
+
+    ``ready``   a transcript with at least one line.
+    ``empty``   the model heard no speech. A SUCCESS: a wordless hook is legal,
+                and it is stored as its own status rather than as an error so
+                the UI can say "no speech in the hook" and disable Translate
+                instead of offering a pointless retry.
+    ``failed``  :class:`~app.localisation.LocalisationError` (API down, bad key,
+                unparseable answer) or a missing source file, with the message
+                in ``transcript_error`` for the operator to read.
+
+    Idempotent and safe to re-run: every attempt overwrites the three transcript
+    columns and nothing else, so re-running is how the operator retries. A
+    failed attempt deliberately LEAVES a previously-good transcript in place —
+    losing a good one to a transient outage would be strictly worse than showing
+    a stale one next to a "failed" badge.
+
+    The model call happens between two short sessions rather than inside one:
+    transcription is a single HTTP request that can legitimately take minutes
+    (``settings.LOCALISATION_TIMEOUT_SEC`` defaults to 600s), and holding a DB
+    connection open across it would pin a pool slot for the whole wait.
+
+    Args:
+        project_id: VideoProject to transcribe.
+        kie: Optional KieClient, forwarded to
+            :func:`app.localisation.transcribe_video` (tests inject a fake).
+
+    Raises:
+        ValueError: If the project does not exist — a genuine programming/
+            scheduling bug, unlike every provider failure above, so it is NOT
+            swallowed into transcript_error.
+    """
+    log.info("transcribe_project start: project_id=%s", project_id)
+
+    # --- 1. resolve the source and claim the attempt -----------------------
+    with get_session() as session:
+        project: VideoProject = session.get(VideoProject, project_id)
+        if project is None:
+            raise ValueError(f"VideoProject not found: {project_id}")
+
+        # analyze_project has already downloaded (gdrive) the source by the
+        # time this job runs, so the local path is simply read here —
+        # re-downloading would race with an in-flight re-analysis for a file we
+        # already have.
+        local = project.source_local_path
+        if not local or not os.path.exists(local):
+            msg = f"source file not found at {local!r}"
+            log.error("transcribe_project: project_id=%s %s", project_id, msg)
+            project.transcript_status = TRANSCRIPT_FAILED
+            project.transcript_error = msg
+            session.commit()
+            return
+
+        project.transcript_status = TRANSCRIPT_RUNNING
+        project.transcript_error = None
+        session.commit()
+
+    # --- 2. the model call (no session held) -------------------------------
+    try:
+        transcript = localisation_mod.transcribe_video(local, kie=kie)
+    except localisation_mod.LocalisationError as exc:
+        log.warning(
+            "transcribe_project: project_id=%s transcription failed: %s",
+            project_id, exc,
+        )
+        _write_transcript_failure(project_id, str(exc))
+        return
+    except Exception as exc:  # noqa: BLE001 — see below
+        # Anything the localisation layer did not classify (a bug there, an
+        # unexpected library error) is still recorded rather than left to the RQ
+        # failed registry: the operator's view of this feature is the project
+        # page, and a transcript that is silently NULL forever is the one
+        # outcome the UI cannot explain.
+        log.exception("transcribe_project: project_id=%s unexpected error", project_id)
+        _write_transcript_failure(project_id, str(exc))
+        return
+
+    # --- 3. record the result ----------------------------------------------
+    lines = transcript.get("lines") or []
+    status = TRANSCRIPT_READY if lines else TRANSCRIPT_EMPTY
+
+    with get_session() as session:
+        project = session.get(VideoProject, project_id)
+        if project is None:
+            # Deleted while the model was thinking — nothing to write to.
+            log.warning(
+                "transcribe_project: project %s disappeared mid-transcription",
+                project_id,
+            )
+            return
+        project.transcript = transcript
+        project.transcript_status = status
+        project.transcript_error = None
+        session.commit()
+
+    log.info(
+        "transcribe_project done: project_id=%s status=%s language=%r lines=%d",
+        project_id, status, transcript.get("source_language"), len(lines),
+    )
+
+
+def _write_transcript_failure(project_id: str, message: str) -> None:
+    """Record a failed transcription attempt, keeping any earlier transcript."""
+    with get_session() as session:
+        project = session.get(VideoProject, project_id)
+        if project is None:
+            return
+        project.transcript_status = TRANSCRIPT_FAILED
+        project.transcript_error = message
+        session.commit()
+
+
+# ---------------------------------------------------------------------------
+# process_run — parallel submit + concurrent poll
+# ---------------------------------------------------------------------------
+
+
 def _parse_result_url(data: dict) -> Optional[str]:
     """Extract resultUrls[0] from a recordInfo 'data' dict (resultJson is a string)."""
     raw = data.get("resultJson") or "{}"
@@ -270,6 +686,7 @@ def _submit_swap_segment_isolated(
     clip_dst: str,
     ref_urls: list,
     prompt_override: Optional[str],
+    mute_audio: bool = False,
     generate_audio: Optional[bool] = None,
     kie: KieClient,
     kie_factory: Optional[Callable[[], KieClient]] = None,
@@ -284,6 +701,10 @@ def _submit_swap_segment_isolated(
     same already-uploaded clip (used by the in-poll retry path). Returns ``None``
     when the segment was skipped (marked failed — e.g. a segment longer than the
     selected model's per-clip ceiling).
+
+    *mute_audio* mirrors the project's "remove original audio" setting: the clip
+    is cut video-only so the model generates audio from the prompt instead of
+    reacting to the source soundtrack.
 
     *generate_audio* is the already-decided answer to "ask this model to write an
     audio track?" — computed once per run in :func:`process_run` and carried
@@ -391,10 +812,16 @@ def _submit_swap_segment_isolated(
             # ≤50ms, under one frame at any fps we handle. Clamp and move on.
             clip_end = clip_start + model_max_clip
 
-    # Gemini Omni fails when its reference clip carries an audio track; send it
-    # video-only (the original audio is re-applied during stitch via the
-    # "original" audio_mode). Seedance clips keep their audio.
-    media_mod.cut_clip(source, clip_start, clip_end, clip_dst, include_audio=not is_omni)
+    # Two reasons to send a video-only clip:
+    #   - Gemini Omni fails when its reference clip carries an audio track.
+    #   - The project has "remove original audio" set, so the model can't hear
+    #     the source soundtrack and generates audio from the prompt instead.
+    # Either way the original audio is still available at stitch time via
+    # audio_mode="original" (the source file itself is never modified).
+    include_audio = not is_omni and not mute_audio
+    media_mod.cut_clip(
+        source, clip_start, clip_end, clip_dst, include_audio=include_audio
+    )
     t_cut = time.monotonic()
 
     with get_session() as session:
@@ -965,6 +1392,7 @@ def process_run(
                     "clip_dst": os.path.join(c_dir, f"clip_{sd.index:04d}.mp4"),
                     "ref_urls": list(effective_ref_urls),
                     "prompt_override": rs.prompt_override,
+                    "mute_audio": bool(project.mute_source),
                     "generate_audio": generate_audio,
                 })
 

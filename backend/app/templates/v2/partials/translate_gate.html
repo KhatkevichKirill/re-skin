@@ -1,0 +1,45 @@
+{# The New Run form's transcript-derived controls: the "Translate" button and
+   the line explaining why it is off (docs/localisation.md §7).
+
+   This is the ONLY part of the New Run form that depends on the transcript,
+   and therefore the only part that may be re-rendered while the operator is
+   using the form — the prompt textarea and the .seg-prompt-field textareas
+   next to it hold typed work, which is why #status-content stops polling at
+   status=ready and must keep doing so.
+
+   Rendered from ONE file in two places so the two can never disagree:
+     · inline, inside #translate-gate, whenever the New Run form is built
+       (page render and status-fragment alike), and
+     · as an hx-swap-oob="true" payload on the transcript panel's polling
+       fragment, which is what makes the button converge in BOTH directions —
+       enabled when transcription finishes, disabled again when a
+       re-transcription starts — without a reload and without touching a
+       single character of the form around it.
+
+   Context: `project` and `transcript_status`, both supplied by
+   web_v2._new_run_defaults and web_v2._transcript_context off the same column. #}
+<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px">
+  <button type="button" class="btn btn-secondary" id="translate-btn"
+          data-transcript-status="{{ transcript_status or "" }}"
+          onclick="translateHook('{{ project.id }}')"
+          {% if transcript_status != "ready" %}disabled{% endif %}>Translate</button>
+</div>
+{% if transcript_status != "ready" %}
+<p class="hint" id="translate-disabled-reason" style="font-weight:600; margin:6px 0 0">
+  {% if transcript_status is none %}
+  No transcript yet — run <strong>Transcribe</strong> in the Transcript panel above first.
+  {% elif transcript_status in ("pending", "running") %}
+  Transcription is still running — the panel above updates by itself, and this
+  button switches on by itself the moment it lands.
+  {% elif transcript_status == "empty" %}
+  No speech was found in this video, so there is nothing to translate. Write the
+  prompt by hand, or fix the transcript above.
+  {% elif transcript_status == "failed" %}
+  Transcription failed — see the Transcript panel above. You can still paste a
+  translation into the prompt by hand, or type the lines into the panel and Save
+  to switch this button back on.
+  {% else %}
+  The transcript is not ready ({{ transcript_status }}).
+  {% endif %}
+</p>
+{% endif %}

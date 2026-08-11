@@ -44,6 +44,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
+from app import ai_models
 from app.models import Run, RunSegment, SegmentDef, VideoProject
 from app.state_machine import ProjectStatus, RunStatus, SegmentStatus
 from app.kie_client import KieTaskFailed
@@ -405,7 +406,10 @@ def _create_project(
     *,
     source_type: str = "upload",
     status: ProjectStatus = ProjectStatus.created,
+    **kwargs,
 ) -> str:
+    """Create a VideoProject row. ``**kwargs`` sets any other column directly
+    (project_type, mute_source, hook_sec, max_segment_sec, …)."""
     project = VideoProject(
         id=str(uuid.uuid4()),
         source_type=source_type,
@@ -416,6 +420,7 @@ def _create_project(
         ),
         source_local_path=synthetic_video if source_type == "upload" else None,
         status=status,
+        **kwargs,
     )
     db_session.add(project)
     db_session.commit()
@@ -2291,3 +2296,825 @@ class TestClipTrimGivesBackRollContextFirst:
         # …but the segment's own [2.0, 11.5] is fully inside the clip.
         assert start <= 2.0 + 1e-6
         assert end >= 11.5 - 1e-6
+
+
+class TestHookSplitSegments:
+    """Unit tests for the partition itself, with no video and no DB.
+
+    _hook_split_segments reads a clock, not frames, so everything worth
+    checking is arithmetic: the clamp at both ends, and whether the trailing
+    keep segment exists.
+    """
+
+    # Smallest min_clip_sec in the model registry — the clamp floor.
+    FLOOR = min(s.min_clip_sec for s in ai_models.AI_MODELS.values())
+
+    def _split(self, **kw):
+        from app.pipeline_v2 import _hook_split_segments
+
+        kw.setdefault("max_segment_sec", 10.0)
+        return _hook_split_segments(**kw)
+
+    def test_hook_shorter_than_video_gives_swap_then_keep(self):
+        segs = self._split(duration_sec=25.0, hook_sec=8.0)
+        assert [(s.action, s.start_sec, s.end_sec) for s in segs] == [
+            ("swap", 0.0, 8.0),
+            ("keep", 8.0, 25.0),
+        ]
+        # Nothing was detected — the hook boundary is an editorial choice.
+        assert all(s.has_face is False for s in segs)
+
+    def test_hook_equal_to_video_omits_the_keep_segment(self):
+        segs = self._split(duration_sec=9.0, hook_sec=9.0, max_segment_sec=10.0)
+        assert [(s.action, s.start_sec, s.end_sec) for s in segs] == [
+            ("swap", 0.0, 9.0),
+        ]
+
+    def test_hook_longer_than_video_is_clamped_to_the_video(self):
+        """A 30s hook on a 9s upload is the whole clip, not a segment that runs
+        off the end of it."""
+        segs = self._split(duration_sec=9.0, hook_sec=30.0, max_segment_sec=30.0)
+        assert [(s.action, s.start_sec, s.end_sec) for s in segs] == [
+            ("swap", 0.0, 9.0),
+        ]
+
+    def test_hook_longer_than_the_cap_is_clamped_to_the_cap(self):
+        """The segmentation cap decides what the models can generate; the hook
+        does not get to escape it. The remainder becomes the keep segment."""
+        segs = self._split(duration_sec=25.0, hook_sec=22.0, max_segment_sec=10.0)
+        assert [(s.action, s.start_sec, s.end_sec) for s in segs] == [
+            ("swap", 0.0, 10.0),
+            ("keep", 10.0, 25.0),
+        ]
+
+    def test_a_larger_cap_lets_the_hook_through(self):
+        segs = self._split(duration_sec=40.0, hook_sec=22.0, max_segment_sec=30.0)
+        assert [(s.action, s.start_sec, s.end_sec) for s in segs] == [
+            ("swap", 0.0, 22.0),
+            ("keep", 22.0, 40.0),
+        ]
+
+    def test_hook_below_the_model_floor_is_clamped_up(self):
+        """A 0.5s swap clip is rejected by the backend at submit time — clamping
+        up yields a hook that can actually be generated."""
+        segs = self._split(duration_sec=25.0, hook_sec=0.5)
+        assert segs[0].end_sec == pytest.approx(self.FLOOR)
+        assert segs[1].start_sec == pytest.approx(self.FLOOR)
+
+    def test_floor_never_overruns_a_very_short_source(self):
+        """The duration bound wins over the floor: a 1s upload yields a 1s hook,
+        not a segment longer than the video."""
+        segs = self._split(duration_sec=1.0, hook_sec=0.1)
+        assert [(s.action, s.start_sec, s.end_sec) for s in segs] == [
+            ("swap", 0.0, 1.0),
+        ]
+
+    @pytest.mark.parametrize("empty", [None, 0.0])
+    def test_unset_hook_uses_the_configured_default(self, empty):
+        from app.config import settings
+
+        segs = self._split(
+            duration_sec=25.0, hook_sec=empty, max_segment_sec=30.0
+        )
+        assert segs[0].end_sec == pytest.approx(settings.LOCALISATION_DEFAULT_HOOK_SEC)
+
+    def test_segments_cover_the_whole_video_without_gaps(self):
+        segs = self._split(duration_sec=25.0, hook_sec=7.0)
+        assert segs[0].start_sec == 0.0
+        assert segs[-1].end_sec == pytest.approx(25.0)
+        for prev, nxt in zip(segs, segs[1:]):
+            assert prev.end_sec == pytest.approx(nxt.start_sec)
+
+
+class TestHookSplitPlan:
+    """The clamp as data — the thing the project page shows the operator.
+
+    Regression: the clamp was correct but INVISIBLE. A project created with
+    hook_sec=15 and the default 10s segmentation cap was cut swap[0,10] while
+    the row still said 15, and nothing outside the worker log distinguished
+    "your hook is 10s because you asked for 10s" from "your hook is 10s because
+    your cap is 10s" — two states that want opposite fixes. hook_split_plan is
+    what makes the difference reportable, so the *reason* is under test, not
+    just the number.
+    """
+
+    FLOOR = min(s.min_clip_sec for s in ai_models.AI_MODELS.values())
+
+    def _plan(self, **kw):
+        from app.pipeline_v2 import hook_split_plan
+
+        kw.setdefault("max_segment_sec", 10.0)
+        kw.setdefault("duration_sec", 25.0)
+        return hook_split_plan(**kw)
+
+    def test_hook_that_fits_reports_no_clamp(self):
+        from app.pipeline_v2 import HOOK_CLAMP_NONE
+
+        plan = self._plan(hook_sec=8.0)
+        assert plan["requested"] == pytest.approx(8.0)
+        assert plan["effective"] == pytest.approx(8.0)
+        assert plan["reason"] == HOOK_CLAMP_NONE
+        assert plan["defaulted"] is False
+
+    def test_the_segmentation_cap_is_named_as_the_reason(self):
+        """The reported bug: hook 15, default cap 10 → a 10s cut."""
+        from app.pipeline_v2 import HOOK_CLAMP_CAP
+
+        plan = self._plan(hook_sec=15.0, max_segment_sec=10.0, duration_sec=25.0)
+        assert plan["effective"] == pytest.approx(10.0)
+        assert plan["reason"] == HOOK_CLAMP_CAP
+        assert plan["cap"] == pytest.approx(10.0)
+
+    def test_a_video_shorter_than_the_hook_is_named_as_the_reason(self):
+        from app.pipeline_v2 import HOOK_CLAMP_DURATION
+
+        plan = self._plan(hook_sec=20.0, max_segment_sec=30.0, duration_sec=3.1)
+        assert plan["effective"] == pytest.approx(3.1)
+        assert plan["reason"] == HOOK_CLAMP_DURATION
+
+    def test_a_hook_below_the_model_floor_is_padded_up_and_says_so(self):
+        from app.pipeline_v2 import HOOK_CLAMP_FLOOR
+
+        plan = self._plan(hook_sec=0.5)
+        assert plan["effective"] == pytest.approx(self.FLOOR)
+        assert plan["reason"] == HOOK_CLAMP_FLOOR
+        assert plan["floor"] == pytest.approx(self.FLOOR)
+
+    def test_when_both_bounds_bind_the_video_is_named(self):
+        """cap == duration: blaming the cap would send the operator off to raise
+        a setting that would change nothing."""
+        from app.pipeline_v2 import HOOK_CLAMP_DURATION
+
+        plan = self._plan(hook_sec=30.0, max_segment_sec=10.0, duration_sec=10.0)
+        assert plan["reason"] == HOOK_CLAMP_DURATION
+
+    def test_unknown_duration_is_bounded_by_the_cap_alone(self):
+        """The page renders before analysis has probed the video; the cap can
+        still clamp, but the duration cannot be blamed for something unknown."""
+        from app.pipeline_v2 import HOOK_CLAMP_CAP
+
+        plan = self._plan(hook_sec=15.0, max_segment_sec=10.0, duration_sec=None)
+        assert plan["duration"] is None
+        assert plan["effective"] == pytest.approx(10.0)
+        assert plan["reason"] == HOOK_CLAMP_CAP
+
+    @pytest.mark.parametrize("empty", [None, 0.0])
+    def test_an_unset_hook_is_flagged_as_the_default(self, empty):
+        from app.config import settings
+
+        plan = self._plan(hook_sec=empty, max_segment_sec=30.0)
+        assert plan["defaulted"] is True
+        assert plan["requested"] == pytest.approx(
+            settings.LOCALISATION_DEFAULT_HOOK_SEC
+        )
+
+    @pytest.mark.parametrize(
+        "hook,cap,duration",
+        [
+            (8.0, 10.0, 25.0),    # fits
+            (15.0, 10.0, 25.0),   # capped
+            (20.0, 30.0, 3.1),    # shorter video
+            (0.5, 10.0, 25.0),    # below the floor
+            (None, 10.0, 25.0),   # default
+            (25.0, 30.0, 25.0),   # hook covers the whole video
+        ],
+    )
+    def test_the_plan_is_what_the_segments_actually_are(self, hook, cap, duration):
+        """The whole point of extracting the clamp: what the page says the hook
+        is must be the boundary the segmentation really lays down. If these two
+        ever disagree the UI is confidently lying about the rows underneath it.
+        """
+        from app.pipeline_v2 import _hook_split_segments, hook_split_plan
+
+        plan = hook_split_plan(
+            duration_sec=duration, hook_sec=hook, max_segment_sec=cap
+        )
+        segs = _hook_split_segments(
+            duration_sec=duration, hook_sec=hook, max_segment_sec=cap
+        )
+        swap_end = max(s.end_sec for s in segs if s.action == "swap")
+        assert swap_end == pytest.approx(plan["effective"])
+
+
+class TestEffectiveSegmentCap:
+    """The cap resolution analysis applies, exposed for the project page."""
+
+    def test_null_resolves_to_the_universal_default(self):
+        from app.pipeline_v2 import effective_segment_cap_sec
+
+        assert effective_segment_cap_sec(None) == pytest.approx(
+            ai_models.UNIVERSAL_MAX_SEGMENT_SEC
+        )
+
+    def test_a_cap_above_every_model_is_bounded(self):
+        from app.pipeline_v2 import effective_segment_cap_sec
+
+        assert effective_segment_cap_sec(9999.0) == pytest.approx(
+            ai_models.ABSOLUTE_MAX_SEGMENT_SEC
+        )
+
+    def test_zero_is_a_value_not_an_unset(self):
+        """`or` would redraw a broken 0.0 row as the 10s default and hide it;
+        analyze_project is equally scrupulous about this."""
+        from app.pipeline_v2 import effective_segment_cap_sec
+
+        assert effective_segment_cap_sec(0.0) == pytest.approx(0.0)
+
+
+class TestAnalyzeHookSplit:
+    """The same partition, end to end through analyze_project."""
+
+    def test_localisation_project_is_segmented_hook_then_keep(
+        self, db_engine, db_session, synthetic_video
+    ):
+        from app.pipeline_v2 import analyze_project
+
+        project_id = _create_project(
+            db_session, synthetic_video, project_type="localisation", hook_sec=6.0
+        )
+
+        analyze_project(project_id)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            assert project.status == ProjectStatus.ready
+            seg_defs = sorted(project.segments, key=lambda sd: sd.index)
+            assert [(sd.action, sd.start_sec) for sd in seg_defs] == [
+                ("swap", 0.0),
+                ("keep", 6.0),
+            ]
+            assert seg_defs[0].end_sec == pytest.approx(6.0)
+            assert seg_defs[1].end_sec == pytest.approx(_VIDEO_DURATION, abs=1.0)
+
+    def test_null_hook_sec_falls_back_to_the_default(
+        self, db_engine, db_session, synthetic_video
+    ):
+        from app.config import settings
+        from app.pipeline_v2 import analyze_project
+
+        project_id = _create_project(
+            db_session, synthetic_video, project_type="localisation"
+        )
+
+        analyze_project(project_id)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            seg_defs = sorted(
+                s.get(VideoProject, project_id).segments, key=lambda sd: sd.index
+            )
+        assert len(seg_defs) == 2
+        assert seg_defs[0].end_sec == pytest.approx(
+            settings.LOCALISATION_DEFAULT_HOOK_SEC
+        )
+
+    def test_hook_covering_the_whole_video_yields_one_segment(
+        self, db_engine, db_session, synthetic_video
+    ):
+        from app.pipeline_v2 import analyze_project
+
+        # Cap raised above the source duration so the hook is bounded by the
+        # video rather than by the segmentation cap.
+        project_id = _create_project(
+            db_session,
+            synthetic_video,
+            project_type="localisation",
+            hook_sec=999.0,
+            max_segment_sec=30.0,
+        )
+
+        analyze_project(project_id)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            seg_defs = list(project.segments)
+            assert len(seg_defs) == 1
+            assert seg_defs[0].action == "swap"
+            assert seg_defs[0].end_sec == pytest.approx(project.duration_sec)
+
+    def test_no_face_detection_runs_for_a_localisation_project(
+        self, db_session, synthetic_video, monkeypatch
+    ):
+        """hook_split must not touch InsightFace — the boundary is a number."""
+        import app.pipeline_v2 as pipeline_v2_mod
+        from app.pipeline_v2 import analyze_project
+
+        def _boom(*a, **kw):
+            raise AssertionError("propose_segments must not be called")
+
+        monkeypatch.setattr(pipeline_v2_mod.face_mod, "propose_segments", _boom)
+
+        project_id = _create_project(
+            db_session, synthetic_video, project_type="localisation"
+        )
+        analyze_project(project_id)
+
+
+# ---------------------------------------------------------------------------
+# Tests: transcribe_project (localisation side channel — §8)
+# ---------------------------------------------------------------------------
+
+
+_TRANSCRIPT = {
+    "schema_version": 1,
+    "model": "gemini-2.5-pro",
+    "prompt_version": "transcribe/v1",
+    "created_at": "2026-08-09T12:00:00+00:00",
+    "source_language": "en",
+    "lines": [
+        {
+            "id": 1,
+            "start": 0.0,
+            "end": 2.4,
+            "speaker": "the woman in the red jacket",
+            "on_screen": True,
+            "text": "Hey, what are you doing?",
+        }
+    ],
+    "on_screen_text": [],
+}
+
+
+class TestTranscribeProject:
+    def _patch_transcribe(self, monkeypatch, result):
+        """Patch localisation.transcribe_video; *result* is a dict or an
+        exception instance to raise. Returns the call log."""
+        import app.pipeline_v2 as pipeline_v2_mod
+
+        calls = []
+
+        def _fake(video_path, *, kie=None, model=None):
+            calls.append(video_path)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(
+            pipeline_v2_mod.localisation_mod, "transcribe_video", _fake
+        )
+        return calls
+
+    def _project(self, db_session, synthetic_video, **kw):
+        return _create_project(
+            db_session, synthetic_video, project_type="localisation", **kw
+        )
+
+    def test_ready_when_the_model_returns_lines(
+        self, db_engine, db_session, synthetic_video, monkeypatch
+    ):
+        from app.pipeline_v2 import transcribe_project
+
+        calls = self._patch_transcribe(monkeypatch, _TRANSCRIPT)
+        project_id = self._project(db_session, synthetic_video)
+
+        transcribe_project(project_id)
+
+        assert calls == [synthetic_video]
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            assert project.transcript_status == "ready"
+            assert project.transcript_error is None
+            assert project.transcript["source_language"] == "en"
+            assert len(project.transcript["lines"]) == 1
+            # The side channel touches nothing the pipeline depends on.
+            assert project.status == ProjectStatus.created
+            assert project.error_message is None
+
+    def test_empty_when_the_model_hears_no_speech(
+        self, db_engine, db_session, synthetic_video, monkeypatch
+    ):
+        """A wordless hook is a legal outcome, not a failure."""
+        from app.pipeline_v2 import transcribe_project
+
+        silent = dict(_TRANSCRIPT, lines=[])
+        self._patch_transcribe(monkeypatch, silent)
+        project_id = self._project(db_session, synthetic_video)
+
+        transcribe_project(project_id)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            assert project.transcript_status == "empty"
+            assert project.transcript_error is None
+            # Stored anyway — the detected language is still useful.
+            assert project.transcript["lines"] == []
+
+    def test_failed_records_the_message_and_does_not_raise(
+        self, db_engine, db_session, synthetic_video, monkeypatch
+    ):
+        from app.localisation import LocalisationError
+        from app.pipeline_v2 import transcribe_project
+
+        self._patch_transcribe(
+            monkeypatch, LocalisationError("transcribe: kie.ai 401 invalid key")
+        )
+        project_id = self._project(db_session, synthetic_video)
+
+        transcribe_project(project_id)  # must NOT raise
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            assert project.transcript_status == "failed"
+            assert "401" in project.transcript_error
+            # §8: a failed transcript leaves the project fully usable.
+            assert project.status == ProjectStatus.created
+            assert project.error_message is None
+
+    def test_failure_keeps_a_previously_good_transcript(
+        self, db_engine, db_session, synthetic_video, monkeypatch
+    ):
+        from app.localisation import LocalisationError
+        from app.pipeline_v2 import transcribe_project
+
+        project_id = self._project(db_session, synthetic_video)
+        self._patch_transcribe(monkeypatch, _TRANSCRIPT)
+        transcribe_project(project_id)
+
+        self._patch_transcribe(monkeypatch, LocalisationError("gemini is down"))
+        transcribe_project(project_id)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            assert project.transcript_status == "failed"
+            assert project.transcript["lines"], "the good transcript was lost"
+
+    def test_unexpected_error_is_recorded_too(
+        self, db_engine, db_session, synthetic_video, monkeypatch
+    ):
+        from app.pipeline_v2 import transcribe_project
+
+        self._patch_transcribe(monkeypatch, RuntimeError("boom"))
+        project_id = self._project(db_session, synthetic_video)
+
+        transcribe_project(project_id)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            assert project.transcript_status == "failed"
+            assert "boom" in project.transcript_error
+
+    def test_missing_source_file_fails_without_calling_the_model(
+        self, db_engine, db_session, monkeypatch
+    ):
+        from app.pipeline_v2 import transcribe_project
+
+        calls = self._patch_transcribe(monkeypatch, _TRANSCRIPT)
+        project = VideoProject(
+            id=str(uuid.uuid4()),
+            source_type="upload",
+            source_ref="/nonexistent/video.mp4",
+            source_local_path="/nonexistent/video.mp4",
+            project_type="localisation",
+            status=ProjectStatus.ready,
+        )
+        db_session.add(project)
+        db_session.commit()
+
+        transcribe_project(project.id)
+
+        assert calls == []
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            assert s.get(VideoProject, project.id).transcript_status == "failed"
+
+    def test_rerun_is_idempotent(
+        self, db_engine, db_session, synthetic_video, monkeypatch
+    ):
+        """Re-running is how the operator retries — it must converge, not
+        accumulate."""
+        from app.pipeline_v2 import transcribe_project
+
+        calls = self._patch_transcribe(monkeypatch, _TRANSCRIPT)
+        project_id = self._project(db_session, synthetic_video)
+
+        transcribe_project(project_id)
+        transcribe_project(project_id)
+
+        assert len(calls) == 2
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            assert project.transcript_status == "ready"
+            assert len(project.transcript["lines"]) == 1
+
+    def test_recovers_from_a_previous_failure(
+        self, db_engine, db_session, synthetic_video, monkeypatch
+    ):
+        from app.localisation import LocalisationError
+        from app.pipeline_v2 import transcribe_project
+
+        project_id = self._project(db_session, synthetic_video)
+        self._patch_transcribe(monkeypatch, LocalisationError("timeout"))
+        transcribe_project(project_id)
+
+        self._patch_transcribe(monkeypatch, _TRANSCRIPT)
+        transcribe_project(project_id)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            assert project.transcript_status == "ready"
+            assert project.transcript_error is None
+
+    def test_missing_project_raises(self, db_session):
+        """A scheduling bug, unlike every provider failure above."""
+        from app.pipeline_v2 import transcribe_project
+
+        with pytest.raises(ValueError, match="VideoProject not found"):
+            transcribe_project(str(uuid.uuid4()))
+
+
+# ---------------------------------------------------------------------------
+# Tests: process_run
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeNonFaceProjectTypes:
+    """Subtitle-removal / cover-change projects skip detection entirely."""
+
+    def _probe_30s(self, monkeypatch):
+        from app.media import MediaInfo
+        import app.pipeline_v2 as pv2
+
+        monkeypatch.setattr(
+            pv2.media_mod, "probe",
+            lambda _p: MediaInfo(duration_sec=30.0, width=320, height=240,
+                                 fps=25.0, aspect_ratio="4:3", has_audio=True),
+        )
+
+    # cover_change is the blank-slate type; subtitle_removal now scene-detects
+    # (covered by TestAnalyzeSubtitleRemovalScenes), so it is not listed here.
+    @pytest.mark.parametrize("project_type", ["cover_change"])
+    def test_seeds_one_full_length_keep_segment(
+        self, db_engine, db_session, tmp_path, monkeypatch, project_type
+    ):
+        import app.pipeline_v2 as pv2
+        from app.pipeline_v2 import analyze_project
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(
+            db_session, str(source), project_type=project_type
+        )
+        self._probe_30s(monkeypatch)
+
+        def boom(*_a, **_kw):  # detection must never be reached
+            raise AssertionError("propose_segments called for a non-face project")
+
+        monkeypatch.setattr(pv2.face_mod, "propose_segments", boom)
+
+        analyze_project(project_id)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            assert project.status == ProjectStatus.ready
+            assert project.duration_sec == pytest.approx(30.0)
+
+            segs = list(project.segments)
+            assert len(segs) == 1
+            assert segs[0].index == 0
+            assert segs[0].start_sec == pytest.approx(0.0)
+            assert segs[0].end_sec == pytest.approx(30.0)
+            assert segs[0].action == "keep"
+            assert segs[0].has_face is False
+
+    def test_face_swap_still_detects(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """The default type keeps calling propose_segments (no regression)."""
+        import app.pipeline_v2 as pv2
+        from app.pipeline_v2 import analyze_project
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(db_session, str(source))
+        self._probe_30s(monkeypatch)
+
+        calls: list = []
+        monkeypatch.setattr(
+            pv2.face_mod, "propose_segments",
+            lambda _p, **kw: calls.append(kw) or [],
+        )
+
+        analyze_project(project_id)
+        assert len(calls) == 1
+
+
+class TestAnalyzeSubtitleRemovalScenes:
+    """Subtitle-removal projects cut on scene changes and mark scenes swap."""
+
+    def _probe(self, monkeypatch, duration=30.0, fps=25.0):
+        from app.media import MediaInfo
+        import app.pipeline_v2 as pv2
+
+        monkeypatch.setattr(
+            pv2.media_mod, "probe",
+            lambda _p: MediaInfo(duration_sec=duration, width=320, height=240,
+                                 fps=fps, aspect_ratio="4:3", has_audio=True),
+        )
+
+    def test_uses_scene_cuts_marked_swap(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        import app.pipeline_v2 as pv2
+        from app.pipeline_v2 import analyze_project
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(
+            db_session, str(source), project_type="subtitle_removal"
+        )
+        self._probe(monkeypatch)
+
+        monkeypatch.setattr(
+            pv2.face_mod, "propose_segments",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("propose_segments called")),
+        )
+        captured = {}
+
+        def fake_detect(path, *, fps, min_scene_len_sec):
+            captured["fps"] = fps
+            captured["min_scene_len_sec"] = min_scene_len_sec
+            return [(0.0, 6.0), (6.0, 16.0), (16.0, 30.0)]
+
+        monkeypatch.setattr(pv2.scene_mod, "detect_scenes", fake_detect)
+
+        analyze_project(project_id)
+
+        assert captured["min_scene_len_sec"] == pytest.approx(4.0)
+        assert captured["fps"] == pytest.approx(25.0)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            project = s.get(VideoProject, project_id)
+            assert project.status == ProjectStatus.ready
+            segs = list(project.segments)
+            assert all(sd.action == "swap" for sd in segs)
+            assert all(sd.has_face is False for sd in segs)
+            assert segs[0].start_sec == pytest.approx(0.0)
+            assert segs[-1].end_sec == pytest.approx(30.0)
+            for sd in segs:
+                assert sd.end_sec - sd.start_sec <= 10.0 + 1e-6
+            assert len(segs) > 3
+            for a, b in zip(segs, segs[1:]):
+                assert b.start_sec == pytest.approx(a.end_sec)
+
+    def test_single_shot_falls_back_to_one_full_swap(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        import app.pipeline_v2 as pv2
+        from app.pipeline_v2 import analyze_project
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(
+            db_session, str(source), project_type="subtitle_removal"
+        )
+        self._probe(monkeypatch, duration=8.0)
+        monkeypatch.setattr(
+            pv2.scene_mod, "detect_scenes",
+            lambda path, *, fps, min_scene_len_sec: [],
+        )
+
+        analyze_project(project_id)
+
+        Session = sessionmaker(bind=db_engine)
+        with Session() as s:
+            segs = list(s.get(VideoProject, project_id).segments)
+            assert len(segs) == 1
+            assert segs[0].action == "swap"
+            assert segs[0].start_sec == pytest.approx(0.0)
+            assert segs[0].end_sec == pytest.approx(8.0)
+
+
+# ---------------------------------------------------------------------------
+# Tests: TR7 audio_mode forwarding
+# ---------------------------------------------------------------------------
+
+
+class TestProjectMuteSource:
+    """`mute_source` uploads video-only swap clips so the AI model writes its
+    own audio from the prompt instead of reacting to the source soundtrack.
+
+    The source file and the "keep" clips are untouched, so both audio_mode
+    options still work. Media is fully mocked — no ffmpeg needed.
+    """
+
+    # Same media mocks and Run factory as the Gemini class above; re-wrapped in
+    # staticmethod so `self.` access doesn't bind the instance as an argument.
+    _mock_media = staticmethod(TestGeminiOmniAudioAndLimit._mock_media)
+    _make_run = staticmethod(TestGeminiOmniAudioAndLimit._make_run)
+
+    @staticmethod
+    def _swap_then_keep(db_session, project_id):
+        """One swap segment followed by one keep segment.
+
+        The keep segment is what proves muting is scoped to the AI upload: it is
+        cut at stitch time and must still carry its audio.
+        """
+        db_session.add_all([
+            SegmentDef(project_id=project_id, index=0, start_sec=0.0, end_sec=5.0,
+                       has_face=True, action="swap"),
+            SegmentDef(project_id=project_id, index=1, start_sec=5.0, end_sec=10.0,
+                       has_face=False, action="keep"),
+        ])
+        db_session.commit()
+
+    def test_muted_project_uploads_video_only_clips(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """Seedance swap clips are cut with include_audio=False."""
+        from app.pipeline_v2 import process_run
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(
+            db_session, str(source), status=ProjectStatus.ready, mute_source=True
+        )
+        self._swap_then_keep(db_session, project_id)
+        run_id = self._make_run(
+            db_session, project_id, model="seedance", audio_mode="seedance"
+        )
+
+        cut_calls: list[dict] = []
+        stitch_calls: list[dict] = []
+        self._mock_media(monkeypatch, duration_sec=10.0,
+                         cut_calls=cut_calls, stitch_calls=stitch_calls)
+
+        fake_kie = FakeKieClient(str(source))
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert len(fake_kie.create_task_records) == 1
+        # The swap clip (index 0, cut at submit time) is muted…
+        swap_cuts = [c for c in cut_calls if c["dst"].endswith("clip_0000.mp4")]
+        assert swap_cuts and all(c["include_audio"] is False for c in swap_cuts), (
+            f"muted project must upload video-only swap clips: {cut_calls}"
+        )
+        # …while the keep clip (index 1), which only ever feeds the stitch,
+        # keeps its audio.
+        keep_cuts = [c for c in cut_calls if c["dst"].endswith("clip_0001.mp4")]
+        assert keep_cuts and all(c["include_audio"] is True for c in keep_cuts), (
+            f"keep clips must retain the original audio: {cut_calls}"
+        )
+
+    def test_unmuted_project_is_unchanged(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """The default (mute_source=False) still sends audio to Seedance."""
+        from app.pipeline_v2 import process_run
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(
+            db_session, str(source), status=ProjectStatus.ready, mute_source=False
+        )
+        self._swap_then_keep(db_session, project_id)
+        run_id = self._make_run(db_session, project_id, model="seedance")
+
+        cut_calls: list[dict] = []
+        stitch_calls: list[dict] = []
+        self._mock_media(monkeypatch, duration_sec=10.0,
+                         cut_calls=cut_calls, stitch_calls=stitch_calls)
+
+        fake_kie = FakeKieClient(str(source))
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert cut_calls and all(c["include_audio"] is True for c in cut_calls)
+
+    def test_muted_project_still_stitches_requested_audio_mode(
+        self, db_engine, db_session, tmp_path, monkeypatch
+    ):
+        """Muting the AI input does not take away audio_mode='original'.
+
+        The source file is never modified, so an operator can still overlay the
+        untouched soundtrack over the swapped visuals.
+        """
+        from app.pipeline_v2 import process_run
+
+        source = tmp_path / "source.mp4"
+        source.write_bytes(b"src")
+        project_id = _create_project(
+            db_session, str(source), status=ProjectStatus.ready, mute_source=True
+        )
+        self._swap_then_keep(db_session, project_id)
+        run_id = self._make_run(
+            db_session, project_id, model="seedance", audio_mode="original"
+        )
+
+        cut_calls: list[dict] = []
+        stitch_calls: list[dict] = []
+        self._mock_media(monkeypatch, duration_sec=10.0,
+                         cut_calls=cut_calls, stitch_calls=stitch_calls)
+
+        fake_kie = FakeKieClient(str(source))
+        process_run(run_id, kie=fake_kie, gdrive=FakeGDriveClient())
+
+        assert stitch_calls and stitch_calls[0].get("audio_mode") == "original"
