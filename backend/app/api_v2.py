@@ -1790,6 +1790,9 @@ def _validate_transcript_payload(body) -> dict:
     Unknown top-level keys (``model``, ``prompt_version``, ``created_at``, …)
     are passed through untouched so a round-trip edit does not strip the
     envelope that records which model produced the transcript.
+    ``video_summary`` / ``scene_context`` are normalised to stripped strings
+    (omitted or null → ``""``); a non-string value is a 400 rather than a
+    silent ``str()``.
     """
     if not isinstance(body, dict):
         raise HTTPException(
@@ -1889,14 +1892,41 @@ def _validate_transcript_payload(body) -> dict:
             detail="transcript.source_language must be a string (ISO 639-1 code)",
         )
 
+    video_summary = _optional_transcript_context(
+        body.get("video_summary"), "transcript.video_summary"
+    )
+    scene_context = _optional_transcript_context(
+        body.get("scene_context"), "transcript.scene_context"
+    )
+
     cleaned = dict(body)
     cleaned["schema_version"] = body.get(
         "schema_version", localisation.TRANSCRIPT_SCHEMA_VERSION
     )
     cleaned["source_language"] = (source_language or "").strip().lower()
+    cleaned["video_summary"] = video_summary
+    cleaned["scene_context"] = scene_context
     cleaned["lines"] = lines
     cleaned["on_screen_text"] = on_screen_text
     return cleaned
+
+
+def _optional_transcript_context(value, where: str) -> str:
+    """Strip a transcript context string, or 400 on a non-string value.
+
+    Omitted / null → ``""`` so a v1 envelope (or a UI that only edits lines)
+    still validates. An explicit array, object, number or bool is refused —
+    silently stringifying those would invent context the operator never typed.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{where} must be a string",
+        )
+    return value.strip()
+
 
 def _intended_hook_sec(project: VideoProject) -> float:
     """The operator's stored hook INTENT, in seconds (never the analyzed one).
@@ -2461,6 +2491,15 @@ def build_localisation_prompt(
 
     transcript = project.transcript or {}
     source_language = str(transcript.get("source_language") or "")
+    # v1 envelopes (and any hand-edited payload that omitted the fields) have
+    # no video_summary / scene_context — empty strings keep translate_lines
+    # backward-compatible without inventing context.
+    video_summary = transcript.get("video_summary") or ""
+    scene_context = transcript.get("scene_context") or ""
+    if not isinstance(video_summary, str):
+        video_summary = ""
+    if not isinstance(scene_context, str):
+        scene_context = ""
     window_lines = localisation.slice_lines(transcript.get("lines") or [], 0.0, hook)
     if not window_lines:
         raise HTTPException(
@@ -2477,6 +2516,8 @@ def build_localisation_prompt(
             window_lines,
             source_language=source_language,
             target_language=target_language,
+            video_summary=video_summary,
+            scene_context=scene_context,
         )
         prompt = localisation.build_prompt(
             lines=translated_lines,

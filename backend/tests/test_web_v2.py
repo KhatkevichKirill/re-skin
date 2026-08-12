@@ -629,7 +629,10 @@ class TestLocalisationNewRunForm:
 
         assert '<option value="gemini-omni" disabled>' in html
         assert "generates no audio" in html
-        assert '<option value="seedance-2-5" selected>' in html
+        assert '<option value="seedance-fast" selected>' in html
+        # 2.5 remains selectable for longer clips / explicit generate_audio.
+        assert '<option value="seedance-2-5"' in html
+        assert 'value="seedance-2-5" disabled' not in html
 
     def test_other_types_still_offer_every_model(self, client, db_session):
         p = _make_project(db_session, status=ProjectStatus.ready)
