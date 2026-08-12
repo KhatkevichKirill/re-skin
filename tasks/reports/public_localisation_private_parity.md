@@ -8,8 +8,8 @@
 | Worktree / clone path | `/root/re-skin-public-localisation-parity` |
 | Branch | `codex/public-localisation-private-parity` |
 | Public base commit (`origin/main` at start) | `b97ac31ce2de1596632a6be224795008505ac39d` |
-| Implementation commit | *(filled after commit; see tip below)* |
-| Branch tip (`git rev-parse HEAD`) | *(filled after commit)* |
+| Implementation commit | `c619bfea2d1f4c6a4aa1f3d11afe6ede5c5561b7` |
+| Branch tip | Determined via `git rev-parse HEAD` in this worktree (authoritative; not pinned in this file). |
 | Origin remote | `git@github.com:KhatkevichKirill/re-skin.git` (public only) |
 | Private behavioural reference | `/root/re-skin-localisation-release-integration` @ `be9407302217342a50acbd05fab76e993f587462` |
 
