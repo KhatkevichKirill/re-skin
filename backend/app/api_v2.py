@@ -688,7 +688,11 @@ def update_project_segments(
     body: SegmentsUpdateRequest,
     db: Session = Depends(get_db),
 ) -> list:
-    """Edit SegmentDefs while project is in ready status."""
+    """Edit SegmentDefs while project is in ready status.
+
+    Blocked (409) while any run of the project is active, for the same reason
+    ``reanalyze_project`` is blocked — see the guard below.
+    """
     project = _get_project_or_404(pid, db)
     if project.status != ProjectStatus.ready:
         raise HTTPException(
@@ -696,6 +700,34 @@ def update_project_segments(
             detail=(
                 f"Cannot edit segments: project status is {project.status!r}, "
                 "expected 'ready'"
+            ),
+        )
+
+    # An active run has already cut its clips to these boundaries and holds a
+    # RunSegment per swap def, FK'd with ON DELETE CASCADE. Editing here deletes
+    # those rows out from under the running worker: process_run dies on the
+    # vanished row (`rs.seedance_result_url = url` with rs None, once a result
+    # comes back), and the segments it had already generated — and paid the AI
+    # model for — are gone, with no row left to re-attach the results to.
+    #
+    # Update-only edits are blocked too, not just deletes: _normalize_partition
+    # drops any segment an edit collapses to zero length, so an "updates"
+    # payload can cascade just as destructively.
+    active = db.execute(
+        select(Run.id, Run.name).where(
+            Run.project_id == pid, Run.status.in_(_ACTIVE_RUN_STATUSES)
+        )
+    ).all()
+    if active:
+        names = ", ".join((name or rid[:8]) for rid, name in active)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot edit segments while a run is in flight ({names}). "
+                "The run is generating against these exact segment boundaries, "
+                "and saving would delete the rows it is working on — losing the "
+                "segments it has already generated. Wait for it to finish, then "
+                "edit."
             ),
         )
 

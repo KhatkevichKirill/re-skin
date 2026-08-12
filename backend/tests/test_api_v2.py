@@ -435,6 +435,119 @@ class TestProjectSegments:
         assert response.status_code == 409
 
 
+class TestSegmentEditBlockedWhileRunActive:
+    """Editing segments under an in-flight run cascade-deletes its RunSegments.
+
+    RunSegment.segment_def_id is ON DELETE CASCADE, so a segment edit made while
+    a run is generating destroys the rows that run is working on: process_run
+    then dies on the vanished row, and the segments already generated (and paid
+    for) have nowhere to be re-attached.
+    """
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            RunStatus.queued,
+            RunStatus.processing,
+            RunStatus.stitching,
+            RunStatus.delivering,
+        ],
+    )
+    def test_patch_blocked_for_each_active_status(
+        self, client, db_session, status
+    ):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        seg = _make_segment_def(db_session, project.id, 0)
+        _make_run(db_session, project.id, status=status)
+
+        response = client.patch(
+            f"/api/v2/projects/{project.id}/segments",
+            json={"updates": [{"id": seg.id, "action": "keep"}]},
+        )
+        assert response.status_code == 409
+        assert "in flight" in response.json()["detail"]
+
+    def test_deletes_blocked_too(self, client, db_session):
+        """The delete path is the one that actually cascades."""
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        s0 = _make_segment_def(db_session, project.id, 0)
+        s1 = _make_segment_def(db_session, project.id, 1)
+        _make_run(db_session, project.id, status=RunStatus.processing)
+
+        response = client.patch(
+            f"/api/v2/projects/{project.id}/segments",
+            json={"deletes": [s1.id]},
+        )
+        assert response.status_code == 409
+        # Nothing was applied.
+        db_session.expire_all()
+        assert db_session.get(SegmentDef, s0.id) is not None
+        assert db_session.get(SegmentDef, s1.id) is not None
+
+    def test_detail_names_the_blocking_run(self, client, db_session):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        seg = _make_segment_def(db_session, project.id, 0)
+        _make_run(
+            db_session, project.id, name="Q-00965", status=RunStatus.processing
+        )
+
+        response = client.patch(
+            f"/api/v2/projects/{project.id}/segments",
+            json={"updates": [{"id": seg.id, "action": "keep"}]},
+        )
+        assert response.status_code == 409
+        assert "Q-00965" in response.json()["detail"]
+
+    def test_unnamed_blocking_run_falls_back_to_short_id(
+        self, client, db_session
+    ):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        seg = _make_segment_def(db_session, project.id, 0)
+        run = _make_run(db_session, project.id, status=RunStatus.processing)
+
+        response = client.patch(
+            f"/api/v2/projects/{project.id}/segments",
+            json={"updates": [{"id": seg.id, "action": "keep"}]},
+        )
+        assert response.status_code == 409
+        assert run.id[:8] in response.json()["detail"]
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            RunStatus.created,
+            RunStatus.done,
+            RunStatus.failed,
+            RunStatus.incomplete,
+        ],
+    )
+    def test_terminal_runs_do_not_block(self, client, db_session, status):
+        """Nothing is processing these, so editing stays available."""
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        seg = _make_segment_def(db_session, project.id, 0)
+        _make_run(db_session, project.id, status=status)
+
+        response = client.patch(
+            f"/api/v2/projects/{project.id}/segments",
+            json={"updates": [{"id": seg.id, "action": "keep"}]},
+        )
+        assert response.status_code == 200
+
+    def test_active_run_on_another_project_does_not_block(
+        self, client, db_session
+    ):
+        project = _make_project(db_session, status=ProjectStatus.ready)
+        seg = _make_segment_def(db_session, project.id, 0)
+        other = _make_project(db_session, status=ProjectStatus.ready)
+        _make_run(db_session, other.id, status=RunStatus.processing)
+
+        response = client.patch(
+            f"/api/v2/projects/{project.id}/segments",
+            json={"updates": [{"id": seg.id, "action": "keep"}]},
+        )
+        assert response.status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # TR8: linked/contiguous segment boundaries
 # ---------------------------------------------------------------------------
