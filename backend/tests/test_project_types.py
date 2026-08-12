@@ -9,8 +9,8 @@ The registry is a table of constants, so the tests here are about the
   demote a type to the blank-slate branch);
 * the localisation spec matches docs/localisation.md §2/§6 — those values are
   properties of the type, not operator preferences;
-* the two Seedance templates render exactly what run 1736426f was signed off
-  with (docs/localisation.md §4.3).
+* the two Seedance templates require adaptive target-language lip sync and
+  speech-related facial reactions (docs/localisation.md §4.3).
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ class TestLocalisationSpec:
     def test_pipeline_settings_are_properties_of_the_type(self):
         spec = spec_for(LOCALISATION)
         assert spec.segmentation == SEG_HOOK_SPLIT
-        assert spec.default_model == "seedance-2-5"
+        assert spec.default_model == "seedance-fast"
         # "original" would overlay the untranslated source track over the
         # localised video — the one setting that silently destroys the feature.
         assert spec.default_audio_mode == "seedance"
@@ -140,29 +140,54 @@ class TestLocalisationSpec:
         model = ai_models.spec_for(spec_for(LOCALISATION).default_model)
         assert model.produces_audio
         # A 10s default hook has to fit in one clip on the default model.
+        # Fast's hard ceiling is 15s — longer hooks need a split or Seedance 2.5.
         assert model.max_clip_sec >= 10.0
+        assert model.max_clip_sec == 15.0
+
+    def test_seedance_2_5_remains_an_optional_audio_model(self):
+        """2.5 is no longer the default, but it stays registered and usable."""
+        assert "seedance-2-5" in ai_models.VALID_MODELS
+        assert ai_models.spec_for("seedance-2-5").produces_audio is True
+        assert ai_models.max_clip_sec("seedance-2-5") == 30.0
+        assert spec_for(LOCALISATION).default_model != "seedance-2-5"
 
     def test_gemini_omni_would_be_filtered_out(self):
         """The filter requires_audio_model drives has real teeth."""
         assert ai_models.spec_for("gemini-omni").produces_audio is False
+
+    def test_other_project_type_defaults_are_unchanged(self):
+        assert spec_for(FACE_SWAP).default_model == "seedance"
+        assert spec_for(SUBTITLE_REMOVAL).default_model == "gemini-omni"
+        assert spec_for(COVER_CHANGE).default_model == "seedance-fast"
 
 
 # ---------------------------------------------------------------------------
 # Seedance prompt templates (docs/localisation.md §4.3)
 # ---------------------------------------------------------------------------
 
-# The run-1736426f paragraph, verbatim from the DB, with the dialogue block
-# stripped. Byte-for-byte what the operator signed off on for EN→JA.
-_PROVEN_PARAGRAPH = (
-    "Replace the woman in the reference video with the woman shown in the "
-    "reference image. Keep their face and identity consistent with the reference "
-    "image throughout. Change only the character and language which they speak"
-    "(from english to japanese) — keep everything else exactly the same: the phone "
-    "or tablet screen and its contents, all on-screen text and captions, the "
-    "background, lighting, framing, and the original motion and lip movements."
-)
-
 _SLOTS = ("{source_language}", "{target_language}", "{dialogue}")
+
+# Phrases that must appear in BOTH localisation templates (adaptive speech).
+_ADAPTIVE_LIPS_NEEDLES = (
+    "lip-sync the translated speech",
+    "mouth shapes",
+    "facial expressions",
+    "emotional reactions",
+)
+_CONTINUITY_NEEDLES = (
+    "on-screen text",
+    "framing",
+    "camera movement",
+    "background",
+    "lighting",
+    "phone or tablet screens",
+)
+_FORBIDDEN_LIP_FREEZE = (
+    "original motion and lip movements",
+    "original lip movements",
+    "keep the original lip",
+    "preserve the original lip",
+)
 
 
 class TestLocalisationPrompts:
@@ -191,23 +216,6 @@ class TestLocalisationPrompts:
         )
         assert "{" not in rendered and "}" not in rendered
 
-    def test_swap_template_reproduces_the_proven_prompt(self):
-        """Generalised ONLY where the slots go — plus the gendered noun, which a
-        template cannot know, restored to the face-swap default's wording."""
-        rendered = project_types._LOCALISATION_SWAP_PROMPT.format(
-            source_language="english",
-            target_language="japanese",
-            dialogue="**Woman:**     あ、読んでないよ。",
-        )
-        paragraph, _, dialogue = rendered.partition("\n")
-        assert dialogue == "**Woman:**     あ、読んでないよ。"
-        assert paragraph == _PROVEN_PARAGRAPH.replace(
-            "Replace the woman in the reference video with the woman shown",
-            "Replace the main person in the reference video with the person shown",
-        )
-        # The quirk that was signed off on: no space before the parenthesis.
-        assert "speak(from english to japanese)" in paragraph
-
     def test_swap_is_the_registry_default_prompt(self):
         assert (
             spec_for(LOCALISATION).default_prompt
@@ -219,25 +227,66 @@ class TestLocalisationPrompts:
             source_language="english", target_language="japanese", dialogue="D"
         )
         lowered = rendered.lower()
-        assert "do not replace" in lowered
+        assert "do not replace the character" in lowered
         assert "face" in lowered and "identity" in lowered and "appearance" in lowered
+        assert "hair" in lowered and "clothing" in lowered
         # It must NOT ask for a character swap or mention the reference image —
         # this is the mode where no reference is supplied.
         assert "replace the main person" not in lowered
         assert "reference image" not in lowered
-        # Only the language changes.
-        assert "change only the language which they speak" in lowered
 
-    def test_both_templates_protect_the_same_things(self):
-        """The KEEP variant keeps the proven prompt's second half verbatim."""
-        tail = (
-            " — keep everything else exactly the same: the phone or tablet screen "
-            "and its contents, all on-screen text and captions, the background, "
-            "lighting, framing, and the original motion and lip movements.\n"
-            "{dialogue}"
+    def test_swap_template_requests_reference_character(self):
+        rendered = project_types._LOCALISATION_SWAP_PROMPT.format(
+            source_language="english", target_language="japanese", dialogue="D"
         )
-        assert project_types._LOCALISATION_SWAP_PROMPT.endswith(tail)
-        assert project_types._LOCALISATION_KEEP_PROMPT.endswith(tail)
+        lowered = rendered.lower()
+        assert "replace the main person" in lowered
+        assert "reference image" in lowered
+        assert "identity consistent with the reference image" in lowered
+        assert "do not replace the character" not in lowered
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            project_types._LOCALISATION_SWAP_PROMPT,
+            project_types._LOCALISATION_KEEP_PROMPT,
+        ],
+    )
+    def test_both_templates_require_adaptive_lips_and_reactions(self, template):
+        lowered = template.lower()
+        for needle in _ADAPTIVE_LIPS_NEEDLES:
+            assert needle in lowered
+        assert "do not freeze the original face or mouth motion" in lowered
+        for bad in _FORBIDDEN_LIP_FREEZE:
+            assert bad not in lowered
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            project_types._LOCALISATION_SWAP_PROMPT,
+            project_types._LOCALISATION_KEEP_PROMPT,
+        ],
+    )
+    def test_both_templates_protect_non_speech_continuity(self, template):
+        lowered = template.lower()
+        for needle in _CONTINUITY_NEEDLES:
+            assert needle in lowered
+        assert "assigned to that speaker" in lowered
+        assert "do not swap lines" in lowered
+
+    def test_grammar_has_space_before_language_parenthesis(self):
+        """Inherited face-swap quirk was speak(from — localisation must not keep it."""
+        for template in (
+            project_types._LOCALISATION_SWAP_PROMPT,
+            project_types._LOCALISATION_KEEP_PROMPT,
+        ):
+            assert "speak(from" not in template
+            rendered = template.format(
+                source_language="english",
+                target_language="japanese",
+                dialogue="D",
+            )
+            assert "(from english to japanese)" in rendered
 
     def test_build_prompt_can_render_both(self):
         """The real consumer (localisation.build_prompt) is satisfied by them —
@@ -255,4 +304,13 @@ class TestLocalisationPrompts:
                 swap_character=swap,
             )
             assert "from english to japanese" in out
+            assert "{" not in out and "}" not in out
+            assert "lip-sync the translated speech" in out.lower()
+            assert "facial expressions" in out.lower()
+            assert "original motion and lip movements" not in out.lower()
             assert out.endswith("**Woman:**     はい")
+            if swap:
+                assert "Replace the main person" in out
+            else:
+                assert "Do not replace the character" in out
+                assert "reference image" not in out.lower()

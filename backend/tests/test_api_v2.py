@@ -2412,16 +2412,28 @@ def fake_translate(monkeypatch):
     Honours the real contract of localisation.translate_lines (same ids, same
     order, ``text`` replaced, ``source_text`` carrying the original) so the
     endpoint is exercised exactly as it would be in production. Returns the
-    list of calls it received.
+    list of calls it received. Accepts the optional video_summary /
+    scene_context kwargs so a real caller that forwards cached context does
+    not TypeError the stub.
     """
     calls: list[dict] = []
 
-    def _translate(lines, *, source_language, target_language, model=None):
+    def _translate(
+        lines,
+        *,
+        source_language,
+        target_language,
+        model=None,
+        video_summary="",
+        scene_context="",
+    ):
         calls.append(
             {
                 "lines": lines,
                 "source_language": source_language,
                 "target_language": target_language,
+                "video_summary": video_summary,
+                "scene_context": scene_context,
             }
         )
         out = []
@@ -2983,6 +2995,54 @@ class TestPatchTranscript:
         assert stored.transcript == _transcript(_HOOK_LINES)
         assert stored.transcript_status == "ready"
 
+    def test_preserves_and_strips_video_context_strings(self, client, db_session):
+        project = _localisation_project(db_session)
+        doc = _transcript(
+            _HOOK_LINES,
+            video_summary="  A promo for Speechify.  ",
+            scene_context="  Woman holds a phone; 'this' is the app.  ",
+        )
+        body = client.patch(
+            f"/api/v2/projects/{project.id}/transcript", json=doc
+        ).json()
+        assert body["transcript"]["video_summary"] == "A promo for Speechify."
+        assert body["transcript"]["scene_context"] == (
+            "Woman holds a phone; 'this' is the app."
+        )
+
+    def test_omitted_video_context_becomes_empty_string(self, client, db_session):
+        """A UI that only edits lines still round-trips; missing keys → ""."""
+        project = _localisation_project(db_session)
+        doc = _transcript(_HOOK_LINES)
+        assert "video_summary" not in doc
+        assert "scene_context" not in doc
+        body = client.patch(
+            f"/api/v2/projects/{project.id}/transcript", json=doc
+        ).json()
+        assert body["transcript"]["video_summary"] == ""
+        assert body["transcript"]["scene_context"] == ""
+
+    @pytest.mark.parametrize(
+        "field, value",
+        [
+            ("video_summary", ["not", "a", "string"]),
+            ("video_summary", {"nested": True}),
+            ("video_summary", 12),
+            ("video_summary", True),
+            ("scene_context", ["nope"]),
+            ("scene_context", {"x": 1}),
+            ("scene_context", 3.14),
+            ("scene_context", False),
+        ],
+    )
+    def test_non_string_video_context_is_400(self, client, db_session, field, value):
+        project = _localisation_project(db_session)
+        doc = _transcript(_HOOK_LINES, **{field: value})
+        resp = client.patch(f"/api/v2/projects/{project.id}/transcript", json=doc)
+        assert resp.status_code == 400, resp.text
+        assert field in resp.json()["detail"]
+        assert "must be a string" in resp.json()["detail"]
+
     def test_duplicate_ids_are_400(self, client, db_session):
         """Translation rejoins on the id — a duplicate loses a line silently."""
         project = _localisation_project(db_session)
@@ -3087,6 +3147,43 @@ class TestLocalisationPrompt:
         for prompt in (swap, keep):
             assert "<es> Hey, what are you doing?" in prompt
             assert "from english to spanish" in prompt
+            assert "lip-sync the translated speech" in prompt.lower()
+            assert "facial expressions" in prompt.lower()
+            assert "original motion and lip movements" not in prompt.lower()
+        assert "Replace the main person" in swap
+        assert "Do not replace the character" in keep
+        assert "reference image" not in keep.lower()
+
+    def test_passes_cached_video_context_to_translate(
+        self, client, db_session, fake_translate
+    ):
+        project = _localisation_project(
+            db_session,
+            transcript=_transcript(
+                _HOOK_LINES,
+                video_summary="Promo for a reading app.",
+                scene_context="Woman points at her phone.",
+            ),
+        )
+        resp = self._post(client, project.id, language="es")
+        assert resp.status_code == 200, resp.text
+        assert len(fake_translate) == 1
+        assert fake_translate[0]["video_summary"] == "Promo for a reading app."
+        assert fake_translate[0]["scene_context"] == "Woman points at her phone."
+
+    def test_old_transcript_without_context_still_translates(
+        self, client, db_session, fake_translate
+    ):
+        """v1 cached envelopes omit the fields — empty-string defaults apply."""
+        project = _localisation_project(db_session)
+        assert "video_summary" not in project.transcript
+        assert "scene_context" not in project.transcript
+
+        resp = self._post(client, project.id, language="ja")
+        assert resp.status_code == 200, resp.text
+        assert fake_translate[0]["video_summary"] == ""
+        assert fake_translate[0]["scene_context"] == ""
+        assert [ln["id"] for ln in resp.json()["lines"]] == [1, 2]
 
     def test_only_the_hook_window_is_translated(
         self, client, db_session, fake_translate
@@ -3813,3 +3910,129 @@ class TestLocalisationHookWindow:
         body = self._post(client, project.id, hook_sec=4).json()
         assert body["hook_sec"] == 4.0
         assert [ln["id"] for ln in body["lines"]] == [1]
+
+
+class TestLocalisationReleaseIntegration:
+    """Combined checks for video-context + Fast default + adaptive lips.
+
+    Exercises the three Localisation features together through real application
+    helpers / endpoints. Translation stays stubbed (fake_translate); Seedance
+    templates are the live project_types strings.
+    """
+
+    def _post(self, client, pid, **data):
+        payload = {"language": "es"}
+        payload.update(data)
+        return client.post(f"/api/v2/projects/{pid}/localisation-prompt", data=payload)
+
+    def test_v2_context_translates_into_adaptive_lips_prompt(
+        self, client, db_session, fake_translate
+    ):
+        """Schema-v2 transcript context → adaptive-lips Seedance prompt."""
+        project = _localisation_project(
+            db_session,
+            mute_source=True,
+            transcript=_transcript(
+                _HOOK_LINES,
+                schema_version=2,
+                prompt_version="transcribe/v2",
+                video_summary="Promo for a reading app.",
+                scene_context="Woman points at her phone; 'this' means the app.",
+            ),
+        )
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+
+        for swap_character in ("true", "false"):
+            body = self._post(
+                client, project.id, language="ja", swap_character=swap_character
+            ).json()
+            prompt = body["prompt"]
+            lowered = prompt.lower()
+            assert "{source_language}" not in prompt
+            assert "{target_language}" not in prompt
+            assert "{dialogue}" not in prompt
+            assert "lip-sync the translated speech" in lowered
+            assert "facial expressions" in lowered
+            assert "emotional reactions" in lowered
+            assert "original motion and lip movements" not in lowered
+            assert "<ja> Hey, what are you doing?" in prompt
+
+        assert fake_translate[-1]["video_summary"] == "Promo for a reading app."
+        assert fake_translate[-1]["scene_context"] == (
+            "Woman points at her phone; 'this' means the app."
+        )
+
+    def test_new_run_defaults_to_seedance_fast(self, db_session):
+        """Registry-driven New Run default under normal project settings."""
+        from app.project_types import LOCALISATION, spec_for
+        from app.web_v2 import _new_run_defaults
+
+        assert spec_for(LOCALISATION).default_model == "seedance-fast"
+        assert spec_for(LOCALISATION).default_audio_mode == "seedance"
+        assert spec_for(LOCALISATION).default_mute_source is True
+
+        project = _localisation_project(db_session, mute_source=True)
+        ctx = _new_run_defaults(project)
+        assert ctx["default_model"] == "seedance-fast"
+        assert ctx["default_audio_mode"] == "seedance"
+        assert "seedance-2-5" not in ctx["models_without_audio"]
+        assert "gemini-omni" in ctx["models_without_audio"]
+
+    def test_multi_segment_context_assigns_dialogue_once_with_adaptive_lips(
+        self, client, db_session, fake_translate
+    ):
+        """Multi-segment partition + adaptive lips + forwarded context."""
+        project = _localisation_project(
+            db_session,
+            hook_sec=20.0,
+            mute_source=True,
+            transcript=_transcript(
+                [
+                    _line(1, 0.0, 4.0, "Front half of the hook.", speaker="the woman"),
+                    _line(2, 12.0, 16.0, "Back half of the hook.", speaker="the man"),
+                ],
+                schema_version=2,
+                prompt_version="transcribe/v2",
+                video_summary="Two-shot street promo.",
+                scene_context="Woman then man; each owns their half.",
+            ),
+        )
+        first = _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+        second = _make_segment_def(
+            db_session, project.id, 1, start_sec=10.0, end_sec=20.0
+        )
+
+        body = self._post(client, project.id, swap_character="true").json()
+        assert fake_translate[0]["video_summary"] == "Two-shot street promo."
+        assert fake_translate[0]["scene_context"] == (
+            "Woman then man; each owns their half."
+        )
+        assert set(body["segment_prompts"]) == {first.id, second.id}
+        front = body["segment_prompts"][first.id]
+        back = body["segment_prompts"][second.id]
+        assert "Front half" in front and "Back half" not in front
+        assert "Back half" in back and "Front half" not in back
+        for prompt in (front, back, body["prompt"]):
+            lowered = prompt.lower()
+            assert "lip-sync the translated speech" in lowered
+            assert "original motion and lip movements" not in lowered
+            assert "{dialogue}" not in prompt
+
+    def test_v1_transcript_builds_adaptive_prompt(
+        self, client, db_session, fake_translate
+    ):
+        """Cached v1 envelopes still produce the adaptive-lips templates."""
+        project = _localisation_project(db_session)
+        assert "video_summary" not in project.transcript
+        assert "scene_context" not in project.transcript
+        _make_segment_def(db_session, project.id, 0, start_sec=0.0, end_sec=10.0)
+
+        body = self._post(client, project.id, swap_character="false").json()
+        assert fake_translate[0]["video_summary"] == ""
+        assert fake_translate[0]["scene_context"] == ""
+        prompt = body["prompt"]
+        lowered = prompt.lower()
+        assert "do not replace the character" in lowered
+        assert "lip-sync the translated speech" in lowered
+        assert "original motion and lip movements" not in lowered
+        assert "{source_language}" not in prompt

@@ -111,63 +111,53 @@ The identity of the replacement book must remain perfectly consistent before, du
 
 # --- Localisation (docs/localisation.md §4.3) --------------------------------
 #
-# Same convention as _SUBTITLE_REMOVAL_PROMPT above: **verbatim, quirks and
-# all**. The text below is the prompt of run 1736426f — the only run that has
-# ever proved this feature works end to end (seedance-2-5, audio_mode=seedance,
-# mute_source, one 10s swap segment, EN→JA) — and what reaches the model is what
-# was signed off on, so it is not tidied up. That includes the missing space in
-# "speak(from", which stays.
+# Adapted for translated speech. Early localisation used a face-swap-derived
+# paragraph (historical run 1736426f) that asked Seedance to keep "the original
+# motion and lip movements" — that freezes mouth motion and fights re-speaking
+# the target language. These templates instead require natural lip sync and
+# speech-related facial reactions for the assigned translated dialogue, while
+# still protecting non-speech scene continuity and on-screen text.
 #
-# Exactly two departures from the run text, both forced by turning one run into
-# a template:
+# Model output is probabilistic: the prompt instructs adaptive lips/reactions,
+# but the app cannot guarantee perfect sync on every clip or language pair.
 #
-#   1. The three slots. "(from english to japanese)" becomes
-#      "(from {source_language} to {target_language})" — localisation.build_prompt
-#      fills them with lowercase English language NAMES ("english", "japanese"),
-#      so the rendered sentence is byte-identical to the proven one for an EN→JA
-#      run. The dialogue block (localisation.format_dialogue, "**Speaker:**" +
-#      five spaces) is appended through {dialogue} on the line after the
-#      paragraph, exactly as in the run. The run's stored text separates them
-#      with CRLF only because it was typed into a browser textarea; "\n" is the
-#      same prompt.
-#   2. "the woman ... the woman shown in the reference image" is restored to the
-#      registry's own neutral phrasing from _FACE_SWAP_PROMPT ("the main person
-#      ... the person shown in the reference image"). The operator typed that
-#      run's gender in by hand on top of the face-swap default; a template
-#      cannot know it, and guessing it wrong is worse than not stating it.
-#
-# NOTE for future edits: these strings are consumed with str.format(), so the
-# only braces they may contain are the three slots.
+# Slots filled by localisation.build_prompt with lowercase English language
+# NAMES ("english", "japanese") and a dialogue block from
+# localisation.format_dialogue ("**Speaker:**" + five spaces). Consumed with
+# str.format() — the only braces allowed are the three slots below.
 _LOCALISATION_SWAP_PROMPT = (
     "Replace the main person in the reference video with the person shown in the "
     "reference image. Keep their face and identity consistent with the reference image "
-    "throughout. Change only the character and language which they speak"
-    "(from {source_language} to {target_language}) — keep everything else exactly the "
-    "same: the phone or tablet screen and its contents, all on-screen text and "
-    "captions, the background, lighting, framing, and the original motion and lip "
-    "movements.\n{dialogue}"
+    "throughout. Re-speak the assigned dialogue in {target_language} "
+    "(from {source_language} to {target_language}). Naturally adapt mouth shapes, lip "
+    "movements and timing to lip-sync the translated speech; also adapt facial "
+    "expressions, emotional reactions and speaker behavior where the translated "
+    "delivery requires it. Preserve framing, camera movement, background, lighting, "
+    "props, phone or tablet screens and their contents, captions and other on-screen "
+    "text. Preserve overall action, choreography and body movement except for natural "
+    "speech-related adjustments — do not freeze the original face or mouth motion. "
+    "Each visually grounded speaker must say only the dialogue assigned to that "
+    "speaker; do not swap lines between on-screen and off-screen speakers.\n"
+    "{dialogue}"
 )
 
-# "Speech only" — the mode with no reference image. Structurally the SWAP
-# prompt with the character replacement inverted into an explicit instruction to
-# keep the person: everything after the language clause is word-for-word the
-# proven text, because that half is what protects the screen contents, the
-# captions and the framing, and it has been signed off.
-#
-# The trailing "and the original motion and lip movements" is deliberately kept
-# even though the lips must in fact change to speak the new language. It reads
-# as a contradiction, it is in the proven prompt, and Seedance re-speaks the
-# line anyway — so it is left exactly where it was rather than "fixed" on a
-# guess in the variant that has never been run.
+# "Speech only" — no reference image. Same speech / lip / continuity rules as
+# SWAP, but identity must stay the person already on screen.
 _LOCALISATION_KEEP_PROMPT = (
     "Keep the main person in the reference video exactly as they are. Do not replace "
     "the character: their face, identity, hair, clothing and appearance must stay the "
-    "same person throughout, unchanged from the reference video. Change only the "
-    "language which they speak"
-    "(from {source_language} to {target_language}) — keep everything else exactly the "
-    "same: the phone or tablet screen and its contents, all on-screen text and "
-    "captions, the background, lighting, framing, and the original motion and lip "
-    "movements.\n{dialogue}"
+    "same person throughout, unchanged from the reference video. Re-speak the assigned "
+    "dialogue in {target_language} "
+    "(from {source_language} to {target_language}). Naturally adapt mouth shapes, lip "
+    "movements and timing to lip-sync the translated speech; also adapt facial "
+    "expressions, emotional reactions and speaker behavior where the translated "
+    "delivery requires it. Preserve framing, camera movement, background, lighting, "
+    "props, phone or tablet screens and their contents, captions and other on-screen "
+    "text. Preserve overall action, choreography and body movement except for natural "
+    "speech-related adjustments — do not freeze the original face or mouth motion. "
+    "Each visually grounded speaker must say only the dialogue assigned to that "
+    "speaker; do not swap lines between on-screen and off-screen speakers.\n"
+    "{dialogue}"
 )
 
 
@@ -221,11 +211,15 @@ PROJECT_TYPES: dict[str, ProjectTypeSpec] = {
         key=LOCALISATION,
         label="Localisation",
         segmentation=SEG_HOOK_SPLIT,
-        # Seedance 2.5 is the only model this type can sensibly default to: it
-        # generates up to 30s per clip (a hook is one segment, not three) and
-        # takes an explicit audio switch. Gemini Omni is filtered out entirely
-        # by requires_audio_model.
-        default_model="seedance-2-5",
+        # Seedance 2.0 Fast is the operational default: it produces audio
+        # (required here), is faster/cheaper for routine localisation, and
+        # covers the default 10s hook under the universal segmentation cap.
+        # Its hard ceiling is 15s per clip — longer hooks need the project
+        # segmented into valid pieces, or the operator picks Seedance 2.5
+        # (still registered and selectable) for its 30s ceiling / explicit
+        # generate_audio switch. Gemini Omni is filtered out entirely by
+        # requires_audio_model.
+        default_model="seedance-fast",
         default_prompt=_LOCALISATION_SWAP_PROMPT,
         default_audio_mode="seedance",
         default_mute_source=True,

@@ -122,6 +122,8 @@ def responses_response(text: str, *, with_reasoning: bool = False) -> httpx.Resp
 
 TRANSCRIPT_JSON = {
     "source_language": "EN",
+    "video_summary": "  A street-interview promo for a reading app.  ",
+    "scene_context": "  Interviewer is off-camera; woman holds a phone labeled Speechify.  ",
     "lines": [
         {
             "id": 1,
@@ -181,6 +183,11 @@ class TestTranscribeVideo:
         assert out["created_at"].endswith("+00:00")
         # "EN" is normalised to a bare lowercase ISO 639-1 code.
         assert out["source_language"] == "en"
+        # Context strings are stripped and stored on the envelope.
+        assert out["video_summary"] == "A street-interview promo for a reading app."
+        assert out["scene_context"] == (
+            "Interviewer is off-camera; woman holds a phone labeled Speechify."
+        )
         assert [ln["text"] for ln in out["lines"]] == [
             "What is she doing?",
             "Oh, I'm not.",
@@ -188,6 +195,65 @@ class TestTranscribeVideo:
         assert out["on_screen_text"] == [
             {"start": 0.0, "end": 3.0, "text": "READ 3x FASTER"}
         ]
+
+    @respx.mock
+    def test_prompt_and_schema_request_video_context(self, kie, clip):
+        """Gemini is explicitly asked for video_summary + scene_context."""
+        mock_upload()
+        route = respx.post(CHAT_URL).mock(
+            return_value=chat_response(json.dumps(TRANSCRIPT_JSON))
+        )
+
+        transcribe_video(clip, kie=kie)
+
+        body = json.loads(route.calls[0].request.content)
+        prompt = body["messages"][0]["content"][0]["text"]
+        assert "video_summary" in prompt
+        assert "scene_context" in prompt
+        assert "VIDEO SUMMARY" in prompt
+        assert "SCENE CONTEXT" in prompt
+        schema = body["response_format"]["json_schema"]["schema"]
+        assert "video_summary" in schema["properties"]
+        assert "scene_context" in schema["properties"]
+        assert "video_summary" in schema["required"]
+        assert "scene_context" in schema["required"]
+
+    @respx.mock
+    def test_missing_or_null_context_becomes_empty_string(self, kie, clip):
+        """A usable lines array must not crash when context fields are absent."""
+        mock_upload()
+        payload = {
+            "source_language": "en",
+            # video_summary omitted entirely; scene_context is an unusable type.
+            "scene_context": 12,
+            "lines": TRANSCRIPT_JSON["lines"],
+            "on_screen_text": [],
+        }
+        respx.post(CHAT_URL).mock(return_value=chat_response(json.dumps(payload)))
+
+        out = transcribe_video(clip, kie=kie)
+
+        assert out["video_summary"] == ""
+        assert out["scene_context"] == ""
+        assert out["schema_version"] == 2
+        assert out["prompt_version"] == "transcribe/v2"
+
+    @respx.mock
+    def test_null_context_values_become_empty_string(self, kie, clip):
+        mock_upload()
+        payload = {
+            "source_language": "en",
+            "video_summary": None,
+            "scene_context": None,
+            "lines": TRANSCRIPT_JSON["lines"],
+            "on_screen_text": [],
+        }
+        respx.post(CHAT_URL).mock(return_value=chat_response(json.dumps(payload)))
+
+        out = transcribe_video(clip, kie=kie)
+
+        assert out["video_summary"] == ""
+        assert out["scene_context"] == ""
 
     @respx.mock
     def test_sends_video_in_image_url_envelope(self, kie, clip):
@@ -406,6 +472,46 @@ class TestTranslateLines:
         assert "duration: 1.2s" in prompt
         assert "duration: 3.2s" in prompt
         assert "from english into japanese" in prompt
+        # Omitted context args still render the labeled section (empty → placeholder).
+        assert "VIDEO SUMMARY:" in prompt
+        assert "SCENE CONTEXT:" in prompt
+
+    @respx.mock
+    def test_prompt_includes_video_context_when_supplied(self, shared_kie):
+        route = respx.post(RESPONSES_URL).mock(
+            return_value=responses_response(
+                json.dumps({"lines": [{"id": 1, "text": "x"}, {"id": 2, "text": "y"}]})
+            )
+        )
+
+        translate_lines(
+            SRC,
+            source_language="en",
+            target_language="ja",
+            video_summary="Promo for a reading app.",
+            scene_context="Woman holds a phone; 'this' means the app.",
+        )
+
+        prompt = json.loads(route.calls[0].request.content)["input"][0]["content"][0][
+            "text"
+        ]
+        assert "VIDEO SUMMARY:\nPromo for a reading app." in prompt
+        assert "SCENE CONTEXT:\nWoman holds a phone; 'this' means the app." in prompt
+        # Hard constraints survive the context section.
+        assert "ONE LINE IN, ONE LINE OUT" in prompt
+        assert "SAY OUT LOUD" in prompt
+
+    @respx.mock
+    def test_omitted_context_args_still_translate(self, shared_kie):
+        """Backward compatible: callers that never heard of the kwargs keep working."""
+        respx.post(RESPONSES_URL).mock(
+            return_value=responses_response(
+                json.dumps({"lines": [{"id": 1, "text": "a"}, {"id": 2, "text": "b"}]})
+            )
+        )
+
+        out = translate_lines(SRC, source_language="en", target_language="ja")
+        assert [ln["text"] for ln in out] == ["a", "b"]
 
     @respx.mock
     def test_reads_message_after_a_reasoning_item(self, shared_kie):
@@ -916,6 +1022,40 @@ class TestBuildPrompt:
             )
 
 
+
+class TestRealLocalisationSeedanceTemplates:
+    """build_prompt against the live project_types templates (adaptive lips)."""
+
+    DIALOGUE = lines((1, 0.0, 1.0, "Woman", "こんにちは"))
+
+    @pytest.mark.parametrize("swap_character", [True, False])
+    def test_renders_slots_and_adaptive_speech_rules(self, swap_character):
+        out = build_prompt(
+            lines=self.DIALOGUE,
+            source_language="en",
+            target_language="ja",
+            swap_character=swap_character,
+        )
+        assert "{source_language}" not in out
+        assert "{target_language}" not in out
+        assert "{dialogue}" not in out
+        assert "(from english to japanese)" in out
+        assert out.endswith("**Woman:**     こんにちは")
+        lowered = out.lower()
+        assert "lip-sync the translated speech" in lowered
+        assert "facial expressions" in lowered
+        assert "emotional reactions" in lowered
+        assert "original motion and lip movements" not in lowered
+        assert "do not freeze the original face or mouth motion" in lowered
+        assert "on-screen text" in lowered
+        if swap_character:
+            assert "replace the main person" in lowered
+            assert "reference image" in lowered
+        else:
+            assert "do not replace the character" in lowered
+            assert "reference image" not in lowered
+
+
 # ---------------------------------------------------------------------------
 # Prompt contents — docs/localisation.md §4.3 is a checklist, so check it
 # ---------------------------------------------------------------------------
@@ -923,14 +1063,18 @@ class TestBuildPrompt:
 
 class TestPromptRequirements:
     def test_versions(self):
-        assert localisation.TRANSCRIBE_PROMPT_VERSION == "transcribe/v1"
-        assert localisation.TRANSLATE_PROMPT_VERSION == "translate/v1"
+        assert localisation.TRANSCRIBE_PROMPT_VERSION == "transcribe/v2"
+        assert localisation.TRANSLATE_PROMPT_VERSION == "translate/v2"
 
     @pytest.mark.parametrize(
         "needle",
         [
             "never assume it is",          # detect, don't assume, the language
             "ISO 639-1",
+            "VIDEO SUMMARY",
+            "SCENE CONTEXT",
+            "video_summary",
+            "scene_context",
             "point at the person",         # visually grounded speaker label
             'NEVER use "Speaker 1"',
             '"on_screen": true',           # on/off camera flag
@@ -968,6 +1112,8 @@ class TestPromptRequirements:
             source_language="english",
             target_language="japanese",
             lines_block="[1] speaker: A | duration: 1.0s\n    hi",
+            video_summary="A short promo.",
+            scene_context="Two people on a street.",
         )
         assert "{" not in out.replace('{"lines"', "").replace('{"id"', "")
         assert '{"lines": [{"id": 1, "text": "<translated line>"}]}' in out

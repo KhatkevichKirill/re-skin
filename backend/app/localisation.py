@@ -6,12 +6,13 @@ This is the LLM layer of the ``localisation`` project type (design contract:
 ``docs/localisation.md``). It owns three steps and nothing else:
 
 1. :func:`transcribe_video` — a video-capable model watches the source and
-   returns the §4.1 transcript: detected source language, one entry per spoken
-   line with timestamps and a **visually grounded** speaker label, plus any
-   burned-in on-screen text kept separately.
+   returns the §4.1 transcript: detected source language, a high-level
+   ``video_summary`` and translation-oriented ``scene_context``, one entry per
+   spoken line with timestamps and a **visually grounded** speaker label, plus
+   any burned-in on-screen text kept separately.
 2. :func:`translate_lines` — a text model rewrites those lines into the target
    language, matched to each line's *spoken duration* rather than its word
-   count.
+   count, using the transcript's video context to resolve ambiguous dialogue.
 3. :func:`build_prompt` — the translated lines are formatted into the dialogue
    block and dropped into one of the two Seedance templates that live in
    :mod:`app.project_types`.
@@ -65,11 +66,13 @@ logger = logging.getLogger(__name__)
 # Bump when a prompt changes in a way that makes old output non-comparable.
 # Stored in the transcript envelope so a cached transcript always records which
 # instructions produced it.
-TRANSCRIBE_PROMPT_VERSION = "transcribe/v1"
-TRANSLATE_PROMPT_VERSION = "translate/v1"
+TRANSCRIBE_PROMPT_VERSION = "transcribe/v2"
+TRANSLATE_PROMPT_VERSION = "translate/v2"
 
 # video_projects.transcript["schema_version"] — see docs/localisation.md §4.1.
-TRANSCRIPT_SCHEMA_VERSION = 1
+# v2 adds top-level video_summary / scene_context strings. Old v1 envelopes
+# remain readable; missing context fields degrade to "" at translate time.
+TRANSCRIPT_SCHEMA_VERSION = 2
 
 # Where transcription uploads land on the kie.ai temp-file host.
 _UPLOAD_PATH = "charswap/localisation"
@@ -123,6 +126,8 @@ Return ONLY a JSON object of exactly this shape:
 
 {
   "source_language": "<ISO 639-1 code>",
+  "video_summary": "<concise summary of what happens and the video's goal>",
+  "scene_context": "<situational context needed to interpret the dialogue>",
   "lines": [
     {"id": 1, "start": 0.0, "end": 2.4,
      "speaker": "<what the speaker looks like>",
@@ -141,7 +146,20 @@ English. Report it as a lowercase ISO 639-1 code ("en", "es", "pt", "ja", \
 "de", ...). If several languages are spoken, report the one used for most of \
 the speech.
 
-2. SPEAKER LABELS. "speaker" is a short visual description that someone \
+2. VIDEO SUMMARY. "video_summary" is a short, high-level description of the \
+video's narrative, purpose and progression. Answer "what is this video about \
+and what happens?" in a few sentences. Do NOT restate the transcript line by \
+line, and do not invent events you cannot see or hear.
+
+3. SCENE CONTEXT. "scene_context" is the concrete situational evidence a \
+translator needs to resolve ambiguous dialogue: who is doing what, \
+relationships between speakers, referenced objects, visible actions, tone, \
+jokes, idioms, and deictic phrases such as "this thing" or "over there". Keep \
+it grounded in the video. Do NOT invent facts. Keep "video_summary" and \
+"scene_context" distinct — summary describes the piece; scene context explains \
+how to read the lines.
+
+4. SPEAKER LABELS. "speaker" is a short visual description that someone \
 looking at a still frame of this video could use to point at the person: "the \
 woman in the red jacket", "the man holding the phone", "off-screen \
 interviewer (camera person)". NEVER use "Speaker 1", "Speaker A", "Person B", \
@@ -151,33 +169,34 @@ position in frame, or what they are holding or doing — whatever separates them
 from the other people present. Use the SAME description every time the same \
 person speaks.
 
-3. HOW MANY SPEAKERS. Do not assume a number. There may be one, two or many. \
+5. HOW MANY SPEAKERS. Do not assume a number. There may be one, two or many. \
 Some may never appear on camera (a voice-over, or the person holding the \
 camera). Set "on_screen": true only when that speaker is visible in frame \
 while the line is spoken, and false otherwise; for an off-camera voice, say so \
 in the description as well.
 
-4. VERBATIM. Transcribe exactly what is said, including filler words ("um", \
+6. VERBATIM. Transcribe exactly what is said, including filler words ("um", \
 "like"), false starts, repetitions and interruptions. Do not fix grammar, do \
 not summarise, do not merge sentences, do not translate. How long a line is is \
 what makes the re-recording fit the footage, so "improving" the wording breaks \
 it. Write the text in the spoken language's own native script.
 
-5. TIMESTAMPS. "start" and "end" are seconds from the beginning of THIS clip, \
+7. TIMESTAMPS. "start" and "end" are seconds from the beginning of THIS clip, \
 as decimal numbers (e.g. 4.2). One entry per continuous utterance by one \
 speaker; a line must never cross a speaker change. List the lines in the order \
 they are heard.
 
-6. ON-SCREEN TEXT. Burned-in captions, subtitles, titles, price tags and \
+8. ON-SCREEN TEXT. Burned-in captions, subtitles, titles, price tags and \
 overlay graphics belong in "on_screen_text" and ONLY there — never copy them \
 into "lines". When the same words are both spoken and captioned, the spoken \
 version goes in "lines" and the caption in "on_screen_text". If the video has \
 no on-screen text at all, return an empty array.
 
-7. NO SPEECH. If nobody speaks — music only, ambience only, silence — return \
+9. NO SPEECH. If nobody speaks — music only, ambience only, silence — return \
 "lines": [] and a best-effort "source_language" (or "" if there is nothing to \
-go on). NEVER invent, guess or reconstruct dialogue you cannot actually hear. \
-An empty list is a correct answer, a hallucinated line is not.
+go on). Still fill "video_summary" and "scene_context" from what is visible. \
+NEVER invent, guess or reconstruct dialogue you cannot actually hear. An empty \
+list is a correct answer, a hallucinated line is not.
 """
 
 # response_format is sent as a hint (see the module docstring): Gemini honours
@@ -191,9 +210,17 @@ _TRANSCRIPT_JSON_SCHEMA = {
         "schema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["source_language", "lines", "on_screen_text"],
+            "required": [
+                "source_language",
+                "video_summary",
+                "scene_context",
+                "lines",
+                "on_screen_text",
+            ],
             "properties": {
                 "source_language": {"type": "string"},
+                "video_summary": {"type": "string"},
+                "scene_context": {"type": "string"},
                 "lines": {
                     "type": "array",
                     "items": {
@@ -238,6 +265,16 @@ You are localising the spoken script of a short advertising video from \
 {source_language} into {target_language}. Your lines will be spoken aloud by an \
 AI video model and lip-synced onto the original footage.
 
+VIDEO CONTEXT — use this to resolve ambiguous meaning and adapt the ad copy \
+naturally. Do not invent facts beyond what is stated here. If a block is empty, \
+rely on the lines alone.
+
+VIDEO SUMMARY:
+{video_summary}
+
+SCENE CONTEXT:
+{scene_context}
+
 Here are the lines. Each one carries its id, who says it, and the DURATION IN \
 SECONDS of the original delivery:
 
@@ -258,7 +295,8 @@ end of the shot.
 2. REWRITE, DO NOT TRANSLATE. This is ad copy, not a document. Punch, rhythm \
 and naturalness beat literal fidelity. Keep each line's intent and emotional \
 beat; change the wording as freely as you need to hit the timing and to sound \
-like something a native speaker would really say.
+like something a native speaker would really say. Use VIDEO SUMMARY and SCENE \
+CONTEXT to disambiguate references, jokes, deictic phrases and tone.
 
 3. KEEP THE REGISTER. Match how casual or formal the original is. Offhand \
 spoken street-interview {source_language} becomes offhand spoken \
@@ -361,6 +399,18 @@ def _normalise_language(code) -> str:
     if not text:
         return ""
     return re.split(r"[-_]", text)[0]
+
+
+def _normalise_context_text(value) -> str:
+    """Coerce a model-supplied ``video_summary`` / ``scene_context`` to a string.
+
+    Missing, null, non-string or otherwise unusable values become ``""`` rather
+    than raising — a transcription that got the lines right must still store a
+    usable envelope even when the model skipped the context fields.
+    """
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
 
 
 def _language_name(code: str | None) -> str:
@@ -467,7 +517,8 @@ def transcribe_video(
 
     Returns:
         The §4.1 dict: ``schema_version``, ``model``, ``prompt_version``,
-        ``created_at``, ``source_language``, ``lines``, ``on_screen_text``.
+        ``created_at``, ``source_language``, ``video_summary``,
+        ``scene_context``, ``lines``, ``on_screen_text``.
 
     Raises:
         LocalisationError: On upload failure, API failure, or an unparseable
@@ -511,6 +562,8 @@ def transcribe_video(
         "prompt_version": TRANSCRIBE_PROMPT_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_language": _normalise_language(data.get("source_language")),
+        "video_summary": _normalise_context_text(data.get("video_summary")),
+        "scene_context": _normalise_context_text(data.get("scene_context")),
         "lines": lines,
         "on_screen_text": _clean_on_screen_text(data.get("on_screen_text")),
     }
@@ -667,6 +720,8 @@ def translate_lines(
     source_language: str,
     target_language: str,
     model: str | None = None,
+    video_summary: str = "",
+    scene_context: str = "",
 ) -> list[dict]:
     """
     Translate transcript *lines* into *target_language*, 1:1 and in order.
@@ -677,6 +732,10 @@ def translate_lines(
 
     The line's **duration** — not its length — is what the model is asked to
     match, because the result is spoken aloud over fixed footage.
+    Optional *video_summary* / *scene_context* (from the §4.1 transcript) are
+    injected into the prompt so ambiguous dialogue can be adapted from the
+    video situation rather than from isolated lines. Both default to ``""`` so
+    callers and old cached transcripts without those fields keep working.
 
     Args:
         lines: §4.1 line dicts, normally the output of :func:`slice_lines`.
@@ -685,6 +744,8 @@ def translate_lines(
         target_language: Target code from :mod:`app.languages`, e.g. ``"ja"``.
         model: Override ``settings.LOCALISATION_TRANSLATE_MODEL``. Sent in the
             request **body** (this is the Responses route, not the chat route).
+        video_summary: High-level narrative/purpose of the source video.
+        scene_context: Situational evidence for resolving ambiguous dialogue.
 
     Returns:
         A new list, same length and order as *lines*, ids preserved.
@@ -726,6 +787,8 @@ def translate_lines(
         source_language=_language_name(source_language),
         target_language=_language_name(target_language),
         lines_block=_lines_block(lines),
+        video_summary=_normalise_context_text(video_summary) or "(none provided)",
+        scene_context=_normalise_context_text(scene_context) or "(none provided)",
     )
 
     for attempt in range(1, _TRANSLATE_ATTEMPTS + 1):
@@ -837,14 +900,15 @@ def build_prompt(
     The two templates live in :mod:`app.project_types` beside the other default
     prompts, because they are prompts an operator may want to edit, not logic:
 
-    * ``_LOCALISATION_SWAP_PROMPT`` — replace the person *and* the language
-      (what run ``1736426f`` did; a reference image is expected).
-    * ``_LOCALISATION_KEEP_PROMPT`` — change only the language, preserving the
-      person on screen.
+    * ``_LOCALISATION_SWAP_PROMPT`` — replace the person *and* re-speak the
+      translated dialogue with adaptive lip sync (reference image expected).
+    * ``_LOCALISATION_KEEP_PROMPT`` — re-speak only, preserving the person on
+      screen while still adapting mouth/facial motion to the new language.
 
     Both carry ``{source_language}``, ``{target_language}`` and ``{dialogue}``
     slots. Languages are interpolated as lowercase English names ("english",
-    "japanese"), matching the proven prompt's "(from english to japanese)".
+    "japanese"). The templates intentionally permit speech-related facial
+    motion; output quality remains model-dependent.
 
     Args:
         lines: Translated lines (from :func:`translate_lines`) for the window

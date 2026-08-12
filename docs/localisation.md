@@ -52,6 +52,10 @@ These are properties of the type, not operator preferences:
 | `VideoProject.mute_source` | default **true** | Seedance mixes the original language into its output when it can hear the source track. Muting the upload beats prompting. |
 | `Run.audio_mode` | default **`seedance`** | `original` overlays the source (untranslated) soundtrack over the generated video, silently destroying the localisation. |
 | Model | must have `produces_audio=True` | Gemini Omni never emits audio, and `create_run` force-downgrades such runs to `audio_mode="original"` — unusable here. |
+| Default model | **`seedance-fast`** (Seedance 2.0 Fast) | Operational default: faster and cheaper for routine localisation. Hard ceiling **15s per generated clip** — longer material must be split into valid segments (the project `max_segment_sec` / hook clamp already keep proposed hooks ≤ the segmentation cap; submit-time validation refuses to send an over-limit clip). **Seedance 2.5** remains registered and selectable when its 30s ceiling or explicit `generate_audio` switch is worth the extra cost. |
+
+The proven first run (`1736426f` above) used Seedance 2.5; that is historical
+evidence, not the current New Run default.
 
 ## 3. Data model
 
@@ -104,11 +108,13 @@ Stored verbatim in `video_projects.transcript`.
 
 ```jsonc
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "model": "gemini-2.5-pro",          // resolved model actually used
-  "prompt_version": "transcribe/v1",  // localisation.TRANSCRIBE_PROMPT_VERSION
+  "prompt_version": "transcribe/v2",  // localisation.TRANSCRIBE_PROMPT_VERSION
   "created_at": "2026-08-09T12:00:00Z",
   "source_language": "en",            // ISO 639-1, DETECTED (never assumed)
+  "video_summary": "A street interview promo: an off-screen interviewer asks a woman about listening to emails, then she demonstrates the product.",
+  "scene_context": "Off-screen interviewer holding the camera; woman in a patterned shirt holds a phone. 'Oh, I'm not.' answers whether she is reading emails the hard way. Product is Speechify.",
   "lines": [
     {
       "id": 1,                        // 1-based, stable, used to re-join translations
@@ -126,6 +132,16 @@ Stored verbatim in `video_projects.transcript`.
 ```
 
 Rules:
+- `video_summary` is a short, high-level description of the video's narrative,
+  purpose and progression ("what is this about and what happens?"). It must not
+  restate the transcript line by line.
+- `scene_context` is translation-oriented situational evidence: who is doing
+  what, speaker relationships, referenced objects, visible actions, tone,
+  jokes, idioms, deictic phrases. Grounded in the video; must not invent facts.
+  Keep it distinct from `video_summary`.
+- Both are plain strings. New transcriptions always store them (empty string
+  when the model omitted a usable value). Cached v1 transcripts that lack
+  either field still translate — callers treat a missing key as `""`.
 - `speaker` is a **visually grounded, free-text role**, not `speaker_0`. It is
   handed to Seedance, which must be able to map the line onto a person it can
   see ("the woman in the red jacket", "off-screen interviewer"). This is the
@@ -138,8 +154,8 @@ Rules:
 ### 4.2 `app/localisation.py` public API
 
 ```python
-TRANSCRIBE_PROMPT_VERSION = "transcribe/v1"
-TRANSLATE_PROMPT_VERSION  = "translate/v1"
+TRANSCRIBE_PROMPT_VERSION = "transcribe/v2"
+TRANSLATE_PROMPT_VERSION  = "translate/v2"
 
 class LocalisationError(Exception): ...
 
@@ -147,9 +163,13 @@ def transcribe_video(video_path: str, *, kie=None, model: str | None = None) -> 
     # -> the §4.1 dict. Raises LocalisationError on API/parse failure.
 
 def translate_lines(lines: list[dict], *, source_language: str,
-                    target_language: str, model: str | None = None) -> list[dict]
+                    target_language: str, model: str | None = None,
+                    video_summary: str = "", scene_context: str = "") -> list[dict]
     # -> same lines with "text" replaced by the translation and
     #    "source_text" carrying the original. Same ids, same order, 1:1.
+    #    video_summary / scene_context are optional keyword-only inputs
+    #    injected into the translate prompt; omit them (or pass "") for
+    #    old cached transcripts.
 
 def slice_lines(lines: list[dict], start: float, end: float) -> list[dict]
     # Lines overlapping [start, end). Used to cut the hook window.
@@ -201,6 +221,8 @@ strings above. The final Seedance prompt templates live in
 
 **Transcription prompt** must:
 - detect the source language rather than assume it;
+- emit a grounded `video_summary` (high-level narrative/purpose) and a distinct
+  `scene_context` (situational evidence for translating ambiguous dialogue);
 - label speakers by what is visible on screen (§4.1);
 - separate spoken dialogue from on-screen text into the two fields;
 - stay verbatim;
@@ -211,6 +233,8 @@ strings above. The final Seedance prompt templates live in
 - receive each line's **duration in seconds** and target the same *spoken*
   duration, not the same word count (literal EN→JA overruns badly and the hook
   either races or does not fit);
+- receive `video_summary` and `scene_context` and use them to resolve meaning
+  while preserving the hard 1:1 / timing / brand constraints;
 - be free to rephrase — this is ad copy, punch beats literalness;
 - leave brand/product names (e.g. Speechify), numbers and prices untranslated;
 - keep the original's casual spoken register;
@@ -220,10 +244,22 @@ strings above. The final Seedance prompt templates live in
 
 **Seedance prompt templates** (two, both with `{source_language}`,
 `{target_language}`, `{dialogue}` slots):
-- `_LOCALISATION_SWAP_PROMPT` — derived from the run `1736426f` text verbatim,
-  generalised only where the slots go.
-- `_LOCALISATION_KEEP_PROMPT` — same, minus the character replacement, plus an
-  explicit instruction to preserve the person's identity and appearance.
+- `_LOCALISATION_SWAP_PROMPT` — replace the on-screen person with the reference
+  character **and** re-speak the assigned translated dialogue. Requires natural
+  lip sync / mouth timing for the target language, plus speech-related facial
+  expressions and reactions. Preserves non-speech continuity (framing, camera,
+  background, lighting, props, device screens and their contents, captions /
+  on-screen text) and overall body action except speech-related adjustments.
+  Does **not** ask the model to freeze original lip motion.
+- `_LOCALISATION_KEEP_PROMPT` — same speech / lip / continuity rules, but keep
+  the original person's identity, appearance, hair and clothing (no character
+  replacement).
+
+Early localisation inherited a face-swap paragraph (historical run `1736426f`)
+that said to keep "the original motion and lip movements". That wording
+conflicts with localisation and is no longer the contract. Model output is
+probabilistic: the prompt instructs adaptive lips and reactions, but perfect
+sync is not guaranteed for every clip or language.
 
 ### 4.4 HTTP endpoints
 
@@ -386,6 +422,9 @@ segments = swap[0, hook] (+ split into <= cap chunks if hook > cap)
 - `default_mute_source: bool` — False everywhere, True for localisation
 - `requires_audio_model: bool` — True for localisation; filters the New Run
   model list by `ai_models.spec_for(m).produces_audio`
+- `default_model: str` — localisation defaults to `seedance-fast` (15s per
+  clip). Seedance 2.5 stays available as an explicit operator choice for
+  longer hooks / `generate_audio`.
 
 ## 7. UI
 
