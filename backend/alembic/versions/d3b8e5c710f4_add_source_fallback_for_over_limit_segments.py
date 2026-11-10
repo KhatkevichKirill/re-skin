@@ -7,8 +7,9 @@ Background. VideoProject.max_segment_sec (migration c8d2f4a6e971) lets a project
 be segmented up to 30s so Seedance 2.5 can be used to its full length. The model
 is still chosen per-Run, so a project cut at 30s can be run on a 15s model. Until
 now that combination marked each over-long segment `failed`, and the completeness
-gate in pipeline_v2.process_run — which refuses to stitch a mix of swapped and
-un-swapped clips — then left the whole run `incomplete` with no video at all.
+gate in pipeline_v2._run_stitch_and_deliver — which refuses to stitch a mix of
+swapped and un-swapped clips — then left the whole run `incomplete` with no video
+at all.
 
 That is the wrong trade for THIS failure specifically, because it is
 deterministic: the segment can never generate on that model, so "retry it" is not
@@ -30,16 +31,17 @@ Two columns:
         run is retroactively reinterpreted as partly un-swapped.
 
   - runs.source_fallback_segments  INTEGER NULL
-        Count of the above per run, written once at stitch time. Denormalised on
-        purpose: a `done` run whose video is only partly swapped has to be
-        visible in the runs list without a per-row segment query. Nullable
-        because NULL ("not recorded" — run predates this column, or never
-        stitched) is meaningfully different from 0 ("checked, fully swapped"), so
-        there is deliberately no backfill.
+        Count of the above per run, written once at finalize (same pattern as
+        runs.result_duration_sec). Denormalised on purpose: a `done` run whose
+        video is only partly swapped has to be visible in the runs list and the
+        automation webhook without a per-row segment query. Nullable because
+        NULL ("not recorded" — run predates this column, or never finalized) is
+        meaningfully different from 0 ("checked, fully swapped"), so there is
+        deliberately no backfill.
 
 Revision ID: d3b8e5c710f4
 Revises: c8d2f4a6e971
-Create Date: 2026-08-10 12:30:00.000000
+Create Date: 2026-08-07 16:30:00.000000
 
 """
 from typing import Sequence, Union
@@ -68,8 +70,8 @@ def upgrade() -> None:
         ),
     )
     # Nullable with NO server_default: NULL means "not recorded", which is not
-    # the same as 0 ("stitched and fully swapped"). Backfilling to 0 would claim
-    # we had verified pre-existing runs when we had not.
+    # the same as 0 ("finalized and fully swapped"). Backfilling to 0 would
+    # claim we had verified pre-existing runs when we had not.
     op.add_column(
         'runs',
         sa.Column('source_fallback_segments', sa.Integer(), nullable=True),

@@ -1,0 +1,62 @@
+# Opt-in application integration, used with the root docker-compose.yml.
+# Read README.md and broker-runbook.md before enabling. No account credentials
+# or native config directory are mounted into the API or supervisor.
+services:
+  api:
+    environment:
+      ASSISTANT_ENABLED: 'true'
+      ASSISTANT_AGENT_ENABLED: ${ASSISTANT_AGENT_ENABLED:-false}
+      ASSISTANT_PROJECT_IDS: ${ASSISTANT_PROJECT_IDS:-}
+      ASSISTANT_ALL_PROJECTS: ${ASSISTANT_ALL_PROJECTS:-false}
+      ASSISTANT_BROKER_SOCKET: /run/reskin-assistant/broker.sock
+    volumes:
+      - type: bind
+        source: ${ASSISTANT_SOCKET_DIR:?dedicated broker socket directory required}
+        target: /run/reskin-assistant
+        read_only: true
+        bind:
+          create_host_path: false
+
+  assistant-supervisor:
+    image: re-skin-api:latest
+    command: ['python', '-m', 'worker.assistant_supervisor']
+    user: '10001:10001'
+    init: true
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    mem_limit: 2g
+    cpus: '2'
+    pids_limit: 128
+    # SIGTERM stops new work; allow the bounded 600s current edit to complete
+    # with lease renewals instead of killing a healthy portrait render early.
+    stop_grace_period: 660s
+    environment:
+      APP_BASE_DIR: /app
+      DATA_DIR: /app/data
+      DATABASE_URL: ${DATABASE_URL:?application database URL required}
+      ASSISTANT_ENABLED: 'true'
+      ASSISTANT_AGENT_ENABLED: ${ASSISTANT_AGENT_ENABLED:-false}
+      ASSISTANT_PROJECT_IDS: ${ASSISTANT_PROJECT_IDS:-}
+      ASSISTANT_ALL_PROJECTS: ${ASSISTANT_ALL_PROJECTS:-false}
+      ASSISTANT_BROKER_SOCKET: /run/reskin-assistant/broker.sock
+      PYTHONDONTWRITEBYTECODE: '1'
+      ASSISTANT_EDIT_TIMEOUT_SEC: ${ASSISTANT_EDIT_TIMEOUT_SEC:-600}
+      PYTHONUNBUFFERED: '1'
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,mode=1777,size=128m
+    volumes:
+      - ./data:/app/data
+      - type: bind
+        source: ${ASSISTANT_SOCKET_DIR:?dedicated broker socket directory required}
+        target: /run/reskin-assistant
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      db:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: '2'}

@@ -22,4 +22,6 @@ node_modules/
 *.db-shm
 tasks/
 docs/
+# AICP-297: the importer verifies this frozen manifest by sha256 (backend/Dockerfile copies it).
+!docs/knowledge/holdout-manifest-v1.json
 scripts/e2e_*.py

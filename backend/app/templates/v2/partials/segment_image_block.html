@@ -1,0 +1,124 @@
+{# Per-segment GPT Image regeneration — "a third block in the segment panel"
+   (docs/gpt-image-2-preprocess.md's per-segment regeneration section).
+
+   Rendered from ONE file in two places so they can never disagree:
+     · inline, inside id="segimg-{{ rs.id }}", by run_status_content.html's
+       per-segment loop (initial page render + every top-level 2s status poll
+       while the run is still active), and
+     · as this run's segment-image-jobs-fragment response, wrapped in an
+       hx-swap-oob div per segment (see partials/run_segment_image_jobs_fragment.html)
+       — that response is the ONLY place hx-swap-oob is added; this file itself
+       stays swap-agnostic so it renders identically either way.
+
+   Context: `run`, `rs` (window_start/window_end/image_jobs/image_jobs_active
+   stamped by web_v2._get_run_segments), `default_segment_image_prompt`. Event
+   handling is delegated (see run_status_content.html's single shared
+   <script> block) rather than bound here, because this template is re-run
+   for every segment AND re-swapped on every poll — direct listeners would
+   either duplicate or be lost. #}
+{% from "error_detail.html" import error_detail %}
+{% set applied_job = none %}
+{% for j in rs.image_jobs %}{% if j.id == rs.generated_image_job_id %}{% set applied_job = j %}{% endif %}{% endfor %}
+{% set midpoint = ((rs.window_start + rs.window_end) / 2) if (rs.window_start is not none and rs.window_end is not none) else none %}
+
+<div class="form-group" style="margin-bottom:0;border-top:1px solid #e0e0e0;padding-top:8px;margin-top:8px">
+  <label style="font-size:12px;font-weight:600">Generated image (GPT Image)
+    <span style="font-weight:400;color:var(--color-muted)">
+      — regenerate this segment's reference image, then Re-run it above
+    </span>
+  </label>
+
+  {% if rs.generated_reference_urls %}
+  <div style="display:flex;align-items:center;gap:8px;margin:6px 0">
+    {% if applied_job %}
+    <img
+      src="/api/v2/runs/{{ run.id }}/segments/{{ rs.id }}/image-jobs/{{ applied_job.id }}/image?which=output"
+      alt="applied generated image"
+      style="width:56px;height:56px;object-fit:cover;border-radius:4px;border:2px solid #2a7"
+      onerror="this.style.display='none'"
+    />
+    {% endif %}
+    <span style="font-size:11px;color:#2a7">
+      ✓ Applied — this segment sends <strong>[character photo, generated image]</strong>
+      instead of the run-level reference set
+    </span>
+    <button type="button" class="btn btn-sm btn-secondary segimg-clear-btn"
+            data-run-id="{{ run.id }}" data-rs-id="{{ rs.id }}">
+      Clear generated image
+    </button>
+  </div>
+  {% endif %}
+
+  <form class="segimg-form" data-run-id="{{ run.id }}" data-rs-id="{{ rs.id }}" style="display:grid;gap:6px;margin-top:6px">
+    <textarea name="prompt" rows="2" placeholder="GPT Image prompt"
+              style="width:100%;font-size:12px;resize:vertical">{{ default_segment_image_prompt }}</textarea>
+
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      {% if run.reference_image_urls %}
+      <img src="/api/v2/runs/{{ run.id }}/reference-image?index=0" alt="character photo"
+           title="Defaults to the run's own character photo"
+           style="width:36px;height:36px;object-fit:cover;border-radius:4px;border:1px solid #ccc" />
+      {% endif %}
+      <span style="font-size:11px;color:var(--color-muted)">Character photo (blank = run's photo):</span>
+      <input type="file" name="character_file" accept="image/*" style="font-size:12px" />
+      <input type="text" name="character_url" placeholder="or a URL" style="font-size:12px;width:160px" />
+    </div>
+    {% include "_drive_sa_notice.html" %}
+
+    <div style="display:flex;align-items:center;gap:8px">
+      <label style="font-size:11px;color:var(--color-muted)">Frame timestamp (s)</label>
+      <input type="number" name="frame_sec" step="0.1"
+             {% if rs.window_start is not none %}min="{{ "%.1f"|format(rs.window_start) }}"{% endif %}
+             {% if rs.window_end is not none %}max="{{ "%.1f"|format(rs.window_end) }}"{% endif %}
+             {% if midpoint is not none %}value="{{ "%.1f"|format(midpoint) }}"{% endif %}
+             style="width:90px;font-size:12px" />
+      {% if rs.window_start is not none and rs.window_end is not none %}
+      <span style="font-size:11px;color:var(--color-muted)">
+        window {{ "%.1f"|format(rs.window_start) }}s&ndash;{{ "%.1f"|format(rs.window_end) }}s
+      </span>
+      {% endif %}
+    </div>
+
+    <div class="action-row" style="gap:8px;margin-top:2px">
+      <button type="submit" class="btn btn-secondary" style="font-size:12px;padding:5px 12px"
+              {% if rs.image_jobs_active %}disabled{% endif %}>
+        Regenerate image
+      </button>
+      <span class="segimg-status" style="font-size:12px;color:var(--color-muted)">
+        {% if rs.image_jobs_active %}generating…{% endif %}
+      </span>
+    </div>
+  </form>
+
+  {% if rs.image_jobs %}
+  <div style="margin-top:8px">
+    <div style="font-size:11px;font-weight:600;color:var(--color-muted);margin-bottom:2px">Attempt history</div>
+    {% for j in rs.image_jobs %}
+    {% set j_status = j.status.value if j.status and j.status.__class__.__name__ != 'str' else j.status|string %}
+    <div style="display:flex;align-items:center;gap:8px;font-size:11px;padding:4px 0;border-bottom:1px solid #f2f2f2;flex-wrap:wrap">
+      {% if j_status == "done" %}
+      <img src="/api/v2/runs/{{ run.id }}/segments/{{ rs.id }}/image-jobs/{{ j.id }}/image?which=output"
+           alt="attempt" style="width:32px;height:32px;object-fit:cover;border-radius:4px;border:1px solid #ccc"
+           onerror="this.style.display='none'" />
+      {% endif %}
+      <span class="badge badge-{{ j_status }}">{{ j_status }}</span>
+      <span title="{{ j.prompt }}" style="max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ j.prompt }}</span>
+      <span style="color:var(--color-muted)">@ {{ "%.1f"|format(j.frame_sec) }}s</span>
+      {% if j.cost_credits is not none %}
+      <span class="badge badge-cost">{{ "%g"|format(j.cost_credits) }} credits</span>
+      {% endif %}
+      {% if j_status == "done" %}
+      <button type="button" class="btn btn-sm btn-secondary segimg-apply-btn"
+              data-run-id="{{ run.id }}" data-rs-id="{{ rs.id }}" data-job-id="{{ j.id }}"
+              {% if j.id == rs.generated_image_job_id %}disabled title="Already applied"{% endif %}>
+        Apply
+      </button>
+      {% endif %}
+      {% if j_status == "failed" and j.error_message %}
+      <span style="color:#c00">{{ error_detail(j.error_message) }}</span>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>

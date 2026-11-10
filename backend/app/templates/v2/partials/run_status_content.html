@@ -1,6 +1,84 @@
+{% from "error_detail.html" import error_detail %}
 {% set sv = status_val %}
 
-{% if sv in ("created", "queued", "processing", "stitching", "delivering") %}
+{% if run.reference_image_urls %}
+<!-- __ Reference images (originals + GPT Image results) __ -->
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header"><h2>Reference images</h2></div>
+  <div class="card-body">
+    {# Trims staged off the source video carry the timestamp they were cut at
+       in their filename (storage.staged_frame_timestamp); show it under the
+       thumbnail the same way the GPT Image results show their prompt, so
+       "which moment is this frame from?" is answerable without re-staging it.
+       Uploads and outside URLs have no timestamp and get no caption. #}
+    <div style="display:flex; flex-wrap:wrap; gap:8px">
+      {% for i in range(run.reference_image_urls|length) %}
+      {% set trim_at = run.reference_image_urls[i] | trim_time %}
+      <div style="display:flex; flex-direction:column; align-items:center; gap:2px">
+        <img
+          src="/api/v2/runs/{{ run.id }}/reference-image?index={{ i }}"
+          alt="reference {{ i }}"
+          loading="lazy"
+          {% if trim_at %}title="frame from the source video @ {{ trim_at }}"{% endif %}
+          style="width:96px; height:96px; object-fit:cover; border-radius:4px; border:1px solid #ccc"
+          onerror="this.style.display='none'"
+        />
+        {% if trim_at %}
+        <span class="trim-time" style="font-size:10px; color:var(--color-muted)">&#9201; {{ trim_at }}</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% if run.preprocess_enabled and run.preprocessed_reference_urls %}
+    <div style="margin-top:12px">
+      <div style="font-size:12px; font-weight:600; margin-bottom:6px">GPT Image results</div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px">
+        {% for i in range(run.preprocessed_reference_urls|length) %}
+        <div style="display:flex; flex-direction:column; align-items:center; gap:2px">
+          <img
+            src="/api/v2/runs/{{ run.id }}/preprocessed-image?index={{ i }}"
+            alt="preprocessed {{ i }}"
+            loading="lazy"
+            style="width:96px; height:96px; object-fit:cover; border-radius:4px; border:1px solid #ccc"
+            onerror="this.style.display='none'"
+          />
+          {% if run.preprocess_image_prompts and i < run.preprocess_image_prompts|length and run.preprocess_image_prompts[i] %}
+          <span style="font-size:10px; color:var(--color-muted); max-width:96px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis" title="{{ run.preprocess_image_prompts[i] }}">{{ run.preprocess_image_prompts[i] }}</span>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if run.reference_audio_urls %}
+<!-- __ Voice reference — the sample the generated speech was matched to __ -->
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header"><h2>Voice reference</h2></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">
+      The generated speech takes this sample's timbre instead of a voice the model
+      invents per generation. This is the run's own copy — deleting the library
+      voice does not change it, and a copy of this run reuses it.
+    </p>
+    {% for i in range(run.reference_audio_urls|length) %}
+    <audio controls preload="none" style="width:100%; max-width:420px; display:block"
+           src="/api/v2/runs/{{ run.id }}/voice-reference?index={{ i }}"></audio>
+    {% endfor %}
+    {% if run.audio_mode == "original" and run.stitch_plan != [] %}
+    <p class="hint" style="color:var(--color-danger,#c0392b); font-weight:600; margin-bottom:0">
+      ⚠ This run stitches with <strong>Original</strong> audio, so the generated
+      tracks were discarded and this voice did not reach the delivered video.
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if sv in ("created", "queued", "preprocessing", "processing", "stitching", "delivering") %}
 <!-- __ In-progress: polling __ -->
 <div class="card">
   <div class="card-body">
@@ -14,7 +92,11 @@
       <span class="spinner"></span>
       <span>
         Status: <strong>{{ sv }}</strong>
-        {% if total_swap %}
+        {% if sv == "preprocessing" and run.preprocess_auto_approve %}
+          &mdash; preprocessing reference images with GPT Image — results are approved automatically (this copy reuses a recipe you already approved), so generation starts straight after
+        {% elif sv == "preprocessing" %}
+          &mdash; preprocessing reference images with GPT Image — you'll be asked to approve the results before the run starts
+        {% elif total_swap %}
           &mdash; {{ completed }} / {{ total_swap }} swap segments completed
           {% if generating_seg %}
             &mdash; generating segment {{ generating_seg.index }}
@@ -22,8 +104,431 @@
         {% endif %}
       </span>
     </div>
+
+    {# Clips that have already landed, linked one by one. The point is to see a
+       bad generation while the run is still going — waiting for the stitch to
+       find out costs the remaining segments' credits. Only segments with a
+       file on disk appear; the list re-renders with the 2s status poll. #}
+    {% set ready_segs = run_segments | selectattr("clip_url") | list %}
+    {% if ready_segs %}
+    <div style="margin-top:10px;font-size:12px">
+      <span style="color:var(--color-muted)">Generated so far:</span>
+      {% for rs in ready_segs %}
+      <a href="{{ rs.clip_url }}" target="_blank" rel="noopener" style="margin-left:6px"
+         title="Open the raw clip Seedance returned for segment {{ rs.index }}">▶ segment {{ rs.index }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
 </div>
+
+{% if rebuild_chunks %}
+{# Images-only (rebuild) run in progress: per-chunk status + attempts. #}
+{% include "partials/run_rebuild_chunks.html" %}
+{% endif %}
+
+{% elif sv == "preprocess_review" %}
+<!-- __ R2-new: GPT Image results ready — operator approves before Seedance starts __ -->
+<div class="card">
+  <div class="card-header"><h2>Review GPT Image results</h2></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">
+      Preprocessing is done. Review the generated reference images below —
+      approve to start the run, regenerate a single image, or regenerate
+      everything with new prompts / reference images. Seedance/Gemini Omni will
+      <strong>not</strong> start until you approve.
+    </p>
+    {% if run.error_message %}
+    {# A GPT Image task failed while other images survived, so the run parked
+       here instead of failing outright — the slot it left empty is marked in
+       the grid below. #}
+    <div class="alert alert-warning" style="margin-bottom:12px">
+      <strong>Last generation failed:</strong> {{ run.error_message }}
+    </div>
+    {% endif %}
+    {% if run.preprocessed_reference_urls %}
+    {# Index 0 is the character photo (context for every task, never
+       transformed); 1.. are the generated trims. Each generated image carries a
+       delete button so a stray trim — the classic one is the character photo
+       pasted into the trims field a second time — can be dropped without
+       regenerating (and rebilling) the good ones. all_as_refs produces a single
+       combined image, where per-index deletion means nothing, so the buttons
+       are hidden there and the API refuses it too. #}
+    {% set per_image_refs = (run.preprocess_mode or "per_image") != "all_as_refs" %}
+    <div style="margin:12px 0">
+      <div style="font-size:12px; font-weight:600; margin-bottom:6px">GPT Image results</div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px">
+        {% for i in range(run.preprocessed_reference_urls|length) %}
+        {% set slot_empty = not run.preprocessed_reference_urls[i] %}
+        <div style="display:flex; flex-direction:column; align-items:center; gap:2px; position:relative">
+          {% if slot_empty %}
+          {# No image in this slot: a regenerated one that failed or never came
+             back. Approve refuses to start until it is filled or dropped. #}
+          <div style="width:128px; height:128px; border-radius:4px; border:1px dashed var(--color-danger,#c0392b); display:flex; align-items:center; justify-content:center; text-align:center; font-size:10px; color:var(--color-danger,#c0392b); padding:6px">
+            no image &mdash; regenerate&nbsp;it
+          </div>
+          {% else %}
+          <img
+            src="/api/v2/runs/{{ run.id }}/preprocessed-image?index={{ i }}"
+            alt="preprocessed {{ i }}"
+            loading="lazy"
+            style="width:128px; height:128px; object-fit:cover; border-radius:4px; border:1px solid #ccc"
+            onerror="this.style.display='none'"
+          />
+          {% endif %}
+          {% if i == 0 %}
+          <span style="font-size:10px; color:var(--color-muted)">character photo (context)</span>
+          {% elif per_image_refs %}
+          <button
+            type="button"
+            title="Regenerate just this image — the others are kept as they are"
+            onclick="openRegenerateOne({{ i }})"
+            style="position:absolute; top:4px; left:4px; width:20px; height:20px; line-height:18px; padding:0; border-radius:50%; border:1px solid #fff; background:rgba(0,0,0,0.6); color:#fff; font-size:12px; cursor:pointer"
+          >&#8635;</button>
+          <button
+            type="button"
+            title="Delete this reference — it will not be sent to the AI video model"
+            onclick="deletePreprocessRef('{{ run.id }}', {{ i }})"
+            style="position:absolute; top:4px; right:4px; width:20px; height:20px; line-height:18px; padding:0; border-radius:50%; border:1px solid #fff; background:rgba(0,0,0,0.6); color:#fff; font-size:13px; cursor:pointer"
+          >&times;</button>
+          {% endif %}
+          {# Which moment of the video this image was generated FROM. Only in
+             per_image mode does result i come from trim i; all_as_refs melts
+             every trim into one image, where no single timestamp is true. #}
+          {% if per_image_refs and i < run.reference_image_urls|length %}
+          {% set trim_at = run.reference_image_urls[i] | trim_time %}
+          {% if trim_at %}
+          <span class="trim-time" style="font-size:10px; color:var(--color-muted)">&#9201; {{ trim_at }}</span>
+          {% endif %}
+          {% endif %}
+          {% if run.preprocess_image_prompts and i < run.preprocess_image_prompts|length and run.preprocess_image_prompts[i] %}
+          <span style="font-size:10px; color:var(--color-muted); max-width:128px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis" title="{{ run.preprocess_image_prompts[i] }}">{{ run.preprocess_image_prompts[i] }}</span>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% if per_image_refs %}
+      <p class="hint" style="margin:6px 0 0">
+        Every image above is sent to the AI video model for <strong>every</strong>
+        segment. Use &#8635; to regenerate <strong>one</strong> image on its own
+        &mdash; only that one is generated again, the rest are kept and not
+        re-billed. Use &times; to drop one you did not want.
+      </p>
+
+      <!-- Single-image regenerate: one shared editor, filled in for whichever
+           image the operator picked. -->
+      <div id="regen-one-panel" style="display:none; margin-top:10px; padding:10px; border:1px solid #e0e0e0; border-radius:4px; max-width:560px">
+        <div style="font-size:12px; font-weight:600; margin-bottom:4px">
+          Regenerate image #<span id="regen-one-index"></span> only
+        </div>
+        <p class="hint" style="margin-top:0">
+          Edit the prompt, or leave it as it is to re-roll the same one (GPT
+          Image 2 gives a different image each time). Nothing else about the run
+          changes and the other images are not regenerated.
+        </p>
+        <textarea
+          id="regen-one-prompt"
+          rows="3"
+          style="width:100%; font-size:13px; resize:vertical; font-family:var(--font-mono,monospace)"
+        ></textarea>
+        <div class="action-row" style="gap:8px; margin-top:6px">
+          <button type="button" class="btn btn-primary" onclick="submitRegenerateOne('{{ run.id }}')">Regenerate this image</button>
+          <button type="button" class="btn btn-secondary" onclick="closeRegenerateOne()">Cancel</button>
+          <span id="regen-one-status" class="text-muted" style="font-size:12px"></span>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+    <div class="action-row" style="margin-top:12px">
+      <button type="button" class="btn btn-success" onclick="approvePreprocess('{{ run.id }}')">Approve — start the run</button>
+      <button type="button" class="btn btn-secondary" onclick="toggleRegenerateForm()">Regenerate</button>
+      <span id="preprocess-approve-status" class="text-muted" style="font-size:12px"></span>
+    </div>
+
+    <div id="regenerate-preprocess-form" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid #e0e0e0">
+      <p class="hint" style="margin-top:0">
+        Provide a new character reference photo and/or new trim prompts and/or
+        new trim reference images. The character reference photo is sent as
+        context to every GPT Image task (it is NOT transformed). Old
+        preprocessed images are deleted and preprocessing re-runs.
+      </p>
+      <form id="regenerate-preprocess-form-el" enctype="multipart/form-data" style="display:grid; gap:8px; max-width:560px">
+        <div class="form-group" style="margin-bottom:0">
+          <label style="font-size:12px; font-weight:600">Character reference photo (optional — leave blank to keep current)</label>
+          <input type="file" name="preprocess_reference_file" id="regenerate-preprocess-reference-file" accept="image/*" style="font-size:12px" />
+          <input type="text" name="preprocess_reference_url" id="regenerate-preprocess-reference-url" placeholder="https://example.com/character.jpg" style="width:100%; font-size:12px; margin-top:4px" />
+          {% include "_drive_sa_notice.html" %}
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label style="font-size:12px; font-weight:600">Trim prompts
+            <span style="font-weight:400;color:var(--color-muted)">(one per line, in trim order; blank = pass-through)</span>
+          </label>
+          <textarea
+            id="regenerate-trim-prompts"
+            rows="4"
+            placeholder="make the face match the reference photo, keep the background&#10;make a clean side profile"
+            style="width:100%; font-size:13px; resize:vertical; font-family:var(--font-mono,monospace)"
+          ></textarea>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label style="font-size:12px; font-weight:600">New trims (optional — replaces current trims)</label>
+          {# Trims are frames of THIS project's source video and nothing else —
+             same rule the New Run form enforces, and the API rejects anything
+             that is not a staged frame. So the only way to supply them here is
+             the picker, not a file/URL box that would let the character photo
+             back in. Adding no frame keeps the current trims. #}
+          <p class="hint" style="margin-top:0">
+            Grab them from the source video — trims are video frames; the
+            character photo has its own field above.
+          </p>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+            <label style="font-size:12px">Timestamp (s)</label>
+            <input type="number" id="regen-frame-timestamp" min="0" step="0.1" value="0" style="width:90px; font-size:12px" />
+            <button type="button" class="btn btn-secondary" onclick="regenAddFrame('{{ project_id }}')" style="font-size:12px">Add frame</button>
+            <span id="regen-frame-status" style="font-size:12px; color:var(--color-muted)"></span>
+          </div>
+          <div id="regen-frame-thumbs" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px"></div>
+        </div>
+        <div class="action-row" style="gap:8px">
+          <button type="button" class="btn btn-primary" onclick="submitRegeneratePreprocess('{{ run.id }}')">Regenerate</button>
+          <span id="regenerate-preprocess-status" class="text-muted" style="font-size:12px"></span>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+// Prompts as the server has them, so the single-image editor opens on the
+// prompt that actually produced the image being replaced.
+var PREPROCESS_PROMPTS = {{ (run.preprocess_image_prompts or []) | tojson }};
+
+function toggleRegenerateForm() {
+  var f = document.getElementById('regenerate-preprocess-form');
+  if (f) f.style.display = (f.style.display === 'none') ? '' : 'none';
+}
+
+// __ Regenerate ONE image __
+// The index is the position in the reference list — the same index the delete
+// button and the API use, where 0 is the character photo.
+var regenOneIndex = null;
+
+function openRegenerateOne(index) {
+  var panel = document.getElementById('regen-one-panel');
+  var ta = document.getElementById('regen-one-prompt');
+  var label = document.getElementById('regen-one-index');
+  var statusEl = document.getElementById('regen-one-status');
+  if (!panel) return;
+  regenOneIndex = index;
+  if (label) label.textContent = index;
+  if (ta) ta.value = PREPROCESS_PROMPTS[index] || '';
+  if (statusEl) statusEl.textContent = '';
+  panel.style.display = '';
+  panel.scrollIntoView({ block: 'nearest' });
+  if (ta) ta.focus();
+}
+
+function closeRegenerateOne() {
+  var panel = document.getElementById('regen-one-panel');
+  regenOneIndex = null;
+  if (panel) panel.style.display = 'none';
+}
+
+function submitRegenerateOne(runId) {
+  var statusEl = document.getElementById('regen-one-status');
+  var ta = document.getElementById('regen-one-prompt');
+  if (regenOneIndex === null) return;
+  var promptText = ta ? ta.value.trim() : '';
+  if (!promptText) {
+    if (statusEl) statusEl.textContent = 'Give this image a prompt first.';
+    return;
+  }
+  var fd = new FormData();
+  fd.append('prompt', promptText);
+  if (statusEl) statusEl.textContent = 'Regenerating…';
+  fetch('/api/v2/runs/' + encodeURIComponent(runId) +
+        '/regenerate-preprocess-ref/' + encodeURIComponent(regenOneIndex),
+        { method: 'POST', body: fd })
+    .then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    })
+    .then(function (res) {
+      if (res.ok) {
+        if (statusEl) statusEl.textContent = 'Regenerating — refreshing…';
+        location.reload();
+      } else {
+        if (statusEl) statusEl.textContent = 'Error: ' + ((res.body && res.body.detail) || 'request failed');
+      }
+    })
+    .catch(function (err) {
+      if (statusEl) statusEl.textContent = 'Network error: ' + err;
+    });
+}
+
+// Drop ONE generated reference from a run parked at preprocess_review. The
+// server pops the same index out of all four parallel lists; here we just
+// reload so the grid and the prompts redraw from the new truth.
+function deletePreprocessRef(runId, index) {
+  var statusEl = document.getElementById('preprocess-approve-status');
+  if (!confirm(
+    'Delete reference #' + index + '?\n\n' +
+    'It will not be sent to the AI video model. The other images are kept ' +
+    'as they are — nothing is regenerated.'
+  )) return;
+  if (statusEl) statusEl.textContent = 'Deleting…';
+  fetch('/api/v2/runs/' + encodeURIComponent(runId) + '/preprocess-refs/' + encodeURIComponent(index),
+        { method: 'DELETE' })
+    .then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    })
+    .then(function (res) {
+      if (res.ok) {
+        location.reload();
+      } else {
+        if (statusEl) statusEl.textContent = 'Error: ' + ((res.body && res.body.detail) || 'request failed');
+      }
+    })
+    .catch(function (err) {
+      if (statusEl) statusEl.textContent = 'Network error: ' + err;
+    });
+}
+
+// __ Regenerate: trims are frames staged off the source video __
+var regenStagedFrames = [];
+
+function regenAddFrame(projectId) {
+  var tsInput = document.getElementById('regen-frame-timestamp');
+  var statusEl = document.getElementById('regen-frame-status');
+  if (!tsInput) return;
+  var t = parseFloat(tsInput.value);
+  if (!isFinite(t) || t < 0) t = 0;
+  if (statusEl) { statusEl.textContent = 'Adding…'; statusEl.style.color = 'var(--color-muted)'; }
+  fetch('/api/v2/projects/' + encodeURIComponent(projectId) + '/stage-frame?t=' + encodeURIComponent(t),
+        { method: 'POST' })
+    .then(function (r) {
+      if (!r.ok) {
+        return r.json().then(function (j) { throw new Error(j.detail || ('HTTP ' + r.status)); });
+      }
+      return r.json();
+    })
+    .then(function (data) {
+      regenStagedFrames.push({ path: data.path, t: data.t, projectId: projectId });
+      renderRegenFrames();
+      if (statusEl) statusEl.textContent = 'Added frame @ ' + data.t + 's';
+    })
+    .catch(function (err) {
+      if (statusEl) {
+        statusEl.textContent = 'Failed: ' + (err.message || err);
+        statusEl.style.color = 'var(--color-danger,#c0392b)';
+      }
+    });
+}
+
+function regenRemoveFrame(path) {
+  regenStagedFrames = regenStagedFrames.filter(function (f) { return f.path !== path; });
+  renderRegenFrames();
+}
+
+function renderRegenFrames() {
+  var wrap = document.getElementById('regen-frame-thumbs');
+  if (!wrap) return;
+  wrap.textContent = '';
+  regenStagedFrames.forEach(function (f) {
+    var box = document.createElement('div');
+    box.style.cssText = 'position:relative; display:inline-block; text-align:center';
+    var img = document.createElement('img');
+    img.src = '/api/v2/projects/' + encodeURIComponent(f.projectId) + '/frame?t=' + encodeURIComponent(f.t);
+    img.title = 'frame @ ' + f.t + 's';
+    img.style.cssText = 'width:64px; height:36px; object-fit:cover; border-radius:4px; border:1px solid #ccc; display:block';
+    img.onerror = function () { this.style.display = 'none'; };
+    var cap = document.createElement('div');
+    cap.textContent = '\u23F1 ' + f.t + 's';
+    cap.style.cssText = 'font-size:10px; color:var(--color-muted); line-height:1.4';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '\u00d7';
+    btn.title = 'Remove this frame';
+    btn.style.cssText = 'position:absolute; top:-6px; right:-6px; width:18px; height:18px; line-height:16px; padding:0; border-radius:50%; border:1px solid #fff; background:rgba(0,0,0,0.6); color:#fff; font-size:12px; cursor:pointer';
+    btn.onclick = function () { regenRemoveFrame(f.path); };
+    box.appendChild(img);
+    box.appendChild(cap);
+    box.appendChild(btn);
+    wrap.appendChild(box);
+  });
+}
+function approvePreprocess(runId) {
+  var statusEl = document.getElementById('preprocess-approve-status');
+  if (!confirm('Approve the preprocessed images and start the run?')) return;
+  if (statusEl) statusEl.textContent = 'Starting…';
+  fetch('/api/v2/runs/' + encodeURIComponent(runId) + '/approve-preprocess', { method: 'POST' })
+    .then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    })
+    .then(function (res) {
+      if (res.ok) {
+        if (statusEl) statusEl.textContent = 'Approved — starting run…';
+        location.reload();
+      } else {
+        if (statusEl) statusEl.textContent = 'Error: ' + ((res.body && res.body.detail) || 'request failed');
+      }
+    })
+    .catch(function (err) {
+      if (statusEl) statusEl.textContent = 'Network error: ' + err;
+    });
+}
+function submitRegeneratePreprocess(runId) {
+  var statusEl = document.getElementById('regenerate-preprocess-status');
+  var ta = document.getElementById('regenerate-trim-prompts');
+  var form = document.getElementById('regenerate-preprocess-form-el');
+  if (!form) return;
+  var fd = new FormData();
+  if (ta && ta.value.trim()) {
+    var lines = ta.value.split(/\r?\n/);
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+    fd.append('preprocess_image_prompts', JSON.stringify(lines));
+  }
+  var charFileInput = document.getElementById('regenerate-preprocess-reference-file');
+  if (charFileInput && charFileInput.files && charFileInput.files.length) {
+    fd.append('preprocess_reference_file', charFileInput.files[0]);
+  }
+  var charUrlInput = document.getElementById('regenerate-preprocess-reference-url');
+  if (charUrlInput && charUrlInput.value.trim()) {
+    fd.append('preprocess_reference_url', charUrlInput.value.trim());
+  }
+  // Trims come from the frame picker only (staged paths under the project's
+  // staged_frames/); the API rejects anything else, so there is no file/URL
+  // box to read here. An empty list means "keep the current trims".
+  if (regenStagedFrames.length) {
+    fd.append('reference_urls', regenStagedFrames.map(function (f) { return f.path; }).join(','));
+  }
+  if (statusEl) statusEl.textContent = 'Regenerating…';
+  // Every field above is conditional, so a regenerate with nothing filled in
+  // would post an empty FormData — a multipart body of just the closing
+  // delimiter, which python-multipart rejects as a 400 "There was an error
+  // parsing the body". Send no body at all in that case: it reaches the
+  // endpoint with every Form(None) param None, which is what "nothing filled
+  // in" means anyway.
+  var isEmpty = true;
+  fd.forEach(function () { isEmpty = false; });
+  fetch('/api/v2/runs/' + encodeURIComponent(runId) + '/regenerate-preprocess',
+        isEmpty ? { method: 'POST' } : { method: 'POST', body: fd })
+    .then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    })
+    .then(function (res) {
+      if (res.ok) {
+        if (statusEl) statusEl.textContent = 'Regenerating — refreshing…';
+        location.reload();
+      } else {
+        if (statusEl) statusEl.textContent = 'Error: ' + ((res.body && res.body.detail) || 'request failed');
+      }
+    })
+    .catch(function (err) {
+      if (statusEl) statusEl.textContent = 'Network error: ' + err;
+    });
+}
+</script>
 
 {% elif sv in ("done", "failed", "incomplete") %}
 <!-- __ Done/Failed/Incomplete: preview/banner + per-segment overrides __ -->
@@ -40,12 +545,12 @@
   <div class="card-body">
     {% if fallback_segs %}
     <div class="alert alert-warning" style="margin-bottom:12px">
-      <strong>&#9888; This video is only partly swapped.</strong><br />
+      <strong>⚠ This video is only partly swapped.</strong><br />
       {{ fallback_segs | length }} swap segment{{ "s" if fallback_segs | length != 1 else "" }}
       ({{ fallback_segs | map(attribute="index") | join(", ") }})
-      {{ "are" if fallback_segs | length != 1 else "is" }} outside what
+      {{ "are" if fallback_segs | length != 1 else "is" }} longer than
       {{ run.model | model_label }} can generate, so the <strong>original footage
-      was used</strong> for {{ "them" if fallback_segs | length != 1 else "it" }} &mdash;
+      was used</strong> for {{ "them" if fallback_segs | length != 1 else "it" }} —
       those parts are un-swapped. Timing and audio are unaffected. To get them
       swapped, split them in the Segment Editor (then re-run just those segments
       below), or start a run on a model with a longer per-clip limit.
@@ -59,23 +564,71 @@
       <a class="btn btn-success" href="{{ result_url }}" download>Download MP4</a>
       {% if gdrive_link %}
       <a class="btn btn-secondary" href="{{ gdrive_link }}" target="_blank" rel="noopener">Open in Google Drive</a>
+      {% if sheet_exported %}
+      <button type="button" class="btn btn-success" disabled title="Already logged to the Final Creatives sheet">
+        ✓ In Final Creatives
+      </button>
+      <span class="sheet-export-status" style="font-size:12px;color:var(--color-muted);align-self:center">Already added.</span>
+      {% else %}
+      <button
+        type="button"
+        class="btn btn-secondary"
+        data-run-id="{{ run.id }}"
+        onclick="exportToSheet(this)"
+      >Add to Final Creatives</button>
+      <span class="sheet-export-status" style="font-size:12px;color:var(--color-muted);align-self:center"></span>
+      {% endif %}
+
+      <select id="captions-source-tail-edit" style="font-size:12px">
+        <option value="">Run result</option>
+        {% for te_id, label in caption_source_tail_edit_options.items() %}
+        <option value="{{ te_id }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+      {% if caption_project_placement %}
+      {# AICP-368: the project carries the original caption area of its
+         subtitle-removal lineage; captions default to covering it. #}
+      <select id="captions-placement" style="font-size:12px"
+              title="Where the captions sit. 'Over original captions' centres them on the band the removed captions occupied, so the removal patches stay covered.">
+        <option value="project" selected>Over original captions (y&nbsp;{{ '%.2f' % caption_project_placement.center_y }}{% if caption_project_placement.provisional %}, scan pending{% elif caption_project_placement.scan_failed %}, scan failed{% endif %})</option>
+        <option value="bottom">Bottom (house position)</option>
+      </select>
+      {% endif %}
+      <button
+        type="button"
+        class="btn btn-secondary"
+        data-run-id="{{ run.id }}"
+        onclick="addCaptions(this)"
+      >Add Captions</button>
+      <span class="add-captions-status" style="font-size:12px;color:var(--color-muted);align-self:center"></span>
       {% endif %}
     </div>
+    {% if gdrive_link %}
+    <p class="hint" style="margin:6px 0 0">
+      Goes to the sheet as <code id="export-job-id">{{ run.short_id }}</code>
+      ({{ run.language | language_label }}) — the renaming pipeline reads the language
+      from that suffix. Change it under <strong>Run settings</strong> above.
+    </p>
+    {% endif %}
 
     <!-- Public token link to the final video (for external tools / Gemini) -->
     <div class="form-group" style="max-width:560px; margin:12px 0 0">
       <label style="font-size:12px; font-weight:600">Public link to result (for external tools)</label>
+      {% if result_public_token %}
       <div style="display:flex; gap:8px">
         <input
           id="result-public-link"
           type="text"
           readonly
-          data-path="/public/runs/{{ run.id }}/result?token={{ result_public_token }}"
+          data-path="/public/runs/{{ run.id }}/result?token={{ result_public_token }}&amp;v={{ result_version }}"
           style="flex:1; font-size:12px"
         />
         <button type="button" class="btn btn-sm btn-secondary" onclick="copyResultLink(this)">Copy</button>
       </div>
       <p class="hint">Unauthenticated, tokenized link — anyone with it can view this result video.</p>
+      {% else %}
+      <p class="hint">Public links are disabled: PUBLIC_LINK_SECRET is not configured.</p>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -94,7 +647,842 @@ function copyResultLink(btn) {
     setTimeout(function () { btn.textContent = t; }, 1500);
   }).catch(function () { try { document.execCommand('copy'); } catch (e) {} });
 }
+function exportToSheet(btn) {
+  var runId = btn.dataset.runId;
+  var status = btn.parentNode.querySelector('.sheet-export-status');
+  function setStatus(msg) { if (status) status.textContent = msg; }
+  if (!confirm('Add this result as a row in the Final Creatives sheet?')) return;
+  btn.disabled = true;
+  setStatus('Adding…');
+  fetch('/api/v2/runs/' + encodeURIComponent(runId) + '/export-to-sheet', { method: 'POST' })
+    .then(function (resp) {
+      return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+    })
+    .then(function (r) {
+      if (r.ok) {
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-success');
+        if (r.body.status === 'exists') {
+          btn.textContent = '✓ In Final Creatives';
+          setStatus('Already added.');
+        } else {
+          btn.textContent = '✓ In Final Creatives';
+          setStatus('Added to Final Creatives.');
+        }
+      } else {
+        btn.disabled = false;
+        setStatus('Error: ' + ((r.body && r.body.detail) || 'request failed'));
+      }
+    })
+    .catch(function (err) {
+      btn.disabled = false;
+      setStatus('Network error: ' + err);
+    });
+}
+function addCaptions(btn) {
+  var runId = btn.dataset.runId;
+  var status = btn.parentNode.querySelector('.add-captions-status');
+  function setStatus(msg) { if (status) status.textContent = msg; }
+  if (!confirm('Re-transcribe this result and burn in captions? This delivers a new file to Google Drive.')) return;
+  btn.disabled = true;
+  setStatus('Queuing…');
+  var sourceSelect = document.getElementById('captions-source-tail-edit');
+  var fd = new FormData();
+  // Append unconditionally, even when blank. An *empty* FormData makes the
+  // browser send a multipart body consisting of nothing but the closing
+  // delimiter, which python-multipart rejects — FastAPI turns that into a 400
+  // "There was an error parsing the body" before create_caption ever runs. A
+  // blank value is already the documented "caption the run's own result" case
+  // (_validate_chained_source), so this changes nothing server-side.
+  fd.append('source_tail_edit_id', sourceSelect ? sourceSelect.value : '');
+  var placementSelect = document.getElementById('captions-placement');
+  if (placementSelect) fd.append('placement', placementSelect.value);
+  fetch('/api/v2/runs/' + encodeURIComponent(runId) + '/captions', { method: 'POST', body: fd })
+    .then(function (resp) {
+      return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+    })
+    .then(function (r) {
+      btn.disabled = false;
+      if (r.ok) {
+        setStatus('Queued.');
+        if (window.htmx) {
+          htmx.ajax('GET', '/v2/runs/' + encodeURIComponent(runId) + '/captions-fragment', {
+            target: '#captions-content', swap: 'innerHTML',
+          });
+        }
+      } else {
+        setStatus('Error: ' + ((r.body && r.body.detail) || 'request failed'));
+      }
+    })
+    .catch(function (err) {
+      btn.disabled = false;
+      setStatus('Network error: ' + err);
+    });
+}
 </script>
+
+{% if insert_extraction %}
+<!-- __ Merge back (picture-in-picture) — only for a done run whose project is an extracted insert child __ -->
+<div class="card">
+  <div class="card-header"><h2>Merge back (picture-in-picture)</h2></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">
+      Composite this run's result back onto a target video at the extracted
+      insert's placement (editable below), keeping the target's original audio.
+    </p>
+    <div style="display:grid;gap:10px;max-width:520px">
+      <div class="form-group" style="margin-bottom:0">
+        <label>Target project</label>
+        <select id="merge-target">
+          <option value="{{ insert_extraction.parent_project_id }}">
+            (default) parent &mdash; {{ insert_extraction.parent_project_id[:8] }}
+          </option>
+          {% for tp in merge_targets %}
+          {% if tp.id != insert_extraction.parent_project_id %}
+          <option value="{{ tp.id }}">{{ tp.name or tp.source_ref }} ({{ tp.id[:8] }})</option>
+          {% endif %}
+          {% endfor %}
+        </select>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+        <div class="form-group" style="margin-bottom:0">
+          <label>X</label>
+          <input type="number" id="merge-x" value="{{ insert_extraction.x }}" min="0" step="1" />
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>Y</label>
+          <input type="number" id="merge-y" value="{{ insert_extraction.y }}" min="0" step="1" />
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>Width</label>
+          <input type="number" id="merge-width" value="{{ insert_extraction.width }}" min="2" step="1" />
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>Height</label>
+          <input type="number" id="merge-height" value="{{ insert_extraction.height }}" min="2" step="1" />
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+        <div class="form-group" style="margin-bottom:0">
+          <label>Start (s)</label>
+          <input type="number" id="merge-start" value="{{ insert_extraction.start_sec }}" min="0" step="0.1" />
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>End (s)</label>
+          <input type="number" id="merge-end" value="{{ insert_extraction.end_sec }}" min="0" step="0.1" />
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>Corner radius (px)</label>
+          <input type="number" id="merge-radius" value="{{ insert_extraction.corner_radius_px }}" min="0" step="1" />
+        </div>
+      </div>
+      <p class="hint" id="merge-back-err" style="color:var(--color-danger,#c0392b); display:none"></p>
+      <div class="action-row">
+        <button type="button" class="btn btn-primary" onclick="submitMergeBack('{{ run.id }}')">Merge back</button>
+        <span id="merge-back-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function submitMergeBack(runId) {
+  var errEl = document.getElementById('merge-back-err');
+  var statusEl = document.getElementById('merge-back-status');
+  errEl.style.display = 'none';
+  errEl.textContent = '';
+  statusEl.textContent = 'Submitting…';
+
+  var fd = new FormData();
+  fd.append('target_project_id', document.getElementById('merge-target').value);
+  fd.append('x', document.getElementById('merge-x').value);
+  fd.append('y', document.getElementById('merge-y').value);
+  fd.append('width', document.getElementById('merge-width').value);
+  fd.append('height', document.getElementById('merge-height').value);
+  fd.append('start_sec', document.getElementById('merge-start').value);
+  fd.append('end_sec', document.getElementById('merge-end').value);
+  fd.append('corner_radius_px', document.getElementById('merge-radius').value);
+
+  fetch('/api/v2/runs/' + encodeURIComponent(runId) + '/merge', { method: 'POST', body: fd })
+    .then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    })
+    .then(function (res) {
+      if (res.ok) {
+        statusEl.textContent = 'Merge queued — redirecting…';
+        var targetId = document.getElementById('merge-target').value;
+        window.location.href = '/v2/projects/' + encodeURIComponent(targetId);
+      } else {
+        statusEl.textContent = '';
+        errEl.style.display = 'block';
+        errEl.textContent = 'Merge failed: ' + (res.body.detail || 'unknown error');
+      }
+    })
+    .catch(function (e) {
+      statusEl.textContent = '';
+      errEl.style.display = 'block';
+      errEl.textContent = 'Network error: ' + e;
+    });
+}
+</script>
+{% endif %}
+
+<!-- __ Change ending — trim the final video and optionally append a library clip __ -->
+<div class="card">
+  <div class="card-header"><h2>Change ending</h2></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">
+      Cut this result's final video at a chosen time and optionally append a
+      stitch-library clip in place of the old ending — pure ffmpeg, no AI
+      credits spent, delivered to Drive as a new file.
+      {# Rounded DOWN to 2 decimals (never "%.1f", which rounds up — a real
+         12.28s showing as "12.3s" invites a cut_sec the source can't
+         satisfy). The exact value lives in the <strong>'s title. Rendered
+         here (not only computed by the script below) so a plain page load —
+         no JS run — already shows a bound that is never greater than the
+         real one; updateTailEditBounds() recomputes the same text for
+         whichever source is selected, using the same floor-to-2-decimals
+         rule. #}
+      <span id="tail-edit-duration-hint">{% if tail_edit_result_duration_sec is not none %}Selected source is <strong title="{{ tail_edit_result_duration_sec }}">{{ "%.2f"|format(tail_edit_result_duration_sec | floor2) }}s</strong> long.{% endif %}</span>
+    </p>
+    <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:640px">
+      <div class="form-group" style="margin-bottom:0; flex:1; min-width:200px">
+        <label>Source</label>
+        <select id="tail-edit-source-caption" onchange="updateTailEditBounds()">
+          <option value="" data-duration="{{ tail_edit_result_duration_sec if tail_edit_result_duration_sec is not none else '' }}">Run result (no captions)</option>
+          {% for cap_id, label in tail_edit_source_caption_options.items() %}
+          {% set cap_duration = tail_edit_source_caption_durations.get(cap_id) %}
+          <option value="{{ cap_id }}" data-duration="{{ cap_duration if cap_duration is not none else '' }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label>Cut at (s)</label>
+        <div style="display:flex; gap:4px; align-items:center">
+          <input
+            type="number" id="tail-edit-cut-sec" min="0.1" step="0.01"
+            {% if tail_edit_result_duration_sec is not none %}max="{{ (tail_edit_result_duration_sec - tail_edit_min_cut_margin_sec) | floor2 }}"{% endif %}
+            value="{{ tail_edit_cut_prefill if tail_edit_cut_prefill is not none else '' }}"
+          />
+          <button
+            type="button" class="btn btn-sm btn-secondary" id="tail-edit-max-btn"
+            onclick="fillTailEditMax()"
+            title="Fill in the largest legal cut point for the selected source"
+          >Max</button>
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:0; flex:1; min-width:220px">
+        <label>Append clip</label>
+        <select id="tail-edit-clip">
+          <option value="">&mdash; trim only &mdash;</option>
+          {% for c in tail_edit_library_clips %}
+          <option value="{{ c.id }}">{{ c.name }}{% if c.duration_sec %} ({{ "%.1f"|format(c.duration_sec) }}s){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="button" class="btn btn-primary" onclick="submitTailEdit('{{ run.id }}')">Change ending</button>
+      <span id="tail-edit-status" class="text-muted" style="font-size:12px"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+// The legal cut range's lower margin — must agree with the API
+// (app/api_v2.py's create_tail_edit) and the worker
+// (app/pipeline_tail.py's process_tail_edit), which both compute it from
+// the same app/pipeline_common.py constant.
+var TAIL_EDIT_MIN_CUT_MARGIN_SEC = {{ tail_edit_min_cut_margin_sec }};
+
+function tailEditFloor2(x) {
+  // +1e-9 offsets float noise from subtracting the margin (e.g.
+  // 12.28 - 0.05 === 12.229999999999999 in IEEE754 double precision), which
+  // a bare Math.floor(x*100)/100 would floor down to 12.22 instead of the
+  // intended 12.23. Mirrors app/web_v2.py's `floor2` Jinja filter.
+  return Math.floor(x * 100 + 1e-9) / 100;
+}
+
+// Recomputes the duration hint, the input's max, and the "Max" button's
+// target for whichever <option> is currently selected in the Source picker.
+// Reads each option's exact duration from its data-duration attribute
+// (rendered server-side in app/web_v2.py's _get_tail_edit_context, no round
+// trip needed) rather than always using the run's duration — a caption
+// source can be shorter than its run.
+function updateTailEditBounds() {
+  var sourceSelect = document.getElementById('tail-edit-source-caption');
+  var cutInput = document.getElementById('tail-edit-cut-sec');
+  var hintEl = document.getElementById('tail-edit-duration-hint');
+  var opt = sourceSelect ? sourceSelect.options[sourceSelect.selectedIndex] : null;
+  var raw = opt ? opt.getAttribute('data-duration') : '';
+  var duration = raw ? parseFloat(raw) : NaN;
+
+  if (!isNaN(duration)) {
+    var maxLegal = tailEditFloor2(duration - TAIL_EDIT_MIN_CUT_MARGIN_SEC);
+    cutInput.max = maxLegal;
+    cutInput.setAttribute('data-max-legal', maxLegal);
+    hintEl.textContent = '';
+    hintEl.appendChild(document.createTextNode('Selected source is '));
+    var strong = document.createElement('strong');
+    strong.title = String(duration);
+    strong.textContent = tailEditFloor2(duration).toFixed(2) + 's';
+    hintEl.appendChild(strong);
+    hintEl.appendChild(document.createTextNode(' long.'));
+  } else {
+    cutInput.removeAttribute('max');
+    cutInput.removeAttribute('data-max-legal');
+    hintEl.textContent = '';
+  }
+}
+
+function fillTailEditMax() {
+  var cutInput = document.getElementById('tail-edit-cut-sec');
+  var maxLegal = cutInput.getAttribute('data-max-legal');
+  if (maxLegal !== null) cutInput.value = maxLegal;
+}
+
+function submitTailEdit(runId) {
+  var cutInput = document.getElementById('tail-edit-cut-sec');
+  var clipSelect = document.getElementById('tail-edit-clip');
+  var sourceSelect = document.getElementById('tail-edit-source-caption');
+  var statusEl = document.getElementById('tail-edit-status');
+
+  var cutSec = parseFloat(cutInput.value);
+  if (!cutSec || cutSec <= TAIL_EDIT_MIN_CUT_MARGIN_SEC) {
+    statusEl.textContent = 'Enter a cut time greater than ' + TAIL_EDIT_MIN_CUT_MARGIN_SEC + 's.';
+    return;
+  }
+  // Client-side clamp against whichever source is selected — blocks the
+  // request before it goes out instead of letting the worker burn a job on
+  // it a minute later. The API still enforces this bound itself (a stale
+  // page, or a source that changed shape since this page loaded, must not
+  // be able to bypass it), so this is a fast, friendly rejection, not the
+  // only guard.
+  var maxLegalAttr = cutInput.getAttribute('data-max-legal');
+  if (maxLegalAttr !== null && cutSec > parseFloat(maxLegalAttr)) {
+    statusEl.textContent = 'Max for this source is ' + maxLegalAttr + ' s.';
+    return;
+  }
+
+  statusEl.textContent = 'Submitting…';
+  var fd = new FormData();
+  fd.append('cut_sec', cutSec);
+  if (clipSelect.value) fd.append('library_clip_id', clipSelect.value);
+  if (sourceSelect && sourceSelect.value) fd.append('source_caption_id', sourceSelect.value);
+
+  fetch('/api/v2/runs/' + encodeURIComponent(runId) + '/tail-edits', { method: 'POST', body: fd })
+    .then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    })
+    .then(function (res) {
+      if (res.ok) {
+        statusEl.textContent = 'Queued — refreshing…';
+        location.reload();
+      } else {
+        statusEl.textContent = 'Error: ' + (res.body.detail || 'unknown error');
+      }
+    })
+    .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
+}
+
+updateTailEditBounds();
+</script>
+
+<!-- __ Fix audio from another run — re-voice one window of THIS result using a
+     sibling run's audio, in place (no new creative, no new Job ID) __ -->
+<div class="card">
+  {# Collapsed by default: two video players plus their controls are the
+     tallest thing on this page, and on most visits the operator is not fixing
+     audio at all. Same <details>/<summary> shape the dashboard's New Project
+     form uses, so it inherits app.css's generic collapsible-card styling
+     (summary gets the card-header padding, border and a bottom-anchored
+     marker) instead of needing its own. #}
+  <details id="audio-patch-details">
+    <summary>Fix audio from another run</summary>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">
+      When the model mispronounces a word (a brand name, typically) in an
+      otherwise good take, borrow just that word from a sibling run that says
+      it correctly. Only the audio inside the chosen window is replaced — the
+      picture is copied frame-for-frame and no sample outside the window
+      moves, so lip-sync everywhere else is untouched.
+      <strong>This replaces THIS run's own result</strong> and the content
+      behind its existing Drive link: same Job ID, same URL, and any Final
+      Creatives row already pointing at it starts serving the fixed video.
+    </p>
+    {% if not audio_patch_donor_runs %}
+    <p class="text-muted" style="font-size:12px;margin:0">
+      No other finished run in this project to borrow audio from. A donor has
+      to speak the same script over the same footage, so only this project's
+      own done runs are offered.
+    </p>
+    {% else %}
+    <div style="display:flex; gap:16px; flex-wrap:wrap">
+      <div style="flex:1 1 300px; min-width:280px">
+        <div class="form-group" style="margin-bottom:6px">
+          <label>1 &middot; This run — find the word to replace</label>
+        </div>
+        <video id="ap-target-video" class="video-preview" controls preload="metadata"
+               style="margin-bottom:8px" src="{{ result_url }}"></video>
+        <div style="display:flex; gap:6px; align-items:flex-end; flex-wrap:wrap">
+          <div class="form-group" style="margin-bottom:0">
+            <label style="font-size:11px">Window start (s)</label>
+            <input type="number" id="ap-target-start" min="0" step="0.01"
+                   {% if audio_patch_result_duration_sec is not none %}max="{{ audio_patch_result_duration_sec | floor2 }}"{% endif %} />
+          </div>
+          <button type="button" class="btn btn-sm btn-secondary"
+                  onclick="apSetFromPlayer('ap-target-video', 'ap-target-start')"
+                  title="Use the target player's current position">Set</button>
+          <div class="form-group" style="margin-bottom:0">
+            <label style="font-size:11px">Window end (s)</label>
+            <input type="number" id="ap-target-end" min="0" step="0.01"
+                   {% if audio_patch_result_duration_sec is not none %}max="{{ audio_patch_result_duration_sec | floor2 }}"{% endif %} />
+          </div>
+          <button type="button" class="btn btn-sm btn-secondary"
+                  onclick="apSetFromPlayer('ap-target-video', 'ap-target-end')"
+                  title="Use the target player's current position">Set</button>
+          <button type="button" class="btn btn-sm btn-secondary"
+                  onclick="apPlayWindow('target')"
+                  title="Play just the selected window">&#9654; Window</button>
+        </div>
+      </div>
+
+      <div style="flex:1 1 300px; min-width:280px">
+        <div class="form-group" style="margin-bottom:6px">
+          <label>2 &middot; Donor run — find the same word said correctly</label>
+          <select id="ap-donor" onchange="apDonorChanged()">
+            {% for d in audio_patch_donor_runs %}
+            <option value="{{ d.id }}">{{ d.name or d.short_id }} &middot; {{ d.short_id }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <video id="ap-donor-video" class="video-preview" controls preload="metadata"
+               style="margin-bottom:8px"></video>
+        <div style="display:flex; gap:6px; align-items:flex-end; flex-wrap:wrap">
+          <div class="form-group" style="margin-bottom:0">
+            <label style="font-size:11px">Donor start (s)</label>
+            <input type="number" id="ap-donor-start" min="0" step="0.01" />
+          </div>
+          <button type="button" class="btn btn-sm btn-secondary"
+                  onclick="apSetFromPlayer('ap-donor-video', 'ap-donor-start')"
+                  title="Use the donor player's current position">Set</button>
+          <button type="button" class="btn btn-sm btn-secondary"
+                  onclick="apPlayWindow('donor')"
+                  title="Play the donor from that point for exactly the window's length">&#9654; Window</button>
+          <span id="ap-donor-window-hint" class="text-muted" style="font-size:11px;align-self:center"></span>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-top:12px">
+      <div class="form-group" style="margin-bottom:0; max-width:130px">
+        <label style="font-size:11px">Seam crossfade (s)</label>
+        <input type="number" id="ap-crossfade" min="0" step="0.01"
+               value="{{ audio_patch_default_crossfade_sec }}" />
+      </div>
+      <button type="button" class="btn btn-primary"
+              onclick="submitAudioPatch('{{ run.id }}')">Fix audio</button>
+      <span id="ap-status" class="text-muted" style="font-size:12px;align-self:center"></span>
+    </div>
+    <p class="hint" style="margin:8px 0 0">
+      The donor supplies exactly the window's length starting from its own
+      start point — there is no donor end to set, because stretching or
+      shifting the borrowed audio is what would desync everything after it.
+    </p>
+    {% endif %}
+  </div>
+  </details>
+</div>
+
+{% if audio_patch_donor_runs %}
+<script>
+// Shortest window the API and ffmpeg will both accept — mirrors
+// app/media.py's AUDIO_SPLICE_MIN_WINDOW_SEC, which app/pipeline_audio_patch.py
+// validates against. A friendly rejection here, not the only guard.
+var AUDIO_PATCH_MIN_WINDOW_SEC = {{ audio_patch_min_window_sec }};
+var apWindowTimer = null;
+
+function apDonorChanged() {
+  var sel = document.getElementById('ap-donor');
+  var vid = document.getElementById('ap-donor-video');
+  if (!sel || !vid || !sel.value) return;
+  // No ?v= cache buster: unlike this run's own result (which an audio patch
+  // re-points), a donor is only ever read, so its URL is stable.
+  vid.src = '/api/v2/runs/' + encodeURIComponent(sel.value) + '/result';
+  vid.load();
+}
+
+function apSetFromPlayer(videoId, inputId) {
+  var vid = document.getElementById(videoId);
+  var input = document.getElementById(inputId);
+  if (!vid || !input || isNaN(vid.currentTime)) return;
+  input.value = (Math.round(vid.currentTime * 100) / 100).toFixed(2);
+  apUpdateWindowHint();
+}
+
+function apWindowLength() {
+  var s = parseFloat(document.getElementById('ap-target-start').value);
+  var e = parseFloat(document.getElementById('ap-target-end').value);
+  if (isNaN(s) || isNaN(e)) return NaN;
+  return e - s;
+}
+
+function apUpdateWindowHint() {
+  var hint = document.getElementById('ap-donor-window-hint');
+  if (!hint) return;
+  var len = apWindowLength();
+  hint.textContent = isNaN(len) || len <= 0
+    ? '' : 'takes ' + len.toFixed(2) + 's';
+}
+
+// Play exactly the chosen range, then stop — the only way to check by ear
+// that the window really brackets the word, on either player. One shared
+// timer: starting a second preview cancels the first rather than leaving two
+// stop-callbacks racing on different players.
+function apPlayWindow(which) {
+  var len = apWindowLength();
+  if (isNaN(len) || len <= 0) return;
+  var vid, from;
+  if (which === 'target') {
+    vid = document.getElementById('ap-target-video');
+    from = parseFloat(document.getElementById('ap-target-start').value);
+  } else {
+    vid = document.getElementById('ap-donor-video');
+    from = parseFloat(document.getElementById('ap-donor-start').value);
+  }
+  if (!vid || isNaN(from)) return;
+  if (apWindowTimer) { clearTimeout(apWindowTimer); apWindowTimer = null; }
+  try { vid.currentTime = from; } catch (e) { return; }
+  vid.play();
+  apWindowTimer = setTimeout(function () {
+    vid.pause();
+    apWindowTimer = null;
+  }, len * 1000);
+}
+
+function submitAudioPatch(runId) {
+  var statusEl = document.getElementById('ap-status');
+  var start = parseFloat(document.getElementById('ap-target-start').value);
+  var end = parseFloat(document.getElementById('ap-target-end').value);
+  var donorStart = parseFloat(document.getElementById('ap-donor-start').value);
+  var donorId = document.getElementById('ap-donor').value;
+  var crossfade = parseFloat(document.getElementById('ap-crossfade').value);
+
+  if (isNaN(start) || isNaN(end) || isNaN(donorStart)) {
+    statusEl.textContent = 'Set the window on both players first.';
+    return;
+  }
+  if (end - start < AUDIO_PATCH_MIN_WINDOW_SEC) {
+    statusEl.textContent =
+      'The window must be at least ' + AUDIO_PATCH_MIN_WINDOW_SEC + 's long.';
+    return;
+  }
+  if (!donorId) {
+    statusEl.textContent = 'Pick a donor run.';
+    return;
+  }
+
+  statusEl.textContent = 'Submitting…';
+  var fd = new FormData();
+  fd.append('donor_run_id', donorId);
+  fd.append('target_start_sec', start);
+  fd.append('target_end_sec', end);
+  fd.append('donor_start_sec', donorStart);
+  if (!isNaN(crossfade)) fd.append('crossfade_sec', crossfade);
+
+  fetch('/api/v2/runs/' + encodeURIComponent(runId) + '/audio-patches',
+        { method: 'POST', body: fd })
+    .then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    })
+    .then(function (res) {
+      if (res.ok) {
+        statusEl.textContent = 'Queued — refreshing…';
+        location.reload();
+      } else {
+        statusEl.textContent = 'Error: ' + (res.body.detail || 'unknown error');
+      }
+    })
+    .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
+}
+
+['ap-target-start', 'ap-target-end'].forEach(function (id) {
+  var el = document.getElementById(id);
+  if (el) el.addEventListener('input', apUpdateWindowHint);
+});
+
+// Load the donor video only once the block is opened for the first time.
+// Calling apDonorChanged() at page load would fetch a whole second video's
+// metadata on every visit to a done run — which is most of what collapsing the
+// block was meant to stop paying for. (The target player's src is the same URL
+// the Result card above already loads, so it costs nothing extra and stays
+// inline.)
+(function () {
+  var details = document.getElementById('audio-patch-details');
+  if (!details) return;
+  details.addEventListener('toggle', function onOpen() {
+    if (!details.open) return;
+    details.removeEventListener('toggle', onOpen);
+    apDonorChanged();
+  });
+})();
+apUpdateWindowHint();
+</script>
+{% endif %}
+
+{% set run_id = run.id %}
+<div id="tail-edits-content">
+  {% include "partials/run_tail_edits_list.html" %}
+</div>
+
+<div id="audio-patches-content">
+  {% include "partials/run_audio_patches_list.html" %}
+</div>
+
+
+<div id="captions-content">
+  {% include "partials/run_captions_list.html" %}
+</div>
+
+<!-- __ Overlays — burn PNG cards onto this result (or onto one of its tail edits) __ -->
+<div class="card">
+  <div class="card-header"><h2>Overlays</h2></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">
+      Burn transparent PNG cards onto this video — pure ffmpeg, no AI credits
+      spent, delivered to Drive as a new file. Starting one opens the overlay
+      editor, where you position the cards on the frame and set their time
+      windows; the render then shows up in the history below.
+    </p>
+    <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:640px">
+      <div class="form-group" style="margin-bottom:0; flex:1; min-width:220px">
+        <label>Source</label>
+        {# Values are "<source_type>:<id>" so one <select> can offer all three
+           kinds the overlay API takes; the run's own result needs no id. #}
+        <select id="overlay-source">
+          <option value="run:">Run result</option>
+          {% for te_id, label in overlay_source_tail_edit_options.items() %}
+          <option value="tail_edit:{{ te_id }}">Tail edit &mdash; {{ label }}</option>
+          {% endfor %}
+          {% for cap_id, label in overlay_source_caption_options.items() %}
+          <option value="caption:{{ cap_id }}">Captions &mdash; {{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="button" class="btn btn-primary" onclick="startOverlay('{{ run.id }}')">Add overlays</button>
+      <span id="overlay-create-status" class="text-muted" style="font-size:12px"></span>
+    </div>
+    <p class="hint" style="margin:8px 0 0">
+      Goes to the Final Creatives sheet under this run's own Job ID
+      (<code>{{ run.short_id }}</code>, Pipeline Type <code>re-skin-overlay</code>);
+      with more than one overlay on this run they become
+      <code>{{ run.id[:8] }}_&lt;overlay id&gt;{{ run.language | language_suffix }}</code>.
+    </p>
+  </div>
+</div>
+
+<script>
+function startOverlay(runId) {
+  var sourceSelect = document.getElementById('overlay-source');
+  var statusEl = document.getElementById('overlay-create-status');
+  // "<source_type>:<id>" — split on the FIRST colon only; a uuid has none,
+  // but this way the id is never mangled if that ever changes.
+  var raw = sourceSelect ? sourceSelect.value : 'run:';
+  var sep = raw.indexOf(':');
+  var sourceType = sep === -1 ? 'run' : raw.slice(0, sep);
+  var sourceId = sep === -1 ? '' : raw.slice(sep + 1);
+
+  statusEl.textContent = 'Creating…';
+  // The overlay API is JSON (not FormData like the tail-edit/caption controls)
+  // — see api_overlay.create_overlay_job / OverlayCreateRequest.
+  var body = { source_type: sourceType };
+  if (sourceType === 'tail_edit') body.source_tail_edit_id = sourceId;
+  else if (sourceType === 'caption') body.source_caption_id = sourceId;
+  else body.source_run_id = runId;
+
+  fetch('/api/v2/overlays', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+    .then(function (r) {
+      return r.json().then(function (b) { return { ok: r.ok, body: b }; });
+    })
+    .then(function (res) {
+      if (res.ok && res.body.id) {
+        statusEl.textContent = 'Opening the editor…';
+        window.location.href = '/v2/overlays/' + res.body.id;
+      } else {
+        statusEl.textContent = 'Error: ' + ((res.body && res.body.detail) || 'unknown error');
+      }
+    })
+    .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
+}
+</script>
+
+<div id="overlays-content">
+  {% include "partials/run_overlays_list.html" %}
+</div>
+
+<!-- __ Move to new project — continue working on this result with another tool __ -->
+<div class="card" id="move-to-project">
+  <div class="card-header"><h2>Move to new project</h2></div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">
+      Start a new project from this run's final video — or from one of its captions, tail edits
+      or overlays (their <em>New project</em> buttons pick it here) — e.g. change the book cover
+      after a face swap, or strip subtitles before one. The video is <strong>copied</strong>, so
+      this run, its project and that step stay exactly as they are.
+    </p>
+    <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; max-width:720px">
+      {# AICP-331: which step's video is copied. Built from the done-step pickers
+         the captions / tail-edit / overlay cards already carry; a row that
+         finished after this card was rendered adds its own option (moveStepToProject). #}
+      <div class="form-group" style="margin-bottom:0; min-width:240px">
+        <label for="move-project-source">Source video</label>
+        <select id="move-project-source">
+          <option value="run:" selected>Run final video</option>
+          {% for cid, clabel in (tail_edit_source_caption_options or {}).items() %}
+          <option value="caption:{{ cid }}">Captions {{ clabel }}</option>
+          {% endfor %}
+          {% for tid, tlabel in (caption_source_tail_edit_options or {}).items() %}
+          <option value="tail_edit:{{ tid }}">Tail edit {{ tlabel }}</option>
+          {% endfor %}
+          {% for o in (overlay_jobs or []) %}{% if o.status == "done" and o.has_result %}
+          <option value="overlay:{{ o.id }}">Overlay {{ o.id[:8] }} ({{ o.source_label }})</option>
+          {% endif %}{% endfor %}
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0; min-width:200px">
+        <label for="move-project-type">New project type</label>
+        <select id="move-project-type" onchange="onMoveProjectTypeChange()">
+          {% for pt in project_types %}
+          <option value="{{ pt.key }}" {% if pt.key == default_project_type %}selected{% endif %}
+                  data-hook="{{ 1 if pt.segmentation == 'hook_split' else 0 }}">{{ pt.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {# AICP-340: only a localisation (hook_split) project has a scope; the
+         select is hidden and NOT sent for any other type. #}
+      <div class="form-group" id="move-project-scope-group" style="margin-bottom:0; display:none">
+        <label for="move-project-scope">What to localise</label>
+        <select id="move-project-scope">
+          <option value="hook" selected>Hook only</option>
+          <option value="whole">Whole video (scene-cut segments)</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0; flex:1; min-width:240px">
+        <label for="move-project-name">New project name (optional)</label>
+        <input type="text" id="move-project-name" maxlength="255" placeholder="Leave blank to name it automatically" />
+      </div>
+    </div>
+    {# AICP-378: the same mode cards as the New project form; by default the
+       parent's mode when the target type has a flow (the API's own default). #}
+    {% import "partials/autopilot_mode.html" as mp %}
+    <div style="max-width:720px; margin-top:8px">{{ mp.mode_picker("move-project", "move-project-mode") }}</div>
+    <div style="display:flex; gap:8px; align-items:center">
+      <button type="button" class="btn btn-primary" onclick="moveRunToProject('{{ run.id }}')">Create project</button>
+      <span id="move-project-status" class="text-muted" style="font-size:12px"></span>
+    </div>
+  </div>
+</div>
+{{ mp.mode_script() }}
+
+<script>
+function moveProjectTypeIsHook() {
+  var typeSel = document.getElementById('move-project-type');
+  var opt = typeSel ? typeSel.options[typeSel.selectedIndex] : null;
+  return !!(opt && opt.dataset.hook === '1');
+}
+function onMoveProjectTypeChange() {
+  var group = document.getElementById('move-project-scope-group');
+  if (group) group.style.display = moveProjectTypeIsHook() ? '' : 'none';
+}
+onMoveProjectTypeChange();
+apMode.init('move-project', {typeSelect: 'move-project-type', scopeSelect: 'move-project-scope',
+  keep: ['move-project-name'],
+  defaultMode: function (t) { return {{ (parent_mode or "manual")|tojson }} === 'assistant' ? 'assistant' : 'manual'; }});
+
+/* AICP-331: pick a caption / tail edit / overlay of this run as the source.
+   Called by the "New project" buttons of the step rows (their lists refresh on
+   their own, so the option may be newer than this card: add it then). */
+window.moveStepToProject = function (kind, id, label) {
+  var sel = document.getElementById('move-project-source');
+  if (!sel) return;
+  var value = kind + ':' + id;
+  var found = false;
+  for (var i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === value) { found = true; break; }
+  }
+  if (!found) {
+    var opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label || (kind + ' ' + id.slice(0, 8));
+    sel.appendChild(opt);
+  }
+  sel.value = value;
+  var card = document.getElementById('move-to-project');
+  if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  var statusEl = document.getElementById('move-project-status');
+  if (statusEl) statusEl.textContent = '';
+};
+(function () {
+  /* ?move_source=overlay:<id> (the overlay editor's "New project" link). */
+  var m = /[?&]move_source=([a-z_]+):([0-9a-fA-F-]{8,36})(?:&|$)/.exec(window.location.search);
+  if (m) window.moveStepToProject(m[1], m[2]);
+})();
+
+function moveRunToProject(runId) {
+  var typeSel = document.getElementById('move-project-type');
+  var nameInp = document.getElementById('move-project-name');
+  var statusEl = document.getElementById('move-project-status');
+
+  statusEl.textContent = 'Creating…';
+  var fd = new FormData();
+  fd.append('project_type', typeSel.value);
+  var srcSel = document.getElementById('move-project-source');
+  var src = srcSel ? srcSel.value.split(':') : ['run', ''];
+  if (src[0] && src[0] !== 'run' && src[1]) {
+    fd.append('source_kind', src[0]);
+    fd.append('source_id', src[1]);
+  }
+  if (nameInp.value.trim()) fd.append('name', nameInp.value.trim());
+  var scopeSel = document.getElementById('move-project-scope');
+  if (scopeSel && moveProjectTypeIsHook()) fd.append('localisation_scope', scopeSel.value);
+  var ap = window.apMode ? apMode.value('move-project') : null;
+  if (ap) {
+    fd.append('mode', ap.mode);
+    if (ap.mode === 'assistant' && ap.params) fd.append('autopilot_params', ap.params);
+  }
+
+  fetch('/api/v2/runs/' + encodeURIComponent(runId) + '/to-project', { method: 'POST', body: fd })
+    .then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    })
+    .then(function (res) {
+      if (res.ok && res.body.project_id) {
+        statusEl.textContent = 'Created — opening…';
+        window.location.href = '/v2/projects/' + res.body.project_id;
+      } else {
+        statusEl.textContent = 'Error: ' + ((res.body && res.body.detail) || 'unknown error');
+      }
+    })
+    .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
+}
+</script>
+
+{% elif sv == "incomplete" and run.generation_mode == "void_source" %}
+<div class="card">
+  <div class="card-header"><h2>VOID from the source — segments being filled</h2></div>
+  <div class="card-body">
+    <div class="alert alert-info">
+      {% if run.error_message %}<strong>{{ run.error_message }}</strong><br />{% endif %}
+      This run sends nothing to the video model: every swap segment's captions are repainted by
+      VOID on the original clip. Use <em>Batch VOID fill</em> below (free previews, then one start;
+      a segment whose source shows no caption goes in as is, free). The video is stitched and
+      delivered once every segment has its fill. A segment VOID cannot do can be sent to the
+      model on its own with its <em>Re-run</em> button (paid).
+    </div>
+  </div>
+</div>
 {% elif sv == "incomplete" %}
 <div class="card">
   <div class="card-header"><h2>Run Incomplete — some segments need re-running</h2></div>
@@ -108,9 +1496,9 @@ function copyResultLink(btn) {
       all at once); once every swap segment succeeds the full video is stitched
       and delivered automatically.
     </div>
-    <form method="post" action="/api/v2/runs/{{ run.id }}/retry">
-      <button type="submit" class="btn btn-warning">Retry all failed segments</button>
-    </form>
+    <button type="button" class="btn btn-warning js-retry-run"
+            data-run-id="{{ run.id }}">Retry all failed segments</button>
+    <span class="js-retry-status" style="margin-left:8px;font-size:12px"></span>
   </div>
 </div>
 {% else %}
@@ -122,19 +1510,288 @@ function copyResultLink(btn) {
       <strong>Error:</strong> {{ run.error_message }}
     </div>
     {% endif %}
-    <form method="post" action="/api/v2/runs/{{ run.id }}/retry">
-      <button type="submit" class="btn btn-warning">Retry Run</button>
-    </form>
+    {% if run.preprocess_enabled and run.error_message %}
+    <div class="alert alert-warning">
+      Preprocessing failed — fix the reference images/prompts and retry.
+    </div>
+    {% endif %}
+    <button type="button" class="btn btn-warning js-retry-run"
+            data-run-id="{{ run.id }}">Retry Run</button>
+    <span class="js-retry-status" style="margin-left:8px;font-size:12px"></span>
   </div>
 </div>
 {% endif %}
 
-{% if run_segments %}
+{# __ Drive file / re-link (AICP-348) __
+   Only a FRESH check decides anything: the button asks Drive now, and the
+   re-link is offered only when Drive reports the file missing. #}
+{% if sv in ("done", "failed") and run.result_gdrive_file_id %}
+<div class="card" id="drive-relink-card" data-run-id="{{ run.id }}"
+     data-file-id="{{ run.result_gdrive_file_id }}">
+  <div class="card-header"><h2>Drive file</h2></div>
+  <div class="card-body">
+    <p class="hint" style="margin:0 0 8px">
+      Delivered as Drive file <code>{{ run.result_gdrive_file_id }}</code>.
+      Every re-delivery replaces the content behind this same link. If the file
+      was deleted from Drive, re-deliveries fail; check it here.
+    </p>
+    <button type="button" class="btn btn-sm btn-secondary js-drive-check">Check Drive file</button>
+    <span class="js-drive-status" style="margin-left:8px;font-size:12px"></span>
+    <div class="js-drive-detail" style="margin-top:8px;font-size:13px"></div>
+    <div class="js-drive-relink" style="display:none;margin-top:8px">
+      <div class="alert alert-warning">
+        <strong>The Creative Link will change.</strong> The run's current final is
+        uploaded as a <strong>new</strong> Drive file and the run points at it; the
+        Job ID (<code>{{ run.short_id }}</code>) stays the same. Drive answers
+        "not found" both for a deleted file and for one the service account can
+        no longer see (moved, or unshared): if the old file still exists for
+        anyone, restore its sharing instead. Sheet rows that
+        hold the old link are listed above — they are <strong>not</strong> edited
+        automatically; fix them by hand.
+        {% if sv == "failed" %}<br />This run stays <em>failed</em>: press Retry Run
+        afterwards to resume it (it then delivers behind the new link, and may do
+        more than deliver if segments need it).{% endif %}
+      </div>
+      <label style="font-size:13px">
+        <input type="checkbox" class="js-drive-confirm" />
+        I understand the Creative Link changes and I will update the listed rows.
+      </label>
+      <button type="button" class="btn btn-sm btn-warning js-drive-relink-go" disabled>
+        Upload as a new Drive file
+      </button>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var card = document.getElementById("drive-relink-card");
+  if (!card) return;
+  var runId = card.dataset.runId;
+  var statusEl = card.querySelector(".js-drive-status");
+  var detail = card.querySelector(".js-drive-detail");
+  var relinkBox = card.querySelector(".js-drive-relink");
+  var confirmBox = card.querySelector(".js-drive-confirm");
+  var goBtn = card.querySelector(".js-drive-relink-go");
+  var url = "/api/v2/runs/" + encodeURIComponent(runId);
+  var fileId = card.dataset.fileId;
+
+  function el(tag, text) { var e = document.createElement(tag); if (text != null) e.textContent = text; return e; }
+  function list(title, items, fmt) {
+    var wrap = el("div"); wrap.appendChild(el("strong", title));
+    if (!items.length) { wrap.appendChild(el("div", "none")); return wrap; }
+    var ul = el("ul"); ul.style.margin = "4px 0 8px";
+    items.forEach(function (it) { ul.appendChild(el("li", fmt(it))); });
+    wrap.appendChild(ul); return wrap;
+  }
+
+  function render(d) {
+    while (detail.firstChild) detail.removeChild(detail.firstChild);
+    fileId = d.file_id || fileId;
+    statusEl.textContent = "Drive says: " + (d.state || "?") + (d.error ? " (" + d.error + ")" : "");
+    if (d.reason && d.state !== "present") detail.appendChild(el("p", "Re-link not available: " + d.reason));
+    detail.appendChild(list("Exports that carried this run's link", d.exported_rows || [], function (r) {
+      return r.kind + " — Job ID " + r.job_id + " (" + r.pipeline_type + "), column " + r.column;
+    }));
+    if (d.sheet_scan) {
+      if (d.sheet_scan.error) detail.appendChild(el("p", "Sheet scan: " + d.sheet_scan.error));
+      else detail.appendChild(list("Final Creatives cells holding the current link (scanned " + d.sheet_scan.scanned_at + ")",
+        d.sheet_scan.rows || [], function (r) {
+          return "row " + r.row + " — " + r.column + ", Job ID " + r.job_id + " (" + r.pipeline_type + ")";
+        }));
+    }
+    var hist = d.relinks || [];
+    if (hist.length) {
+      detail.appendChild(list("Re-link history", hist, function (h) {
+        var t = h.created_at + " — " + h.status + ": " + h.old_file_id + " → " + (h.new_file_id || "—");
+        if (h.error_message) t += " (" + h.error_message + ")";
+        if (h.sheet_scan && h.sheet_scan.rows && h.sheet_scan.rows.length) {
+          t += " — old link still in sheet rows " + h.sheet_scan.rows.map(function (r) { return r.row; }).join(", ");
+        }
+        return t;
+      }));
+    }
+    relinkBox.style.display = d.can_relink ? "" : "none";
+    goBtn.disabled = !(d.can_relink && confirmBox.checked);
+    goBtn.textContent = d.resumes ? "Resume the re-link (" + d.resumes.slice(0, 8) + ")" : "Upload as a new Drive file";
+  }
+
+  function check() {
+    statusEl.textContent = "Asking Drive…";
+    return fetch(url + "/drive-file").then(function (r) {
+      return r.json().then(function (b) { return { ok: r.ok, body: b }; });
+    }).then(function (res) {
+      if (!res.ok) { statusEl.textContent = "Error: " + ((res.body && res.body.detail) || "unknown"); return null; }
+      render(res.body); return res.body;
+    }).catch(function (e) { statusEl.textContent = "Network error: " + e; return null; });
+  }
+
+  function pollUntilSettled(relinkId, tries) {
+    setTimeout(function () {
+      check().then(function (d) {
+        var h = d && (d.relinks || []).filter(function (x) { return x.id === relinkId; })[0];
+        if (h && h.status === "done") {
+          statusEl.textContent = "Re-linked. New link: " + h.new_link + " — reloading…";
+          setTimeout(function () { location.reload(); }, 2500);
+        } else if (h && h.status !== "queued") {
+          statusEl.textContent = "Re-link " + h.status + ": " + (h.error_message || "");
+          goBtn.disabled = !confirmBox.checked;
+        } else if (tries > 0) {
+          pollUntilSettled(relinkId, tries - 1);
+        }
+      });
+    }, 3000);
+  }
+
+  card.querySelector(".js-drive-check").addEventListener("click", check);
+  confirmBox.addEventListener("change", function () { goBtn.disabled = !confirmBox.checked; });
+  goBtn.addEventListener("click", function () {
+    if (!confirmBox.checked) return;
+    if (!confirm("Upload this run's final as a NEW Drive file? The Creative Link changes; rows that hold the old link must be fixed by hand.")) return;
+    goBtn.disabled = true;
+    statusEl.textContent = "Starting re-link…";
+    fetch(url + "/drive-relink", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_old_file_id: fileId, confirm_link_change: true }),
+    }).then(function (r) {
+      return r.json().then(function (b) { return { ok: r.ok, body: b }; });
+    }).then(function (res) {
+      if (!res.ok) {
+        statusEl.textContent = "Error: " + ((res.body && res.body.detail) || "unknown");
+        goBtn.disabled = !confirmBox.checked;
+        return;
+      }
+      statusEl.textContent = "Re-link queued — uploading…";
+      pollUntilSettled(res.body.relink.id, 200);
+    }).catch(function (e) { statusEl.textContent = "Network error: " + e; goBtn.disabled = false; });
+  });
+})();
+</script>
+{% endif %}
+
+{# __ Retry Run / Retry all failed segments __
+   POST via fetch, not a <form> submit: a plain form navigates the browser to
+   /api/v2/.../retry and dumps the raw RunResponse JSON on the operator, with
+   no way back to the run page (and the API's error detail is invisible when it
+   409s). Same shape every other retry in the app uses — see retryCaption in
+   run_captions_list.html. #}
+<script>
+(function () {
+  function retryStatus(btn, msg) {
+    var el = btn.parentNode.querySelector(".js-retry-status");
+    if (el) { el.textContent = msg; }
+  }
+
+  function installPoller(runId) {
+    var target = document.getElementById("run-status-content");
+    if (!window.htmx || !target) { location.reload(); return; }
+    var poller = document.createElement("div");
+    poller.className = "polling-section";
+    poller.setAttribute("hx-get", "/v2/runs/" + encodeURIComponent(runId) + "/status-fragment");
+    poller.setAttribute("hx-trigger", "every 2s");
+    poller.setAttribute("hx-target", "#run-status-content");
+    poller.setAttribute("hx-swap", "innerHTML");
+    var spinner = document.createElement("span");
+    spinner.className = "spinner";
+    var txt = document.createElement("span");
+    txt.textContent = " Re-queued — processing…";
+    poller.appendChild(spinner);
+    poller.appendChild(txt);
+    while (target.firstChild) { target.removeChild(target.firstChild); }
+    target.appendChild(poller);
+    htmx.process(target);
+  }
+
+  document.querySelectorAll(".js-retry-run").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var runId = btn.dataset.runId;
+      btn.disabled = true;
+      retryStatus(btn, "Re-queuing…");
+      fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/retry", { method: "POST" })
+        .then(function (resp) {
+          if (resp.ok) { installPoller(runId); return; }
+          return resp.json().then(function (body) {
+            btn.disabled = false;
+            retryStatus(btn, "Error: " + ((body && body.detail) || resp.status));
+          }).catch(function () {
+            btn.disabled = false;
+            retryStatus(btn, "Error: HTTP " + resp.status);
+          });
+        })
+        .catch(function (err) {
+          btn.disabled = false;
+          retryStatus(btn, "Network error: " + err);
+        });
+    });
+  });
+})();
+</script>
+
+{% if rebuild_chunks %}
+{% include "partials/run_rebuild_chunks.html" %}
+{% endif %}
+{% set void_run = run.generation_mode == 'void_source' %}
+{% if run_segments and not rebuild_chunks and run_segments[0].fill_allowed and (status_val == 'done' or void_run and status_val in ('incomplete', 'failed')) %}
+{# Batch VOID fill (2026-11-03, docs/segment-fill-batch-design.md §1.7): free
+   previews of several segments in parallel, then ONE paid start; one promote,
+   one re-stitch, one re-delivery to the same Drive link. #}
+<div class="card" style="margin-top:16px" id="fill-batch-panel" data-run-id="{{ run.id }}"
+     data-basis="{{ 'source' if void_run and status_val != 'done' else 'model_result' }}">
+  <div class="card-header" style="flex-wrap:wrap">
+    <h2>Batch VOID fill</h2>
+    <p style="font-size:12px;color:var(--color-muted);margin:4px 0 0;flex-basis:100%">
+      Pick the segments that still show captions: "Preview" prepares a free mask preview of each
+      (in parallel); "Start" sends every ready preview to Fal VOID at once ($0.10 reserved, about
+      $0.05 charged each). When they are done the run is re-stitched once and re-delivered to the
+      same Drive link; a member that fails does not block the others.
+    </p>
+  </div>
+  <div class="card-body" style="font-size:12px">
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+      {% for rs in run_segments %}
+      {% set rs_st = rs.status.value if rs.status and rs.status.__class__.__name__ != 'str' else rs.status|string %}
+      {% if (status_val == 'done' and rs_st == 'completed' and not rs.source_fallback) or (status_val != 'done' and rs.void_source_pending) %}
+      <label style="display:inline-flex;gap:4px;align-items:center">
+        <input type="checkbox" class="fill-batch-cb" value="{{ rs.id }}"
+               data-leftover="{{ 1 if rs.fill_leftover else 0 }}"
+               data-ready-id="{{ rs.fill_ready_id or '' }}" data-ready-usd="{{ rs.fill_ready_usd or '' }}"
+               {% if rs.fill_busy %}disabled{% endif %} />
+        seg {{ rs.segment_def.index if rs.segment_def else loop.index0 }}{% if rs.fill_leftover %} &middot; leftovers{% endif %}{% if rs.fill_ready_id %} &middot; preview ready{% endif %}{% if rs.fill_busy %} &middot; busy{% endif %}
+      </label>
+      {% endif %}
+      {% endfor %}
+    </div>
+    <button type="button" class="btn" id="fill-batch-all" style="font-size:11px;padding:2px 8px">Select all</button>
+    <button type="button" class="btn" id="fill-batch-leftovers" style="font-size:11px;padding:2px 8px">Select segments with leftovers (last caption QA)</button>
+    <button type="button" class="btn" id="fill-batch-preview" style="font-size:11px;padding:2px 8px">Preview selected (free)</button>
+    <button type="button" class="btn btn-primary" id="fill-batch-start" style="font-size:11px;padding:2px 8px">Start the ready previews of the selected segments</button>
+    {% for b in fill_batches or [] %}
+    <div style="margin-top:6px">
+      batch {{ b.id[:8] }} &middot; {{ b.status }} &middot; {{ b.authorization }} &middot; ${{ "%.2f"|format(b.reserved_usd or 0) }} reserved
+      &middot; {% for m in b.members %}{{ m[1] }}{% if m[2] %} ({{ m[2] }}){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+      {% if b.error %}<span style="color:#a00"> &middot; {{ b.error }}</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% if run_segments and not rebuild_chunks %}
 <!-- __ Per-segment override panel __ -->
+{% set cost_ns = namespace(video=0, image=0, any=false) %}
+{% for rs in run_segments %}
+  {% if rs.cost_credits is not none %}{% set cost_ns.video = cost_ns.video + rs.cost_credits %}{% set cost_ns.any = true %}{% endif %}
+  {% for j in rs.image_jobs %}{% if j.cost_credits is not none %}{% set cost_ns.image = cost_ns.image + j.cost_credits %}{% set cost_ns.any = true %}{% endif %}{% endfor %}
+{% endfor %}
 <div class="card" style="margin-top:16px">
-  <div class="card-header">
+  <div class="card-header" style="flex-wrap:wrap">
     <h2>Per-Segment Overrides</h2>
-    <p style="font-size:12px;color:var(--color-muted);margin:4px 0 0">
+    {% if cost_ns.any %}
+    <span class="badge badge-cost" style="margin-left:auto" title="Total credits consumed across this run's video tasks plus any GPT Image regenerations (kie.ai). Re-running a segment overwrites its video cost, never its image attempts' cost.">
+      Total cost: {{ "%g"|format(cost_ns.video + cost_ns.image) }} credits
+      ({{ "%g"|format(cost_ns.video) }} video + {{ "%g"|format(cost_ns.image) }} image)
+    </span>
+    {% endif %}
+    <p style="font-size:12px;color:var(--color-muted);margin:4px 0 0;flex-basis:100%">
       Override the prompt or reference images for an individual swap segment, then re-run just that one.
       Other completed segments are skipped; the video is re-stitched.
     </p>
@@ -145,9 +1802,12 @@ function copyResultLink(btn) {
     <div class="segment-override-panel" id="seg-panel-{{ rs.id }}" style="border-bottom:1px solid #e0e0e0;padding:16px">
       <!-- Segment header -->
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-        {% if rs.segment_def %}
+        {# window_start/window_end come from the run's frozen segment_snapshot,
+           NOT the live SegmentDef — a later segment edit must not re-label what
+           this run actually generated. See web_v2._get_run_segments. #}
+        {% if rs.window_start is not none %}
         <img
-          src="/api/v2/projects/{{ project_id }}/frame?t={{ rs.segment_def.start_sec }}"
+          src="/api/v2/projects/{{ project_id }}/frame?t={{ "%.1f"|format(rs.window_start) }}"
           alt="Segment {{ rs.index }} thumbnail"
           style="width:80px;height:45px;object-fit:cover;border-radius:4px;border:1px solid #ccc;flex-shrink:0"
           onerror="this.style.display='none'"
@@ -156,10 +1816,27 @@ function copyResultLink(btn) {
         <div>
           <strong>Segment {{ rs.index }}</strong>
           <span class="badge badge-{{ rs_status }}" style="margin-left:6px">{{ rs_status }}</span>
-          {% if rs.segment_def %}
+          {% if rs.window_start is not none and rs.window_end is not none %}
           <span style="font-size:11px;color:var(--color-muted);margin-left:6px">
-            {{ "%.1f"|format(rs.segment_def.start_sec) }}s &ndash; {{ "%.1f"|format(rs.segment_def.end_sec) }}s
+            {{ "%.1f"|format(rs.window_start) }}s &ndash; {{ "%.1f"|format(rs.window_end) }}s
           </span>
+          {% endif %}
+          {% if rs.cost_credits is not none %}
+          <span class="badge badge-cost" style="margin-left:6px" title="Credits consumed by this task (kie.ai)">
+            {{ "%g"|format(rs.cost_credits) }} credits
+          </span>
+          {% endif %}
+          {# The clip kie.ai returned for THIS segment, before stitching — the
+             only way to tell a bad generation from a bad stitch. Absent while
+             the segment has no result on disk (never generated, or cleared by
+             a re-run). See web_v2._segment_clip_url. #}
+          {% if rs.clip_url %}
+          <a href="{{ rs.clip_url }}" target="_blank" rel="noopener"
+             style="font-size:11px;margin-left:6px"
+             title="Open the raw clip Seedance returned for this segment (opens in a new tab)">▶ clip</a>
+          <a href="{{ rs.clip_url }}&amp;download=1"
+             style="font-size:11px;margin-left:4px;color:var(--color-muted)"
+             title="Download this segment's clip as an mp4">↓</a>
           {% endif %}
           {# A source-fallback segment is `failed` (the swap really didn't
              happen) but the run still delivered, with the original footage in
@@ -171,13 +1848,31 @@ function copyResultLink(btn) {
             original footage used
           </span>
           {% endif %}
+          {# A COMPLETED segment carrying a message is the short-result warning:
+             the model returned less video than the clip we sent, and we stitched
+             it anyway (operator's call). It is not a failure — the run
+             delivers — but the delivered video is that much shorter than the
+             source timeline, and on audio_mode="original" everything after this
+             segment drifts against the untouched source track. Flagged loudly
+             here because the alternative is that it is invisible: that is how
+             run 4e631e56 went out at 25.1s of a 38s video. #}
+          {% if rs_status == "completed" and rs.error_message %}
+          <span class="badge badge-warning" style="margin-left:6px" title="Seedance returned less video than the clip it was given; it was stitched anyway, so the delivered video is shorter than the source timeline">
+            short result
+          </span>
+          <div style="font-size:11px;color:#8a6d3b;margin-top:2px">
+            {{ error_detail(rs.error_message) }}
+            &mdash; stitched anyway; re-run this segment to try for a full-length one.
+          </div>
+          {% endif %}
           {% if rs_status == "failed" and rs.error_message %}
           <div style="font-size:11px;color:{{ '#8a6d3b' if rs.source_fallback else '#c00' }};margin-top:2px">
-            {{ rs.error_message[:80] }}{% if rs.error_message|length > 80 %}&hellip;{% endif %}
+            {{ error_detail(rs.error_message) }}
           </div>
           {% endif %}
         </div>
       </div>
+
 
       <!-- Override form — uses data attrs for IDs; no JS template interpolation into innerHTML -->
       <form
@@ -201,10 +1896,48 @@ function copyResultLink(btn) {
           <label style="font-size:12px;font-weight:600">Reference images override
             <span style="font-weight:400;color:var(--color-muted)">(leave empty to use run-level refs)</span>
           </label>
+          {# Local WORKER-DISK paths (an uploaded file) must never appear as
+             text in the URL box — a Save-override from a stale tab would then
+             write them back verbatim, or a blank box would clear them. Only
+             http(s) entries are editable text; a local entry renders as a
+             thumbnail + hidden input instead, so a plain "Save override"
+             still carries it forward (segFormData reads every
+             .segref-local-hidden alongside the text box) without ever
+             showing or letting the operator hand-edit the raw path. The ×
+             button removes just that hidden input, which is how a local ref
+             is dropped now that the text box can't do it. #}
+          {% set override_refs = rs.reference_image_urls_override or [] %}
+          {% set http_ns = namespace(items=[]) %}
+          {% for ref in override_refs %}
+            {% if ref.startswith("http://") or ref.startswith("https://") %}
+              {% set http_ns.items = http_ns.items + [ref] %}
+            {% endif %}
+          {% endfor %}
+          {% if override_refs|length > http_ns.items|length %}
+          <div class="segref-local-list" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:4px">
+            {% for ref in override_refs %}
+            {% if not (ref.startswith("http://") or ref.startswith("https://")) %}
+            <span class="segref-local-item" style="position:relative;display:inline-block">
+              <img
+                src="/api/v2/runs/{{ run.id }}/segments/{{ rs.id }}/override-reference?index={{ loop.index0 }}"
+                alt="override reference {{ loop.index0 }}"
+                title="Uploaded file — kept on Save unless removed with ×"
+                style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid #ccc"
+                onerror="this.style.display='none'"
+              />
+              <input type="hidden" class="segref-local-hidden" value="{{ ref }}" />
+              <button type="button" class="segref-local-remove" title="Remove this reference"
+                      style="position:absolute;top:-6px;right:-6px;width:16px;height:16px;line-height:14px;padding:0;border-radius:50%;font-size:11px">&times;</button>
+            </span>
+            {% endif %}
+            {% endfor %}
+          </div>
+          {% endif %}
           <input type="file" name="reference_files" accept="image/*" multiple style="font-size:12px" />
           <input type="text" name="reference_urls" placeholder="URL1, URL2 (comma-separated)"
                  style="width:100%;font-size:12px;margin-top:4px"
-                 value="{{ (rs.reference_image_urls_override or [])|join(', ') }}" />
+                 value="{{ http_ns.items|join(', ') }}" />
+          {% include "_drive_sa_notice.html" %}
         </div>
         <div class="action-row" style="gap:8px;margin-top:4px">
           <button type="submit" class="btn btn-primary" style="font-size:12px;padding:5px 12px">
@@ -217,11 +1950,217 @@ function copyResultLink(btn) {
           >
             Re-run this segment
           </button>
+          <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px"
+                 title="Tick several segments, then use “Re-run ticked segments” below: one call, one re-stitch">
+            <input type="checkbox" class="seg-batch-check" /> batch
+          </label>
           <span class="seg-save-status" style="font-size:12px;color:var(--color-muted)"></span>
         </div>
       </form>
+
+      {% if rs.range_edit is defined and rs.range_edit.get("start_min") is not none %}
+      {# Run-local range editor — enlarge/shrink this swap segment through an
+         adjacent `keep` boundary. Server-validated again on submit
+         (pipeline_range_attempt.compute_candidate_snapshot); these min/max
+         hints are presentation only. See docs/run-local-segment-range-regeneration.md. #}
+      <div class="range-edit-panel" style="margin-top:10px;padding-top:10px;border-top:1px dashed #ddd">
+        <div style="font-size:12px;font-weight:600;margin-bottom:4px">Run-local range</div>
+        {% if not range_regen_eligible %}
+        <p class="hint" style="font-size:11px;margin:0 0 6px">
+          Range regeneration is available once this run's status is <strong>done</strong>
+          (currently <strong>{{ run.status.value if run.status.value is defined else run.status }}</strong>).
+        </p>
+        {% elif not rs.range_edit.editable %}
+        <p class="hint" style="font-size:11px;margin:0 0 6px">
+          Both boundaries are locked — the segment(s) next to this one are also
+          `swap`, and moving a boundary shared with another swap segment is not
+          supported.
+        </p>
+        {% endif %}
+        <form
+          class="range-edit-form"
+          data-run-id="{{ run.id }}"
+          data-rs-id="{{ rs.id }}"
+          data-project-id="{{ run.project_id }}"
+          style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end"
+        >
+          <div class="form-group" style="margin-bottom:0">
+            <label style="font-size:11px;font-weight:600">Start (s)</label><br/>
+            <input type="number" name="start_sec" step="0.1"
+                   min="{{ '%.1f'|format(rs.range_edit.start_min) }}"
+                   max="{{ '%.1f'|format(rs.range_edit.start_max) }}"
+                   value="{{ '%.1f'|format(rs.window_start) }}"
+                   {% if rs.range_edit.start_locked or not range_regen_eligible %}disabled{% endif %}
+                   style="width:90px;font-size:12px" />
+            {% if rs.range_edit.start_locked %}
+            <div style="font-size:10px;color:var(--color-muted)">locked (previous segment is not `keep`)</div>
+            {% endif %}
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label style="font-size:11px;font-weight:600">End (s)</label><br/>
+            <input type="number" name="end_sec" step="0.1"
+                   min="{{ '%.1f'|format(rs.range_edit.end_min) }}"
+                   max="{{ '%.1f'|format(rs.range_edit.end_max) }}"
+                   value="{{ '%.1f'|format(rs.window_end) }}"
+                   {% if rs.range_edit.end_locked or not range_regen_eligible %}disabled{% endif %}
+                   style="width:90px;font-size:12px" />
+            {% if rs.range_edit.end_locked %}
+            <div style="font-size:10px;color:var(--color-muted)">locked (next segment is not `keep`)</div>
+            {% endif %}
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <span class="range-edit-duration" style="font-size:11px;color:var(--color-muted)"></span>
+          </div>
+          <div class="form-group range-edit-preview" style="margin-bottom:0;display:flex;gap:6px;align-items:center">
+            {# Boundary preview — reuses the existing project source frame
+               endpoint (GET /api/v2/projects/{pid}/frame?t=) rather than a
+               new media delivery path; src is refreshed client-side as the
+               operator edits start/end, so a candidate boundary can be
+               inspected against the actual source frame before spending
+               anything. #}
+            <img class="range-edit-frame-start" alt="start frame"
+                 title="Frame at the candidate start"
+                 style="width:48px;height:48px;object-fit:cover;border-radius:4px;border:1px solid #ccc;visibility:hidden"
+                 onerror="this.style.visibility='hidden'" />
+            <span style="font-size:10px;color:var(--color-muted)">&hellip;</span>
+            <img class="range-edit-frame-end" alt="end frame"
+                 title="Frame at the candidate end"
+                 style="width:48px;height:48px;object-fit:cover;border-radius:4px;border:1px solid #ccc;visibility:hidden"
+                 onerror="this.style.visibility='hidden'" />
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <button type="button" class="btn btn-warning range-edit-submit-btn"
+                    style="font-size:12px;padding:5px 12px"
+                    {% if not range_regen_eligible or not rs.range_edit.editable %}disabled{% endif %}>
+              Regenerate with new range
+            </button>
+            <span class="range-edit-status" style="font-size:12px;color:var(--color-muted);margin-left:6px"></span>
+          </div>
+        </form>
+        {% if rs.range_attempts %}
+        <div class="range-attempt-history" style="margin-top:6px;font-size:11px">
+          {% for att in rs.range_attempts[:5] %}
+          {% set att_status = att.status.value if att.status.value is defined else att.status %}
+          <div style="color:{{ '#c00' if att_status == 'failed' else ('#2a7' if att_status == 'done' else 'var(--color-muted)') }}">
+            [{{ att_status }}] {{ "%.1f"|format(att.requested_start_sec) }}s&ndash;{{ "%.1f"|format(att.requested_end_sec) }}s
+            {% if att_status == 'failed' and att.error_message %} &mdash; {{ error_detail(att.error_message, 100) }}{% endif %}
+            {% if att.promoted_at %} &mdash; promoted{% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if rs.takes %}
+      {# AICP-342: previous outputs preserved by a rerun/restore. Restoring
+         re-stitches and replaces the content behind the run's Drive link; it
+         never generates anything. #}
+      <details class="seg-takes" style="margin-top:8px;font-size:12px">
+        <summary>Previous takes ({{ rs.takes|length }})</summary>
+        <ul style="margin:6px 0 0;padding-left:18px">
+          {% for take in rs.takes %}
+          <li style="margin-bottom:4px">
+            {{ take.created_at.strftime("%Y-%m-%d %H:%M") if take.created_at else "" }}
+            {% if take.file_purged_at %}
+            <span class="badge" style="color:var(--color-muted)" title="Deleted by the take retention cleanup; it can no longer be restored">purged {{ take.file_purged_at.strftime("%Y-%m-%d") }}</span>
+            {% else %}
+            <a href="/api/v2/runs/{{ run.id }}/segments/{{ rs.id }}/takes/{{ take.id }}/video" target="_blank" rel="noopener">▶ take</a>
+            {% endif %}
+            {% if take.prompt_override %}<span style="color:var(--color-muted)" title="{{ take.prompt_override }}">prompt: {{ take.prompt_override[:60] }}{% if take.prompt_override|length > 60 %}…{% endif %}</span>{% endif %}
+            {% if take.is_current %}
+            <span class="badge badge-completed">current</span>
+            {% elif not take.file_purged_at and sv in ("done", "failed", "incomplete") %}
+            <button type="button" class="btn seg-take-restore-btn" style="font-size:11px;padding:2px 8px"
+                    data-run-id="{{ run.id }}" data-take-id="{{ take.id }}">Restore</button>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+
+      {% if rs.fill_allowed %}
+      {# AICP-358: rebuild this segment as source + a VOID inpaint inside the
+         caption mask. Preview is free; Start reserves the shown amount on Fal;
+         the composite then becomes the segment's result and the run re-stitches
+         and re-delivers in place. #}
+      <details class="seg-fill" style="margin-top:8px;font-size:12px" {% if rs.fill_jobs or rs.content_block %}open{% endif %}>
+        <summary>Caption fill (VOID){% if rs.fill_jobs %} — {{ rs.fill_jobs[0].status }}{% endif %}{% if rs.content_block %} — refused by the provider{% endif %}</summary>
+        <div style="margin-top:6px">
+          {% if sv == "done" and rs_status == "completed" %}
+          <input type="text" class="seg-fill-box" placeholder="box x0,y0,x1,y1 (blank = measure)"
+                 style="font-size:11px;width:210px" data-rs-id="{{ rs.id }}">
+          <button type="button" class="btn seg-fill-preview-btn" style="font-size:11px;padding:2px 8px"
+                  data-run-id="{{ run.id }}" data-rs-id="{{ rs.id }}">Preview mask (free)</button>
+          {% elif rs.void_source_pending and sv in ("incomplete", "failed") %}
+          <div style="margin-bottom:4px">VOID from the source: this segment's captions are repainted on the original clip (nothing goes to the model).</div>
+          <button type="button" class="btn seg-fill-preview-btn" style="font-size:11px;padding:2px 8px"
+                  data-run-id="{{ run.id }}" data-rs-id="{{ rs.id }}" data-basis="source">VOID fill from source &mdash; preview (free)</button>
+          {% elif rs.content_block and sv in ("incomplete", "failed") %}
+          {# The provider refused this segment's content (safety filter / sensitive
+             content / copyright): retrying the same frames repeats the block. A VOID
+             fill from the SOURCE inpaints only the caption mask of the source clip;
+             if the source clip shows no caption it can ship as is (free). #}
+          <div style="color:#a60;margin-bottom:4px">{{ rs.content_block_label }}: a fill from the source replaces the model for this segment.</div>
+          <input type="text" class="seg-fill-box" placeholder="box x0,y0,x1,y1 (blank = measure)"
+                 style="font-size:11px;width:210px" data-rs-id="{{ rs.id }}">
+          <button type="button" class="btn seg-fill-preview-btn" style="font-size:11px;padding:2px 8px"
+                  data-run-id="{{ run.id }}" data-rs-id="{{ rs.id }}" data-basis="source">VOID fill from source &mdash; preview (free)</button>
+          {% endif %}
+          {% for fj in rs.fill_jobs %}
+          {% set fj_source = (fj.base or {}).get("basis") == "source" %}
+          {% set fj_as_is = (fj.media or {}).get("source_as_is") %}
+          <div style="margin-top:6px;padding:4px 6px;border:1px solid var(--color-border, #ddd);border-radius:4px">
+            <b>{{ fj.status }}</b>
+            {% if fj_source %}<span class="badge" title="built from the source clip: the provider refused this segment">{% if fj_as_is %}source as is{% else %}VOID from source{% endif %}</span>{% endif %}
+            {{ fj.created_at.strftime("%Y-%m-%d %H:%M") if fj.created_at else "" }}
+            {% if fj_as_is %}&middot; no caption detected in the source clip{% if fj.media.source_as_is_reason %} ({{ fj.media.source_as_is_reason }}){% endif %}
+            {% elif fj.media %}&middot; {{ fj.media.frames_masked }}/{{ fj.media.frames }} frames masked &middot; VOID {{ fj.media.void_frames }} frames{% endif %}
+            {% if fj.mask_box %}&middot; box {{ fj.mask_box|join(", ") }} ({{ fj.box_source }}){% endif %}
+            {% if fj.preview_path %}&middot; <a href="/api/v2/runs/{{ run.id }}/segments/fill/{{ fj.id }}/preview.jpg" target="_blank" rel="noopener">{% if fj_as_is %}frame sheet{% else %}mask preview{% endif %}</a>{% endif %}
+            {% if fj.status == "ready" and fj_as_is and sv in ("incomplete", "failed") %}
+            <button type="button" class="btn seg-fill-apply-source-btn" style="font-size:11px;padding:2px 8px"
+                    data-run-id="{{ run.id }}" data-fill-id="{{ fj.id }}">Use the source clip as is (free)</button>
+            <button type="button" class="btn seg-fill-cancel-btn" style="font-size:11px;padding:2px 8px"
+                    data-run-id="{{ run.id }}" data-fill-id="{{ fj.id }}">Cancel</button>
+            {% elif fj.status == "ready" and (sv == "done" and not fj_source or fj_source and sv in ("incomplete", "failed")) %}
+            <button type="button" class="btn seg-fill-start-btn" style="font-size:11px;padding:2px 8px"
+                    data-run-id="{{ run.id }}" data-fill-id="{{ fj.id }}" data-usd="{{ fj.estimated_usd }}">Start (reserve ${{ "%.2f"|format(fj.estimated_usd) }})</button>
+            <button type="button" class="btn seg-fill-cancel-btn" style="font-size:11px;padding:2px 8px"
+                    data-run-id="{{ run.id }}" data-fill-id="{{ fj.id }}">Cancel</button>
+            {% elif fj.status in ("admitted", "compositing") %}
+            &middot; Fal task {{ fj.provider_task_id[:8] if fj.provider_task_id else "" }} (state: <code>python -m app.pipeline_provider list</code>)
+            {% elif fj.status == "applied" %}
+            &middot; applied {{ fj.applied_at.strftime("%H:%M") if fj.applied_at else "" }}; {% if fj_source %}the run stitches and delivers once every segment has a result{% else %}the run re-stitches and re-delivers{% endif %}
+            {% endif %}
+            {% if fj.error_code %}<div style="color:#c00">{{ fj.error_code }}: {{ error_detail(fj.error_message or "", 160) }}</div>{% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+
+      {% if run.preprocess_enabled and rs_status in ("completed", "failed") %}
+      <div id="segimg-{{ rs.id }}">
+        {% include "partials/segment_image_block.html" %}
+      </div>
+      {% endif %}
     </div>
     {% endfor %}
+    {% if run_segments|length > 1 %}
+    {# AICP-341: several segments, one call, one re-stitch. Sends each ticked
+       segment's prompt box; reference edits must be saved first. #}
+    <div class="action-row" style="gap:8px;padding:12px 16px">
+      <button type="button" class="btn btn-warning seg-batch-rerun-btn"
+              data-run-id="{{ run.id }}" style="font-size:12px;padding:5px 12px">
+        Re-run ticked segments
+      </button>
+      <span style="font-size:12px;color:var(--color-muted)">
+        Sends each ticked segment’s prompt box; save reference changes first.
+      </span>
+    </div>
+    {% endif %}
   </div>
 </div>
 
@@ -237,12 +2176,24 @@ function copyResultLink(btn) {
   // Build FormData WITHOUT an empty file input. A blank <input type=file>
   // serializes to an empty file part that FastAPI rejects as List[UploadFile]
   // (422). Only append reference_files when a file is actually selected.
+  //
+  // reference_urls carries the visible http(s) text box PLUS every surviving
+  // .segref-local-hidden value (the local-disk override paths the template
+  // renders as thumbnails, never as editable text — see the Reference images
+  // override block above). Without this a plain Save would silently drop
+  // them: the box no longer shows them, so submitting just its text would
+  // replace the whole override list with only the http(s) entries.
   function segFormData(form) {
     var fd = new FormData();
     var pa = form.querySelector('textarea[name="prompt"]');
     fd.append("prompt", pa ? pa.value : "");
     var urls = form.querySelector('input[name="reference_urls"]');
-    if (urls && urls.value.trim()) fd.append("reference_urls", urls.value.trim());
+    var parts = [];
+    if (urls && urls.value.trim()) parts.push(urls.value.trim());
+    form.querySelectorAll("input.segref-local-hidden").forEach(function (h) {
+      if (h.value) parts.push(h.value);
+    });
+    if (parts.length) fd.append("reference_urls", parts.join(","));
     var files = form.querySelector('input[type="file"][name="reference_files"]');
     if (files && files.files && files.files.length) {
       for (var i = 0; i < files.files.length; i++) {
@@ -303,11 +2254,59 @@ function copyResultLink(btn) {
     showStatus(form, "Re-queuing…");
     // Atomic: send the current prompt/reference WITH the rerun so it's applied
     // before reprocessing (no separate save needed).
-    fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId) + "/rerun", {
-      method: "POST",
-      body: segFormData(form),
-    })
-    .then(function (resp) {
+    withDiscardRetry(function (discard) {
+      var fd = segFormData(form);
+      if (discard) { fd.append("discard_audio_patch", "true"); }
+      return fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId) + "/rerun", {
+        method: "POST",
+        body: fd,
+      });
+    }, runId)
+    .catch(function (err) {
+      alert("Network error: " + err);
+    });
+  }
+
+  function handleBatchRerun(event) {
+    var runId = event.currentTarget.dataset.runId;
+    var items = [];
+    document.querySelectorAll("form.seg-override-form").forEach(function (form) {
+      var box = form.querySelector(".seg-batch-check");
+      if (!box || !box.checked) return;
+      var pa = form.querySelector('textarea[name="prompt"]');
+      items.push({ run_segment_id: form.dataset.rsId, prompt: pa ? pa.value : "" });
+    });
+    if (!items.length) { alert("Tick at least one segment first."); return; }
+    if (!confirm("Re-run " + items.length + " segment(s)? The run will be re-queued and the final video re-stitched once.")) return;
+    withDiscardRetry(function (discard) {
+      return fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/rerun", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ segments: items, discard_audio_patch: discard }),
+      });
+    }, runId)
+    .catch(function (err) {
+      alert("Network error: " + err);
+    });
+  }
+
+  // AICP-342: a rerun/restore of an audio-patched result 409s until the
+  // operator agrees to drop the audio fix; ask once, then resend.
+  function withDiscardRetry(doFetch, runId) {
+    return doFetch(false).then(function (resp) {
+      if (resp.status !== 409) { return onRequeued(resp, runId); }
+      return resp.clone().json().then(function (body) {
+        var d = (body && body.detail) || "";
+        if (typeof d === "string" && d.indexOf("discard_audio_patch") >= 0 &&
+            confirm(d + "\n\nGo ahead and discard the audio fix?")) {
+          return doFetch(true).then(function (r2) { return onRequeued(r2, runId); });
+        }
+        return onRequeued(resp, runId);
+      });
+    });
+  }
+
+  function onRequeued(resp, runId) {
       if (resp.ok) {
         if (window.htmx) {
           var target = document.getElementById("run-status-content");
@@ -338,16 +2337,404 @@ function copyResultLink(btn) {
           alert("Error: " + fmtErr(body, resp.status));
         });
       }
-    })
-    .catch(function (err) {
-      alert("Network error: " + err);
+  }
+
+  document.querySelectorAll(".seg-batch-rerun-btn").forEach(function (btn) {
+    btn.addEventListener("click", handleBatchRerun);
+  });
+
+  function postRestore(runId, body) {
+    return fetch("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
   }
+
+  // AICP-358: segment caption fill.
+  function fillPost(url, body) {
+    return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(body || {}) });
+  }
+  function fillDone(resp, runId) {
+    return resp.json().catch(function () { return {}; }).then(function (b) {
+      if (!resp.ok) { alert((b && b.detail) || ("HTTP " + resp.status)); return; }
+      refreshRunStatus(runId);
+    });
+  }
+  document.querySelectorAll(".seg-fill-preview-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var runId = btn.dataset.runId, rsId = btn.dataset.rsId;
+      var inp = document.querySelector('.seg-fill-box[data-rs-id="' + rsId + '"]');
+      var body = {};
+      var raw = inp ? inp.value.trim() : "";
+      if (raw) { body.mask_box = raw.split(",").map(function (v) { return parseFloat(v); }); }
+      if (btn.dataset.basis) { body.basis = btn.dataset.basis; }
+      fillPost("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId) + "/fill/preview", body)
+        .then(function (r) { return fillDone(r, runId); })
+        .catch(function (err) { alert("Network error: " + err); });
+    });
+  });
+  (function () {
+    var panel = document.getElementById("fill-batch-panel");
+    if (!panel) return;
+    var runId = panel.dataset.runId;
+    function boxes() { return Array.prototype.slice.call(panel.querySelectorAll(".fill-batch-cb")); }
+    function picked() { return boxes().filter(function (c) { return c.checked && !c.disabled; }); }
+    document.getElementById("fill-batch-all").addEventListener("click", function () {
+      boxes().forEach(function (c) { if (!c.disabled) c.checked = true; });
+    });
+    document.getElementById("fill-batch-leftovers").addEventListener("click", function () {
+      boxes().forEach(function (c) { if (!c.disabled) c.checked = c.dataset.leftover === "1"; });
+    });
+    document.getElementById("fill-batch-preview").addEventListener("click", function () {
+      var ids = picked().map(function (c) { return c.value; });
+      if (!ids.length) { alert("Select at least one segment."); return; }
+      fillPost("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/fill/batch/preview",
+               { run_segment_ids: ids, basis: panel.dataset.basis || "model_result" })
+        .then(function (r) { return fillDone(r, runId); })
+        .catch(function (err) { alert("Network error: " + err); });
+    });
+    document.getElementById("fill-batch-start").addEventListener("click", function () {
+      var sel = picked().filter(function (c) { return c.dataset.readyId; });
+      if (!sel.length) { alert("No selected segment has a ready preview yet."); return; }
+      var ids = sel.map(function (c) { return c.dataset.readyId; });
+      var usd = sel.reduce(function (a, c) { return a + parseFloat(c.dataset.readyUsd || "0"); }, 0);
+      usd = Math.round(usd * 10000) / 10000;
+      if (!confirm("Send " + ids.length + " segment(s) to Fal VOID at once? Up to $" + usd.toFixed(2) + " is reserved (paid, about $" + (0.05 * ids.length).toFixed(2) + " charged). The composites replace the segments' results; the run re-stitches once and replaces the content behind its Drive link.")) return;
+      var url = "/api/v2/runs/" + encodeURIComponent(runId) + "/segments/fill/batch/start";
+      fillPost(url, { fill_ids: ids, approved_usd: usd, discard_audio_patch: false }).then(function (resp) {
+        if (resp.status !== 409) { return fillDone(resp, runId); }
+        return resp.clone().json().then(function (b) {
+          var d = (b && b.detail) || "";
+          if (typeof d === "string" && d.indexOf("discard_audio_patch") >= 0 &&
+              confirm(d + "\n\nGo ahead and discard the audio fix?")) {
+            return fillPost(url, { fill_ids: ids, approved_usd: usd, discard_audio_patch: true })
+              .then(function (r2) { return fillDone(r2, runId); });
+          }
+          return fillDone(resp, runId);
+        });
+      }).catch(function (err) { alert("Network error: " + err); });
+    });
+  })();
+  document.querySelectorAll(".seg-fill-start-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var runId = btn.dataset.runId, usd = parseFloat(btn.dataset.usd);
+      if (!confirm("Send this segment to Fal VOID? Up to $" + usd + " is reserved (paid). The composite replaces the segment's result; the run re-stitches and replaces the content behind its Drive link.")) return;
+      var url = "/api/v2/runs/" + encodeURIComponent(runId) + "/segments/fill/" + encodeURIComponent(btn.dataset.fillId) + "/start";
+      fillPost(url, { approved_usd: usd, discard_audio_patch: false }).then(function (resp) {
+        if (resp.status !== 409) { return fillDone(resp, runId); }
+        return resp.clone().json().then(function (b) {
+          var d = (b && b.detail) || "";
+          if (typeof d === "string" && d.indexOf("discard_audio_patch") >= 0 &&
+              confirm(d + "\n\nGo ahead and discard the audio fix?")) {
+            return fillPost(url, { approved_usd: usd, discard_audio_patch: true })
+              .then(function (r2) { return fillDone(r2, runId); });
+          }
+          return fillDone(resp, runId);
+        });
+      }).catch(function (err) { alert("Network error: " + err); });
+    });
+  });
+  document.querySelectorAll(".seg-fill-apply-source-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var runId = btn.dataset.runId;
+      if (!confirm("Ship this segment's SOURCE clip as is? The caption detector found no caption in it (a miss is possible: check the frame sheet). Nothing is generated; once every segment has a result the run stitches and delivers.")) return;
+      fillPost("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/fill/" + encodeURIComponent(btn.dataset.fillId) + "/apply-source")
+        .then(function (r) { return fillDone(r, runId); })
+        .catch(function (err) { alert("Network error: " + err); });
+    });
+  });
+  document.querySelectorAll(".seg-fill-cancel-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var runId = btn.dataset.runId;
+      fillPost("/api/v2/runs/" + encodeURIComponent(runId) + "/segments/fill/" + encodeURIComponent(btn.dataset.fillId) + "/cancel")
+        .then(function (r) { return fillDone(r, runId); })
+        .catch(function (err) { alert("Network error: " + err); });
+    });
+  });
+
+  document.querySelectorAll(".seg-take-restore-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var runId = btn.dataset.runId;
+      if (!confirm("Restore this take? The video is re-stitched and replaces the content behind the run's Drive link. Nothing is generated.")) return;
+      withDiscardRetry(function (discard) {
+        return postRestore(runId, { takes: [btn.dataset.takeId], discard_audio_patch: discard });
+      }, runId)
+      .catch(function (err) { alert("Network error: " + err); });
+    });
+  });
 
   document.querySelectorAll("form.seg-override-form").forEach(function (form) {
     form.addEventListener("submit", handleSave);
     var rerunBtn = form.querySelector(".seg-rerun-btn");
     if (rerunBtn) { rerunBtn.addEventListener("click", handleRerun); }
+    form.querySelectorAll(".segref-local-remove").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var item = btn.closest(".segref-local-item");
+        if (item) { item.remove(); }
+      });
+    });
+  });
+
+  // Re-fetch the whole run-status fragment once, immediately, after a
+  // successful range-attempt submission. This page's initial render computed
+  // range_attempts_active BEFORE the attempt existed, so the self-polling
+  // trigger div (#range-attempts-trigger) is not armed yet — one manual
+  // refresh picks up the attempt and, from then on, the fragment's own
+  // trigger div keeps polling until it reaches done/failed.
+  function refreshRunStatus(runId) {
+    if (!window.reskinRunStatus) { location.reload(); return; }
+    window.reskinRunStatus.refresh().catch(function () { location.reload(); });
+  }
+
+  function handleRangeSubmit(event) {
+    var btn = event.currentTarget;
+    var rangeForm = btn.closest("form.range-edit-form");
+    var runId = rangeForm.dataset.runId;
+    var rsId = rangeForm.dataset.rsId;
+    var startEl = rangeForm.querySelector('input[name="start_sec"]');
+    var endEl = rangeForm.querySelector('input[name="end_sec"]');
+    var statusEl = rangeForm.querySelector(".range-edit-status");
+    if (!confirm(
+      "Regenerate this segment with the new range [" + startEl.value + "s, " +
+      endEl.value + "s)? This creates a candidate attempt — the current " +
+      "result stays live until the candidate succeeds, then the new video " +
+      "replaces it behind the same Drive link."
+    )) return;
+
+    // Atomic with the existing prompt/reference override controls — read
+    // them from the SAME override form this segment already has, exactly
+    // like the legacy "Re-run this segment" button does (segFormData).
+    var overrideForm = document.querySelector(
+      'form.seg-override-form[data-rs-id="' + rsId + '"]'
+    );
+    var fd = overrideForm ? segFormData(overrideForm) : new FormData();
+    fd.set("start_sec", startEl.value);
+    fd.set("end_sec", endEl.value);
+
+    statusEl.textContent = "Submitting…";
+    function postRange(discard) {
+      if (discard) { fd.set("discard_audio_patch", "true"); }
+      return fetch(
+        "/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" +
+        encodeURIComponent(rsId) + "/range-rerun",
+        { method: "POST", body: fd },
+      )
+      .then(function (resp) {
+        return resp.json().then(function (body) { return { resp: resp, body: body }; });
+      });
+    }
+    // AICP-349: the promoted candidate replaces the content behind the run's
+    // Drive link, so an audio-patched result 409s until the operator agrees
+    // to drop the audio fix — ask once, then resend (same as a rerun).
+    postRange(false)
+    .then(function (r) {
+      var d = (r.body && r.body.detail) || "";
+      if (r.resp.status === 409 && typeof d === "string" &&
+          d.indexOf("discard_audio_patch") >= 0 &&
+          confirm(d + "\n\nGo ahead and discard the audio fix?")) {
+        return postRange(true);
+      }
+      return r;
+    })
+    .then(function (r) {
+      if (r.resp.ok) {
+        statusEl.textContent = "Candidate queued — regenerating…";
+        refreshRunStatus(runId);
+      } else {
+        statusEl.textContent = "Error: " + fmtErr(r.body, r.resp.status);
+      }
+    })
+    .catch(function (err) {
+      statusEl.textContent = "Network error: " + err;
+    });
+  }
+
+  document.querySelectorAll("form.range-edit-form").forEach(function (form) {
+    var startEl = form.querySelector('input[name="start_sec"]');
+    var endEl = form.querySelector('input[name="end_sec"]');
+    var durEl = form.querySelector(".range-edit-duration");
+    var projectId = form.dataset.projectId;
+    var startImg = form.querySelector(".range-edit-frame-start");
+    var endImg = form.querySelector(".range-edit-frame-end");
+    function updateDuration() {
+      if (!durEl || !startEl || !endEl) return;
+      var s = parseFloat(startEl.value);
+      var e = parseFloat(endEl.value);
+      durEl.textContent = (isFinite(s) && isFinite(e) && e > s)
+        ? ("candidate duration: " + (e - s).toFixed(1) + "s")
+        : "";
+    }
+    // Boundary preview — same project source frame endpoint the New Run
+    // form's "Add frame" control already uses, quantised to 0.1s server-side
+    // so repeated small edits share the same ffmpeg-cached JPEG. Debounced
+    // so a fast typed edit doesn't fire one ffmpeg extraction per keystroke.
+    var frameDebounce = null;
+    function updateFramePreviews() {
+      if (!projectId || (!startImg && !endImg)) return;
+      clearTimeout(frameDebounce);
+      frameDebounce = setTimeout(function () {
+        var s = startEl ? parseFloat(startEl.value) : NaN;
+        var e = endEl ? parseFloat(endEl.value) : NaN;
+        if (startImg && isFinite(s)) {
+          startImg.style.visibility = "visible";
+          startImg.src = "/api/v2/projects/" + encodeURIComponent(projectId) +
+            "/frame?t=" + encodeURIComponent(s);
+        }
+        if (endImg && isFinite(e)) {
+          endImg.style.visibility = "visible";
+          endImg.src = "/api/v2/projects/" + encodeURIComponent(projectId) +
+            "/frame?t=" + encodeURIComponent(e);
+        }
+      }, 250);
+    }
+    if (startEl) startEl.addEventListener("input", updateDuration);
+    if (endEl) endEl.addEventListener("input", updateDuration);
+    if (startEl) startEl.addEventListener("input", updateFramePreviews);
+    if (endEl) endEl.addEventListener("input", updateFramePreviews);
+    updateDuration();
+    updateFramePreviews();
+    var submitBtn = form.querySelector(".range-edit-submit-btn");
+    if (submitBtn) { submitBtn.addEventListener("click", handleRangeSubmit); }
+  });
+})();
+</script>
+
+<div id="segimg-jobs-trigger"
+     {% if segment_image_jobs_active %}
+     hx-get="/v2/runs/{{ run.id }}/segment-image-jobs-fragment"
+     hx-trigger="every 3s"
+     hx-target="this"
+     hx-swap="outerHTML"
+     {% endif %}
+></div>
+
+{# A range-regeneration candidate never changes run.status (it stays `done`
+   throughout — see pipeline_range_attempt._promote), so the in-progress
+   poller above (gated on run.status) never fires for it. Re-fetch the WHOLE
+   run-status fragment — not a small self-contained fragment like the
+   segment-image poller above — because a successful promotion changes the
+   video player, the segment timeline labels, and possibly the Drive link,
+   all outside this trigger div's own subtree. #}
+{# AICP-358: a caption fill also runs while the run stays `done`. #}
+{% set fill_busy = run_segments|selectattr("fill_busy")|list|length > 0 %}
+<div id="range-attempts-trigger"
+     {% if range_attempts_active or fill_busy %}
+     hx-get="/v2/runs/{{ run.id }}/status-fragment"
+     hx-trigger="every 3s"
+     hx-target="#run-status-content"
+     hx-swap="innerHTML"
+     {% endif %}
+></div>
+
+<script>
+(function () {
+  "use strict";
+  // Delegated (not bound per-form): the per-segment "Generated image" block
+  // is re-rendered via hx-swap-oob on every segment-image-jobs poll (see
+  // partials/run_segment_image_jobs_fragment.html), so a direct listener
+  // would be lost the moment a poll swaps its element out. Guarded against
+  // double registration in case this partial is ever included twice on one
+  // page load.
+  if (window.__segimgListenersBound) { return; }
+  window.__segimgListenersBound = true;
+
+  function refreshSegimg(runId) {
+    if (window.htmx) {
+      htmx.ajax("GET", "/v2/runs/" + encodeURIComponent(runId) + "/segment-image-jobs-fragment", {
+        target: "#segimg-jobs-trigger", swap: "outerHTML",
+      });
+    }
+  }
+
+  function fmtErr(body, fallback) {
+    var d = body && body.detail;
+    if (Array.isArray(d)) {
+      return d.map(function (e) { return e.msg || "invalid"; }).join("; ");
+    }
+    return d || fallback || "error";
+  }
+
+  document.addEventListener("submit", function (event) {
+    var form = event.target;
+    if (!form.classList || !form.classList.contains("segimg-form")) { return; }
+    event.preventDefault();
+    var runId = form.dataset.runId;
+    var rsId = form.dataset.rsId;
+    var statusEl = form.querySelector(".segimg-status");
+    var fd = new FormData();
+    var promptEl = form.querySelector('textarea[name="prompt"]');
+    fd.append("prompt", promptEl ? promptEl.value : "");
+    var fileEl = form.querySelector('input[name="character_file"]');
+    if (fileEl && fileEl.files && fileEl.files.length) {
+      fd.append("character_file", fileEl.files[0]);
+    }
+    var urlEl = form.querySelector('input[name="character_url"]');
+    if (urlEl && urlEl.value.trim()) { fd.append("character_url", urlEl.value.trim()); }
+    var frameEl = form.querySelector('input[name="frame_sec"]');
+    if (frameEl && frameEl.value !== "") { fd.append("frame_sec", frameEl.value); }
+
+    if (statusEl) { statusEl.textContent = "Submitting…"; }
+    fetch(
+      "/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId) + "/regenerate-image",
+      { method: "POST", body: fd }
+    )
+    .then(function (resp) {
+      if (resp.ok) {
+        if (statusEl) { statusEl.textContent = "Queued — generating…"; }
+        refreshSegimg(runId);
+      } else {
+        return resp.json().then(function (body) {
+          if (statusEl) { statusEl.textContent = "Error: " + fmtErr(body, resp.status); }
+        });
+      }
+    })
+    .catch(function (err) {
+      if (statusEl) { statusEl.textContent = "Network error: " + err; }
+    });
+  });
+
+  document.addEventListener("click", function (event) {
+    var btn = event.target;
+    if (!btn.classList) { return; }
+
+    if (btn.classList.contains("segimg-apply-btn")) {
+      var runId = btn.dataset.runId, rsId = btn.dataset.rsId, jobId = btn.dataset.jobId;
+      btn.disabled = true;
+      fetch(
+        "/api/v2/runs/" + encodeURIComponent(runId) + "/segments/" + encodeURIComponent(rsId) +
+          "/image-jobs/" + encodeURIComponent(jobId) + "/apply",
+        { method: "POST" }
+      )
+      .then(function (resp) {
+        if (resp.ok) {
+          refreshSegimg(runId);
+        } else {
+          btn.disabled = false;
+          return resp.json().then(function (body) { alert("Error: " + fmtErr(body, resp.status)); });
+        }
+      })
+      .catch(function (err) { btn.disabled = false; alert("Network error: " + err); });
+      return;
+    }
+
+    if (btn.classList.contains("segimg-clear-btn")) {
+      var runId2 = btn.dataset.runId, rsId2 = btn.dataset.rsId;
+      if (!confirm("Clear the generated image for this segment? It will fall back to its hand override or the run-level references.")) { return; }
+      fetch(
+        "/api/v2/runs/" + encodeURIComponent(runId2) + "/segments/" + encodeURIComponent(rsId2) + "/generated-image",
+        { method: "DELETE" }
+      )
+      .then(function (resp) {
+        if (resp.ok) {
+          refreshSegimg(runId2);
+        } else {
+          return resp.json().then(function (body) { alert("Error: " + fmtErr(body, resp.status)); });
+        }
+      })
+      .catch(function (err) { alert("Network error: " + err); });
+    }
   });
 })();
 </script>

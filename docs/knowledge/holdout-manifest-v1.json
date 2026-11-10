@@ -1,0 +1,574 @@
+{
+ "groups": [
+  {
+   "group_key": "0368211f-b75c-4ae6-8d4f-8ceaae2bb57e",
+   "project_ids": [
+    "0368211f-b75c-4ae6-8d4f-8ceaae2bb57e",
+    "3194eaca-d7f0-4d91-a1d2-70f89c2ee602",
+    "e1d0c37a-1882-4e24-bb76-16954636407b"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "0a3613bb-9df4-463f-9e6b-7ff70aa58732",
+   "project_ids": [
+    "0a3613bb-9df4-463f-9e6b-7ff70aa58732"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "0ad04314-bb29-4835-80a5-65227c3bae5e",
+   "project_ids": [
+    "0ad04314-bb29-4835-80a5-65227c3bae5e",
+    "299b41ab-dcac-43bd-89bc-7ed9dc5a3edb",
+    "33059fd0-d5ac-441e-8974-a400582e56c9",
+    "3401acd7-0f6f-4415-b43c-a7588bbecf10",
+    "341614c3-1efd-4296-ab23-fde5978b0b09",
+    "3a6cc086-d063-4535-a4a3-040792924fd8",
+    "3e923091-0fef-4f2f-bca2-f2bb12040d5f",
+    "9cbf7a29-83e3-4415-ba81-f2624ea9263e",
+    "a26c5839-bd6c-4d3e-a00b-5edfd0d7a083",
+    "b8d5b3c2-0fb0-42f3-8020-b8258d3c73a8",
+    "b94940bc-0c76-4786-8bf9-dbcc482af2f8",
+    "e49f5f4a-0794-4b28-8159-fa2997e9f159",
+    "fee921c9-32cc-4c49-a00b-ebd4ca794e2c"
+   ],
+   "reason": "pinned_already_discussed",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "122aad97-831c-450c-936a-4862245fa881",
+   "project_ids": [
+    "122aad97-831c-450c-936a-4862245fa881",
+    "9f5baf71-c5cc-4c1e-927d-8902b8d3cf29"
+   ],
+   "reason": "pinned_already_discussed",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "12f81f4b-7886-4b88-a63f-177dba0f6a34",
+   "project_ids": [
+    "12f81f4b-7886-4b88-a63f-177dba0f6a34"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "1932e06b-5546-4d50-9a5e-56c7789d5207",
+   "project_ids": [
+    "1932e06b-5546-4d50-9a5e-56c7789d5207",
+    "a0df80ed-2497-467c-940b-bd2cd892e1bb",
+    "c38747f2-1ce9-4861-9c70-0d5f0d413dfa"
+   ],
+   "reason": "pinned_already_discussed",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "1a613788-4672-426c-949e-bbe38a0bac48",
+   "project_ids": [
+    "1a613788-4672-426c-949e-bbe38a0bac48",
+    "1d097fb6-b233-4ac6-9979-f8705f1b5a6f",
+    "3399194a-7adc-40dd-a386-b7685f814f54",
+    "5fc31178-4c1e-402d-a946-62213f95805e"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "2543772e-29bd-4fea-b137-d85bbb45e31c",
+   "project_ids": [
+    "2543772e-29bd-4fea-b137-d85bbb45e31c",
+    "6ca38098-1aeb-44f3-83af-a964b6c4684c",
+    "6e946edc-2b46-4d1e-b990-298aa9411826",
+    "98d1daa6-098b-4117-8a0b-c10a03a6fd9a",
+    "d1172ed5-19b4-4cb9-8cb3-f5d329789002",
+    "e9ca5129-31d2-4de9-98b7-74b592c7770b",
+    "fe30bbef-f4be-4b7d-90a9-78a5ab8b26ef"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "28399fd9-4f27-4bac-8c86-43d685aebb19",
+   "project_ids": [
+    "28399fd9-4f27-4bac-8c86-43d685aebb19"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "287da12b-a416-4436-9fc3-1e9784b3b467",
+   "project_ids": [
+    "287da12b-a416-4436-9fc3-1e9784b3b467"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "29c448f3-9ec9-4c48-a948-072f1bebcb72",
+   "project_ids": [
+    "29c448f3-9ec9-4c48-a948-072f1bebcb72",
+    "a172185c-078e-4313-99e2-be840efebcc1",
+    "aba02a72-68d5-4386-a82c-6766990ac99c",
+    "e9141078-d9ed-4905-a951-a8d579a272ef",
+    "f4a1d517-5aaa-47c4-a5ca-231c97dcc10d"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "2d659dd0-ddab-4677-8bea-530d2c730abb",
+   "project_ids": [
+    "2d659dd0-ddab-4677-8bea-530d2c730abb",
+    "5ff39a1c-63d3-438c-8d78-481c5fceb31e",
+    "643ed912-05ce-473f-8cc3-c8cc64a6dfa5",
+    "913b9dec-ab4f-4287-8049-8d182b75f2a3",
+    "a67cdb51-8eb9-4656-82af-1887e7556fea",
+    "d6c3d5b3-bd61-4f84-8e4b-9583d3e711a6",
+    "e6f5a017-f4a7-4204-aa75-1493aee197e2"
+   ],
+   "reason": "pinned_already_discussed",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "324e3bbd-b49e-49be-aee9-0c8fec7adcd7",
+   "project_ids": [
+    "324e3bbd-b49e-49be-aee9-0c8fec7adcd7"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "38e10178-ab2d-4fd9-a4f3-01c797fd90c0",
+   "project_ids": [
+    "38e10178-ab2d-4fd9-a4f3-01c797fd90c0",
+    "51ab9994-2f31-44ea-bc5d-2f6129608272",
+    "5efa4d9a-a660-40c2-8c8e-826941495c81",
+    "bdc205be-e4b9-42f7-bcf7-aa4d297b6d33"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "3d184bc3-3f83-42ed-919a-14ded7259db4",
+   "project_ids": [
+    "3d184bc3-3f83-42ed-919a-14ded7259db4"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "41c8665d-f5f0-4523-8a3f-20aca4b5f2ed",
+   "project_ids": [
+    "41c8665d-f5f0-4523-8a3f-20aca4b5f2ed"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "43008999-5901-45bb-a8fd-4fc7aca7b3bc",
+   "project_ids": [
+    "43008999-5901-45bb-a8fd-4fc7aca7b3bc"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "4567d42e-9dc3-4328-afe8-d57473d0459a",
+   "project_ids": [
+    "4567d42e-9dc3-4328-afe8-d57473d0459a",
+    "ce6f5187-ae64-4e2f-8482-cbba8607c200"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "4adbb185-d64b-4769-9854-681bf4c7f0ef",
+   "project_ids": [
+    "4adbb185-d64b-4769-9854-681bf4c7f0ef"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "52e16b37-cfbf-45be-a6f8-0208d73f68cc",
+   "project_ids": [
+    "52e16b37-cfbf-45be-a6f8-0208d73f68cc"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "58d7f125-5f71-4c2c-a99d-848ac755d657",
+   "project_ids": [
+    "58d7f125-5f71-4c2c-a99d-848ac755d657"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "6b9c74af-fd08-4493-9bbe-1c9ba22cab9f",
+   "project_ids": [
+    "6b9c74af-fd08-4493-9bbe-1c9ba22cab9f"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "75427a03-78a0-40eb-a723-e3d43b7c64d7",
+   "project_ids": [
+    "75427a03-78a0-40eb-a723-e3d43b7c64d7",
+    "b7b2df8e-4680-4da9-876e-64b5c7d35736"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "7685e1a6-87f8-4e0f-acc0-8c110b1f1ce0",
+   "project_ids": [
+    "7685e1a6-87f8-4e0f-acc0-8c110b1f1ce0",
+    "e7b53945-0626-4353-a1c6-d2f8f2ecc3f4"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "77dc2f0e-89c2-4f6a-a263-7fa58950eb12",
+   "project_ids": [
+    "77dc2f0e-89c2-4f6a-a263-7fa58950eb12",
+    "b7fa5849-feb8-449c-95fc-8e918902c1e5"
+   ],
+   "reason": "pinned_already_discussed",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "77f291b1-e3e5-4abd-9ba7-022780d02a65",
+   "project_ids": [
+    "77f291b1-e3e5-4abd-9ba7-022780d02a65"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "88a0a77b-3039-4c0d-8813-228f613aa4ec",
+   "project_ids": [
+    "88a0a77b-3039-4c0d-8813-228f613aa4ec"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "8f34ef71-43e7-4c21-86ac-3f6e7e79f3a6",
+   "project_ids": [
+    "8f34ef71-43e7-4c21-86ac-3f6e7e79f3a6"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "90ec30d8-8229-4350-88f0-46e58d5a5879",
+   "project_ids": [
+    "90ec30d8-8229-4350-88f0-46e58d5a5879"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "98908499-03d8-465e-b50f-e36407c34bd8",
+   "project_ids": [
+    "98908499-03d8-465e-b50f-e36407c34bd8",
+    "c16350ca-a0fd-4a27-9173-4325da0c4f3d"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "9ec1df45-a5fa-4391-b497-a5853c1299eb",
+   "project_ids": [
+    "9ec1df45-a5fa-4391-b497-a5853c1299eb",
+    "ca3a8ff3-2021-4ce1-ac91-772e2a3b3dfa"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "a121a640-facd-4f60-9619-74fce7f14240",
+   "project_ids": [
+    "a121a640-facd-4f60-9619-74fce7f14240",
+    "a239d13c-b5af-4a6b-84c9-4efc10f1f8ee"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "ab35eba1-2d5f-494b-9886-12db060269d8",
+   "project_ids": [
+    "ab35eba1-2d5f-494b-9886-12db060269d8",
+    "d6a97b0a-4080-447a-9e2c-d6cd562a6b8c",
+    "d750dea5-2ed4-4234-895f-f6bad23f4c81"
+   ],
+   "reason": "pinned_already_discussed",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "d4a8108d-76bd-4b0c-926b-dd2ca6d5928c",
+   "project_ids": [
+    "d4a8108d-76bd-4b0c-926b-dd2ca6d5928c"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "da125d49-adb8-49b1-b5d8-20a50c39bc98",
+   "project_ids": [
+    "da125d49-adb8-49b1-b5d8-20a50c39bc98"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "e69a517e-afd3-416a-995d-802d1a48195c",
+   "project_ids": [
+    "e69a517e-afd3-416a-995d-802d1a48195c"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "f254393b-6eb5-448b-bf8c-6bd5c2e07299",
+   "project_ids": [
+    "f254393b-6eb5-448b-bf8c-6bd5c2e07299"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "f682eff4-12db-4304-af33-7494c9bf88e4",
+   "project_ids": [
+    "f682eff4-12db-4304-af33-7494c9bf88e4"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "f726a577-c1fe-4735-b61d-43cd3e807be0",
+   "project_ids": [
+    "f726a577-c1fe-4735-b61d-43cd3e807be0"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "face_swap"
+  },
+  {
+   "group_key": "0051c935-7ee8-41a1-974a-4cea46cee98e",
+   "project_ids": [
+    "0051c935-7ee8-41a1-974a-4cea46cee98e",
+    "13bd8e5b-ae0f-4bc0-b3a5-7450aeb0837c",
+    "27bb91b0-394e-41d3-9c22-6e2c556083be",
+    "77e0e370-8b8b-43dd-a428-3f2831555106",
+    "853048fa-e8da-4dc8-bf54-f33b33efb616",
+    "91fb06ff-d875-4735-b781-84ac498045e9",
+    "dca4f5da-dfe7-4822-855a-4468e9ad3433"
+   ],
+   "reason": "pinned_already_discussed",
+   "split": "development",
+   "stratum": "localisation"
+  },
+  {
+   "group_key": "12c00092-4350-4cca-bf10-115f8c2d88a3",
+   "project_ids": [
+    "12c00092-4350-4cca-bf10-115f8c2d88a3",
+    "3b096f61-45f4-47d8-b138-d11c30e9c6f1"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "localisation"
+  },
+  {
+   "group_key": "4bf33c95-b3e8-44d6-95c5-5ae48f4051ba",
+   "project_ids": [
+    "4bf33c95-b3e8-44d6-95c5-5ae48f4051ba",
+    "c5e50e7f-8023-4e5f-bc87-3f94364acc36",
+    "cf0d6976-594d-422a-bda4-4c001b1e0568",
+    "cfe981d8-801f-4b81-8dd0-57f3a8d977e3"
+   ],
+   "reason": "pinned_already_discussed",
+   "split": "development",
+   "stratum": "localisation"
+  },
+  {
+   "group_key": "654e28af-9249-4433-bae1-ef531b665696",
+   "project_ids": [
+    "654e28af-9249-4433-bae1-ef531b665696"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "localisation"
+  },
+  {
+   "group_key": "c6a8b63b-b452-4f60-b7c6-05116e6b7b79",
+   "project_ids": [
+    "c6a8b63b-b452-4f60-b7c6-05116e6b7b79"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "localisation"
+  },
+  {
+   "group_key": "06cef246-050f-478f-a098-6de2cb3109ca",
+   "project_ids": [
+    "06cef246-050f-478f-a098-6de2cb3109ca",
+    "bc399c96-9b98-43c5-8b31-83159f30f173"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "subtitle_removal"
+  },
+  {
+   "group_key": "0decff19-dd6b-4334-ada8-f24e620ff94d",
+   "project_ids": [
+    "0decff19-dd6b-4334-ada8-f24e620ff94d",
+    "f880254c-bbfe-4a2d-83ec-324d7e90cbee"
+   ],
+   "reason": "pinned_already_discussed",
+   "split": "development",
+   "stratum": "subtitle_removal"
+  },
+  {
+   "group_key": "12f5b3cc-8e7d-4dea-8512-452190d2d2e4",
+   "project_ids": [
+    "12f5b3cc-8e7d-4dea-8512-452190d2d2e4"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "subtitle_removal"
+  },
+  {
+   "group_key": "219eb047-4d57-40e1-991b-cf17fbd751dc",
+   "project_ids": [
+    "219eb047-4d57-40e1-991b-cf17fbd751dc",
+    "29d4eb73-f26b-4deb-8f25-9957a6d5109e",
+    "9d89fe79-fdfc-4c5b-9645-1d36f76c6ce1",
+    "9dae5772-3529-493c-b435-5473bcc54f0c",
+    "9dd82b43-c091-4afd-a064-21508c7e5339",
+    "da3418e9-524a-4659-9fe6-48f753d044c6"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "subtitle_removal"
+  },
+  {
+   "group_key": "326dac66-44ca-42be-91be-e78fc2b55241",
+   "project_ids": [
+    "326dac66-44ca-42be-91be-e78fc2b55241",
+    "649714e2-dd26-426d-9d12-dbce9f52a7c5",
+    "9e52f40f-3121-464a-98be-341819e68e62",
+    "a576d872-93c2-4839-9e5a-790d6e6486a3",
+    "bb9e9246-e7f1-49aa-a5fd-4022d83f118e"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "subtitle_removal"
+  },
+  {
+   "group_key": "4e0f121f-0883-4b18-88ff-42051c556ba9",
+   "project_ids": [
+    "4e0f121f-0883-4b18-88ff-42051c556ba9",
+    "a1631f3c-a17f-4116-9e27-a5e4cc62c719"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "subtitle_removal"
+  },
+  {
+   "group_key": "4fea9ccd-32bf-4253-a9a4-9dcc95d31df2",
+   "project_ids": [
+    "4fea9ccd-32bf-4253-a9a4-9dcc95d31df2"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "subtitle_removal"
+  },
+  {
+   "group_key": "7fa1b78c-382f-4b93-a15f-38b9833c0829",
+   "project_ids": [
+    "7fa1b78c-382f-4b93-a15f-38b9833c0829"
+   ],
+   "reason": "hash_rank",
+   "split": "holdout",
+   "stratum": "subtitle_removal"
+  },
+  {
+   "group_key": "bd871b38-b857-47df-af06-a454d723bfdf",
+   "project_ids": [
+    "bd871b38-b857-47df-af06-a454d723bfdf"
+   ],
+   "reason": "hash_rank",
+   "split": "development",
+   "stratum": "subtitle_removal"
+  },
+  {
+   "group_key": "d61afbfc-1f0c-4c65-bb32-84b16d82f51c",
+   "project_ids": [
+    "d61afbfc-1f0c-4c65-bb32-84b16d82f51c"
+   ],
+   "reason": "pinned_already_discussed",
+   "split": "development",
+   "stratum": "subtitle_removal"
+  }
+ ],
+ "holdout_fraction": 0.25,
+ "known_leakage_gaps": [
+  "unnamed projects and unlisted name variants are not linked beyond sha256/source_run_id",
+  "the same on-camera person across DIFFERENT creatives is not linked (no identity grouping)"
+ ],
+ "lineage_rules": [
+  "identical normalized source sha256",
+  "VideoProject.source_run_id -> parent project",
+  "curated name family (lineage-families-v1.txt)"
+ ],
+ "manifest_sha256": "ea5f5d52ce1d5b5d8485fb5d29116090d9cf337113ca35405f843bf194d2766f",
+ "salt": "aicp-294-holdout-v1",
+ "unit": "source_lineage_group",
+ "version": 1
+}

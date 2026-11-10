@@ -1,0 +1,123 @@
+{
+ "gemini-omni|None": {
+  "input": {
+   "aspect_ratio": "9:16",
+   "duration": "8",
+   "image_urls": [
+    "https://x/r1.png",
+    "https://x/r2.png"
+   ],
+   "prompt": "swap the character",
+   "resolution": "720p",
+   "video_list": [
+    {
+     "ends": 7,
+     "start": 0,
+     "url": "https://x/clip.mp4"
+    }
+   ]
+  },
+  "model": "gemini-omni-video"
+ },
+ "seedance-2-5|False": {
+  "input": {
+   "aspect_ratio": "adaptive",
+   "duration": -1,
+   "generate_audio": false,
+   "prompt": "swap the character",
+   "reference_image_urls": [
+    "https://x/r1.png",
+    "https://x/r2.png"
+   ],
+   "reference_video_urls": [
+    "https://x/clip.mp4"
+   ],
+   "resolution": "720p"
+  },
+  "model": "bytedance/seedance-2-5"
+ },
+ "seedance-2-5|None": {
+  "input": {
+   "aspect_ratio": "adaptive",
+   "duration": -1,
+   "prompt": "swap the character",
+   "reference_image_urls": [
+    "https://x/r1.png",
+    "https://x/r2.png"
+   ],
+   "reference_video_urls": [
+    "https://x/clip.mp4"
+   ],
+   "resolution": "720p"
+  },
+  "model": "bytedance/seedance-2-5"
+ },
+ "seedance-2-5|True": {
+  "input": {
+   "aspect_ratio": "adaptive",
+   "duration": -1,
+   "generate_audio": true,
+   "prompt": "swap the character",
+   "reference_audio_urls": [
+    "https://x/v.mp3"
+   ],
+   "reference_image_urls": [
+    "https://x/r1.png",
+    "https://x/r2.png"
+   ],
+   "reference_video_urls": [
+    "https://x/clip.mp4"
+   ],
+   "resolution": "720p"
+  },
+  "model": "bytedance/seedance-2-5"
+ },
+ "seedance-fast|None": {
+  "input": {
+   "aspect_ratio": "9:16",
+   "duration": 7,
+   "prompt": "swap the character",
+   "reference_image_urls": [
+    "https://x/r1.png",
+    "https://x/r2.png"
+   ],
+   "reference_video_urls": [
+    "https://x/clip.mp4"
+   ],
+   "resolution": "720p"
+  },
+  "model": "bytedance/seedance-2-fast"
+ },
+ "seedance-mini|None": {
+  "input": {
+   "aspect_ratio": "9:16",
+   "duration": 7,
+   "prompt": "swap the character",
+   "reference_image_urls": [
+    "https://x/r1.png",
+    "https://x/r2.png"
+   ],
+   "reference_video_urls": [
+    "https://x/clip.mp4"
+   ],
+   "resolution": "720p"
+  },
+  "model": "bytedance/seedance-2-mini"
+ },
+ "seedance|None": {
+  "input": {
+   "aspect_ratio": "9:16",
+   "duration": 7,
+   "prompt": "swap the character",
+   "reference_image_urls": [
+    "https://x/r1.png",
+    "https://x/r2.png"
+   ],
+   "reference_video_urls": [
+    "https://x/clip.mp4"
+   ],
+   "resolution": "720p"
+  },
+  "model": "bytedance/seedance-2"
+ }
+}

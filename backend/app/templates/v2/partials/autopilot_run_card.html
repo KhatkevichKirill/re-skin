@@ -1,0 +1,77 @@
+{# The assistant's work on this Run (AICP-369, docs/autopilot-run-view.md).
+   Lives OUTSIDE the run's 3 s status fragment. Refreshes every 10 s unless the
+   operator is in the middle of an answer. Answers / Pause / Resume / Stop act
+   only on the autopilot attempt that created this run, and only while it is
+   the project's current live one (re-checked server-side). Status line, paused
+   banner, this run's steps and the journal timeline: AICP-377. #}
+{% import "partials/autopilot_macros.html" as m %}
+{{ m.idle_script() }}
+<div id="autopilot-run-card" class="card ap-card" style="margin-bottom:16px"
+     hx-get="/v2/runs/{{ run.id }}/autopilot-card"
+     hx-trigger="every 10s [apIdle(this)]" hx-swap="outerHTML">
+  {{ m.ux_style() }}
+  {% if card.kind == "assistant" and card.ap %}
+    {% set ap = card.ap %}
+    <h3 style="margin-top:0">Assistant <span class="badge">by Assistant</span>
+      <span class="badge">{{ card.role }}</span> <span class="badge">{{ ap.status }}</span></h3>
+    {% if error %}<p style="color:#dc3545">{{ error }}</p>{% endif %}
+    <p class="text-muted" style="font-size:12px">
+      The assistant created this run (flow <code>{{ ap.flow_id }}</code> v{{ ap.flow_version }}).
+      {% if not card.current %}<strong>It has since been replaced</strong> by a newer run of the same step.{% endif %}
+      Paid actions you start here by hand (rerun, fill, captions, copy …) pause the assistant once they
+      are billed; after Resume it re-checks this run and may ask again.
+      <a href="/v2/projects/{{ card.project_id }}">Project</a>{% if card.elsewhere %} — {{ card.elsewhere }} more approval(s) are waiting on the project page or another run{% endif %}.
+    </p>
+    {{ m.status_block(ap.ux) }}
+    {{ m.budget_line(ap.budget, ap.ux.bar) }}
+
+    {% if card.related %}
+    <div class="form-group"><strong>Related runs:</strong>
+      {% for r in card.related %}<a href="/v2/runs/{{ r.run_id }}"><code>{{ r.short_id }}</code></a> <span class="badge">{{ r.label }}</span>{% if not loop.last %}, {% endif %}{% endfor %}
+    </div>
+    {% endif %}
+
+    {% for a in card.approvals %}
+      {% if card.can_answer %}
+        {{ m.approval_form(a, "/v2/runs/" ~ run.id ~ "/autopilot-card/answer", "#autopilot-run-card") }}
+      {% else %}
+        <div class="card" style="padding:8px"><span class="badge">{{ a.kind }}</span> {{ a.question }}
+          <span class="text-muted">(this autopilot attempt has been replaced)</span></div>
+      {% endif %}
+    {% endfor %}
+
+    {% if card.can_answer %}{{ m.answered_list(card.answered or [], "/v2/runs/" ~ run.id ~ "/autopilot-card/reopen", "#autopilot-run-card") }}{% endif %}
+
+    <details><summary>Step details (this run)</summary>{{ m.steps_list(card.steps) }}</details>
+
+    {% if card.controls %}
+    <form hx-post="/v2/runs/{{ run.id }}/autopilot-card/switch" hx-target="#autopilot-run-card"
+          hx-swap="outerHTML" hx-sync="closest .ap-card:replace" hx-disabled-elt="find button"
+          style="margin:8px 0">
+      {% if ap.status == "active" %}<button name="action" value="pause" class="btn">Pause</button>{% endif %}
+      {% if ap.status == "paused" and (not ap.ux.banner or ap.ux.banner.resume) %}<button name="action" value="resume" class="btn btn-primary">Resume</button>{% endif %}
+      <button name="action" value="stop" class="btn" onclick='return confirm({{ ap.ux.stop_confirm|tojson }})'>Stop…</button>
+    </form>
+    {% else %}
+      <p class="text-muted" style="font-size:12px">{% if card.can_answer %}The autopilot is {{ ap.status }}{% else %}This run belongs to an earlier autopilot attempt
+        ({{ ap.status }}){% endif %}; controls are on the <a href="/v2/projects/{{ card.project_id }}">project page</a>.</p>
+    {% endif %}
+
+    {{ m.journal_box("ap-run-journal-" ~ run.id, "/v2/runs/" ~ run.id ~ "/autopilot-journal",
+                     "/api/v2/projects/" ~ card.project_id ~ "/autopilot", "full project journal (JSON)") }}
+  {% elif card.kind == "unconfirmed" %}
+    <h3 style="margin-top:0">Assistant <span class="badge">unconfirmed</span></h3>
+    {% if error %}<p style="color:#dc3545">{{ error }}</p>{% endif %}
+    <p class="text-muted">An assistant launch of this project has an unconfirmed outcome, so this run may be
+      the assistant's or a manual one. Check the <a href="/v2/projects/{{ card.project_id }}">project page</a>.</p>
+  {% else %}
+    <h3 style="margin-top:0">Manual run <span class="badge">manual</span></h3>
+    {% if error %}<p style="color:#dc3545">{{ error }}</p>{% endif %}
+    <p class="text-muted">This project is <strong>by Assistant</strong>, but this run was started by hand.
+      The assistant does not automatically use this run.
+      {% if card.latest_live %}Billed actions on it pause the assistant until you press Resume on the
+      <a href="/v2/projects/{{ card.project_id }}">project page</a>.{% endif %}</p>
+  {% endif %}
+  {{ m.fragment_script("autopilot-run-card") }}
+  {{ m.media_script("autopilot-run-card") }}
+</div>

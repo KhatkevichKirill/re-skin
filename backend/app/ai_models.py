@@ -11,24 +11,21 @@ restated in eight places (the ``run_model_enum``, ``_SEEDANCE_KIE_MODEL`` in
 pipeline_v2, ``_VALID_MODELS`` + ``_MODEL_RESOLUTIONS`` in api_v2,
 ``_MODEL_LABELS`` in web_v2, the New Run ``<select>``, a ``MODEL_RESOLUTIONS``
 JS map, and a ternary in run_detail.html). Adding a model meant finding all
-eight. Now they all read from here, and the template layer gets the JS maps
-serialised from :func:`resolution_choices_json` / :func:`model_limits_json`.
+eight. Now they all read from here, and the template layer gets the JS map
+serialised from :func:`resolution_choices_json`.
 
-Keep this module free of app imports so api_v2, web_v2, kie_client and
-pipeline_v2 can all depend on it, and treat it as the single source of truth for
-the enum's valid values (mirrored by the ``run_model_enum`` Postgres type — see
-migrations e5a1c7d2f3b6, b4f6d8e0c357 and c8d2f4a6e971).
-
-Note the v1 pipeline (``app/pipeline.py``) still carries its own Seedance/Omni
-constants. It is frozen and single-model, so it is deliberately left alone; only
-the v2 path reads this registry.
+This mirrors ``app/project_types.py``: keep it free of app imports so api_v2,
+web_v2, pipeline_common and pipeline_v2 can all depend on it, and treat it as
+the single source of truth for the enum's valid values (mirrored by the
+``run_model_enum`` Postgres type — see migrations e5a1c7d2f3b6,
+b4f6d8e0c357 and c8d2f4a6e971).
 
 Adding a model
 --------------
 1. Add an :class:`AIModelSpec` to :data:`AI_MODELS`.
 2. Add the key to ``run_model_enum`` with an ``ALTER TYPE ... ADD VALUE``
    migration (Postgres enum values can never be removed — pick the name once).
-That is the whole change; every v2 call site is driven off this table.
+That is the whole change; every call site is driven off this table.
 """
 
 from __future__ import annotations
@@ -46,6 +43,11 @@ class AIModelSpec:
     key: str
     # Human-readable name, shown wherever a run's model is displayed.
     label: str
+    # Compact tag for the Final Creatives "Idea" column, whose whole value is
+    # capped at 40 chars (see sheets_client.build_idea). Keep it <= 4 chars —
+    # the Idea budget reserves exactly that much for the model, so a longer tag
+    # would push the string over the cap.
+    short_label: str
     # kie.ai createTask "model" field. Seedance variants share one request
     # schema and differ only by this id; Gemini Omni has its own payload shape
     # (see KieClient.create_omni_task) and is flagged by `family`.
@@ -97,18 +99,82 @@ class AIModelSpec:
     # clip length is snapped to the nearest one (Gemini Omni). When None the
     # duration is clamped into [min_duration_sec, max_duration_sec].
     allowed_durations: Optional[tuple[int, ...]]
-    # True when createTask accepts a `generate_audio` boolean. Models without it
-    # write audio (or not) on their own and reject the field outright.
+    # True when createTask accepts a `generate_audio` boolean. Models without
+    # it are steered by muting the uploaded clip instead (VideoProject
+    # .mute_source) — see wiki/models/ai-models.md.
     supports_generate_audio: bool
+    # Maximum number of `reference_audio_urls` entries createTask accepts; 0
+    # means the model has no such field and the key must be omitted entirely
+    # (the 2.0 family rejects unknown input keys, same as generate_audio).
+    #
+    # A voice reference only does anything on a model that also WRITES audio,
+    # so this is meaningful solely where supports_generate_audio/produces_audio
+    # hold — enforced by the assertion below rather than left to a caller.
+    max_reference_audios: int
     # True when the model produces an audio track at all. Gemini Omni never
     # does, so its runs are forced to audio_mode="original".
     produces_audio: bool
     # One-line description shown next to the model in the New Run form.
     hint: str
+    # --- Generation modes (docs/rebuild-from-reference-design.md §9) --------
+    # True when the model can edit a source clip (the v2v swap pipeline). A
+    # model with False never appears on a non-rebuild project and create_run
+    # refuses it there; every v2v aggregate below (segment caps, the New Run
+    # form's lists) reads only v2v models, so adding one cannot move a v2v
+    # number.
+    supports_v2v: bool = True
+    # True when the model can generate a chunk from still images only (the
+    # images-only rebuild pipeline: no reference video).
+    supports_images_only: bool = False
+    # Integer output-duration bounds of an images-only request (seconds). Our
+    # ceiling, not necessarily the provider's: Seedance 2.5 accepts 30s but a
+    # chunk is <= 14.72s by construction, so 15 is the most we ever ask.
+    images_only_min_sec: int = 0
+    images_only_max_sec: int = 0
+    # Most image references one images-only request accepts (keyframes + the
+    # character sheet). 0 for models without an images-only mode.
+    max_reference_images: int = 0
+    # How a prompt addresses the n-th (1-based) image reference, as a format
+    # string with ``{n}``: Kling "@image_{n}", Seedance "[Image {n}]".
+    image_ref_token: str = ""
 
 
 # Aspect ratios accepted by the Seedance family.
 SEEDANCE_ASPECTS = frozenset({"1:1", "4:3", "16:9", "9:16", "21:9", "adaptive"})
+
+# Seedance rejects reference videos shorter than ~1.8s; swap clips are padded
+# to this floor before upload. Applies to every family (Gemini is happy with it
+# too), so it lives here rather than on a spec.
+MIN_SWAP_VIDEO_SEC = 2.0
+
+# ---------------------------------------------------------------------------
+# Voice references (Seedance 2.5's `reference_audio_urls`)
+#
+# A voice sample handed to the model so the generated speech has a chosen
+# timbre instead of the arbitrary one it otherwise invents — the successor to
+# steering audio by muting the input (VideoProject.mute_source). See
+# wiki/models/ai-models.md.
+#
+# These bounds are kie.ai's, documented per-model but identical wherever the
+# field exists, so they live here as globals like MIN_SWAP_VIDEO_SEC rather
+# than on a spec. They are NOT per-model-negotiable: a voice is normalised to
+# them by media.make_voice_reference at upload time, before any run has chosen
+# a model, so the same library file must satisfy every backend that takes one.
+# ---------------------------------------------------------------------------
+
+# Per-file duration bounds. The API rejects anything outside these outright.
+VOICE_REF_MIN_SEC = 2.0
+VOICE_REF_MAX_SEC = 30.0
+
+# kie.ai's documented per-file ceiling for an audio reference (15 MB) — far
+# below the 100 MB whole-host upload limit in kie_client, so this is the bound
+# that actually applies. A 30s 128k mono mp3 is ~0.5 MB, so a file produced by
+# make_voice_reference cannot approach it; the check guards a hand-supplied URL.
+VOICE_REF_MAX_BYTES = 15 * 1_000_000
+
+# Audio containers kie.ai accepts. make_voice_reference always writes the first
+# one, so this exists to describe the constraint, not to branch on it.
+VOICE_REF_FORMATS = ("mp3", "wav")
 
 # Every resolution label any model offers, cheapest/smallest first. Needed
 # because "which resolution is closest to the one asked for" is an ordering
@@ -132,6 +198,7 @@ AI_MODELS: dict[str, AIModelSpec] = {
     "seedance": AIModelSpec(
         key="seedance",
         label="Seedance 2.0",
+        short_label="SD2",
         kie_model_id="bytedance/seedance-2",
         family="seedance",
         resolutions=("480p", "720p", "1080p"),
@@ -142,12 +209,14 @@ AI_MODELS: dict[str, AIModelSpec] = {
         max_duration_sec=15,
         allowed_durations=None,
         supports_generate_audio=False,
+        max_reference_audios=0,
         produces_audio=True,
         hint="video-to-video character swap",
     ),
     "seedance-fast": AIModelSpec(
         key="seedance-fast",
         label="Seedance 2.0 Fast",
+        short_label="SDf2",
         kie_model_id="bytedance/seedance-2-fast",
         family="seedance",
         resolutions=("480p", "720p"),
@@ -158,12 +227,14 @@ AI_MODELS: dict[str, AIModelSpec] = {
         max_duration_sec=15,
         allowed_durations=None,
         supports_generate_audio=False,
+        max_reference_audios=0,
         produces_audio=True,
         hint="faster, cheaper character swap",
     ),
     "seedance-mini": AIModelSpec(
         key="seedance-mini",
         label="Seedance 2.0 Mini",
+        short_label="SDm2",
         kie_model_id="bytedance/seedance-2-mini",
         family="seedance",
         resolutions=("480p", "720p"),
@@ -174,36 +245,66 @@ AI_MODELS: dict[str, AIModelSpec] = {
         max_duration_sec=15,
         allowed_durations=None,
         supports_generate_audio=False,
+        max_reference_audios=0,
         produces_audio=True,
         hint="lightweight character swap",
     ),
     "seedance-2-5": AIModelSpec(
         key="seedance-2-5",
         label="Seedance 2.5",
+        short_label="SD25",
         kie_model_id="bytedance/seedance-2-5",
         family="seedance",
-        # 2.5 tops out at 720p — it cannot stand in for base Seedance at 1080p.
-        resolutions=("480p", "720p"),
+        # 1080p was added by kie.ai on 2026-08-18; before that 2.5 stopped at
+        # 720p and could not stand in for base Seedance at production
+        # resolution. The upstream enum is 480p/720p/1080p — there is no 4k
+        # tier, so Gemini Omni remains the only 4k backend. Note the ceiling
+        # applies to the OUTPUT only: kie still documents the reference video
+        # we upload as 480p/720p (<=927k px), which it has always accepted at
+        # 1080x1920 anyway, so nothing about our uploads changes here.
+        resolutions=("480p", "720p", "1080p"),
         # The headline gain over 2.0: 30s per clip instead of 15s, so a project
         # can be cut into far fewer, longer segments (fewer stitch seams, less
         # identity drift across cuts). Requires the project to opt into a
         # matching segmentation cap — see VideoProject.max_segment_sec.
+        #
+        # This was briefly lowered to 14.5 on the theory that 2.5 hard-stops
+        # video-editing output at 14.72s. It does not: 7 of our 11 generations
+        # from a >15s reference came back at full length, up to 29.04s from a
+        # 29.30s clip. The 14.72s results are an INTERMITTENT kie/model failure
+        # — the identical 27.5s segment returned 27.392s on one run and 14.720s
+        # on another — so refusing the segment up front would throw away the
+        # ~2/3 of attempts that succeed. It is caught after the fact instead and
+        # retried; see _result_shortfall_sec in pipeline_v2.
         max_clip_sec=30.0,
         min_clip_sec=4.0,
         follows_input_geometry=True,
-        # Unused while follows_input_geometry is set (the duration sent is -1),
-        # but kept honest so validate_duration still describes the model if that
-        # ever changes.
+        # The API documents the range as -1..30, where -1 means "match the
+        # input" — and in video-editing mode it REJECTS anything else, so this
+        # bound is never actually sent for 2.5. Kept accurate anyway.
         min_duration_sec=4,
         max_duration_sec=30,
         allowed_durations=None,
         supports_generate_audio=True,
+        # kie.ai documents 10; we cap the UI at one voice because a run has one
+        # speaker and blending several samples has no defined meaning. Raising
+        # this is a one-line change if a multi-speaker use case appears.
+        max_reference_audios=1,
         produces_audio=True,
-        hint="longest clips (30s) and an explicit audio switch",
+        hint="longest clips (30s), an audio switch and voice references",
+        # Images-only (rebuild) mode, measured in the 2026-11-02 pilot:
+        # `reference_video_urls: []`, an integer duration (4-15 here; a chunk
+        # is <= 14.72s), a concrete aspect ratio, `generate_audio: false`.
+        supports_images_only=True,
+        images_only_min_sec=4,
+        images_only_max_sec=15,
+        max_reference_images=9,
+        image_ref_token="[Image {n}]",
     ),
     "gemini-omni": AIModelSpec(
         key="gemini-omni",
         label="Gemini Omni",
+        short_label="GO",
         kie_model_id="gemini-omni-video",
         family="omni",
         resolutions=("720p", "1080p", "4k"),
@@ -214,22 +315,92 @@ AI_MODELS: dict[str, AIModelSpec] = {
         max_duration_sec=10,
         allowed_durations=(4, 6, 8, 10),
         supports_generate_audio=False,
+        max_reference_audios=0,
         produces_audio=False,
         hint="multimodal video generation",
+    ),
+    # Kling 4.0 reference-to-video (kie.ai). IMAGES-ONLY: it lost both v2v
+    # evaluations (rewrites burned captions, paraphrases speech —
+    # wiki/models/kling-4-0.md), so supports_v2v=False keeps it off every
+    # non-rebuild project. Pilot-verified request (2026-11-02):
+    #   {"model": "kling-4.0/reference-to-video", "input": {"prompt",
+    #    "duration": int 3-30, "resolution", "aspect_ratio", "image_urls": [<=10]}}
+    # It writes an audio track, which phase 1 discards (audio_mode original).
+    # The v2v fields below (max_clip_sec, min_clip_sec, duration bounds) are
+    # never read for it — they are kept truthful for completeness only.
+    "kling-4-0": AIModelSpec(
+        key="kling-4-0",
+        label="Kling 4.0",
+        short_label="KL4",
+        kie_model_id="kling-4.0/reference-to-video",
+        family="kling",
+        resolutions=("720p", "1080p"),
+        max_clip_sec=30.0,
+        min_clip_sec=3.0,
+        follows_input_geometry=False,
+        min_duration_sec=3,
+        max_duration_sec=30,
+        allowed_durations=None,
+        supports_generate_audio=False,
+        max_reference_audios=0,
+        produces_audio=True,
+        hint="images-only rebuild from keyframes (rebuild projects only)",
+        supports_v2v=False,
+        supports_images_only=True,
+        images_only_min_sec=3,
+        images_only_max_sec=30,
+        max_reference_images=10,
+        image_ref_token="@image_{n}",
     ),
 }
 
 DEFAULT_MODEL = "seedance"
+# Every registered key — the run_model_enum mirror. NOT "selectable everywhere":
+# create_run additionally checks supports_v2v / supports_images_only against the
+# project's generation mode.
 VALID_MODELS = frozenset(AI_MODELS)
+# The models of the v2v swap pipeline (every model before Kling). Every v2v
+# aggregate — segment caps, the floors analysis derives, the New Run form's
+# lists on a non-rebuild project — reads this, so an images-only model cannot
+# change a v2v number.
+V2V_MODELS: dict[str, AIModelSpec] = {
+    k: s for k, s in AI_MODELS.items() if s.supports_v2v
+}
+# The models an images-only (rebuild) run may use, in registry order.
+IMAGES_ONLY_MODELS: dict[str, AIModelSpec] = {
+    k: s for k, s in AI_MODELS.items() if s.supports_images_only
+}
+
+# A voice reference steers the audio a model WRITES. Offering one on a backend
+# that writes no audio (Gemini Omni) would be a control that silently does
+# nothing, so the combination is a registry bug, not a runtime case to handle.
+# Asserted at import so a mis-specified new model fails immediately and
+# visibly, rather than at submit time on a paid run.
+for _key, _spec in AI_MODELS.items():
+    if _spec.max_reference_audios and not _spec.produces_audio:
+        raise ValueError(
+            f"AIModelSpec {_key!r} accepts reference audio but produces none — "
+            "a voice reference cannot steer a track that is never written"
+        )
+    if _spec.supports_images_only and not (
+        1 <= _spec.images_only_min_sec <= _spec.images_only_max_sec
+        and _spec.max_reference_images >= 2
+        and "{n}" in _spec.image_ref_token
+    ):
+        raise ValueError(
+            f"AIModelSpec {_key!r} supports images-only generation but its "
+            "images-only bounds / reference count / image_ref_token are unset"
+        )
+del _key, _spec
 
 # Smallest max_clip_sec across every model. A project segmented at this cap can
 # be run on ANY model without a segment being skipped — the historical default,
 # and what VideoProject.max_segment_sec=NULL falls back to.
-UNIVERSAL_MAX_SEGMENT_SEC = min(s.max_clip_sec for s in AI_MODELS.values())
+UNIVERSAL_MAX_SEGMENT_SEC = min(s.max_clip_sec for s in V2V_MODELS.values())
 
 # Largest max_clip_sec across every model — the ceiling the project setting and
 # its API validation accept.
-ABSOLUTE_MAX_SEGMENT_SEC = max(s.max_clip_sec for s in AI_MODELS.values())
+ABSOLUTE_MAX_SEGMENT_SEC = max(s.max_clip_sec for s in V2V_MODELS.values())
 
 
 def spec_for(model: Optional[str]) -> AIModelSpec:
@@ -244,6 +415,17 @@ def spec_for(model: Optional[str]) -> AIModelSpec:
 def label_for(model: Optional[str]) -> str:
     """Human-readable label for a model key (used by templates)."""
     return AI_MODELS[model].label if model in AI_MODELS else (model or "")
+
+
+def short_label_for(model: Optional[str]) -> str:
+    """Compact model tag for the Final Creatives ``Idea`` column.
+
+    Falls back to the DEFAULT_MODEL's tag (via :func:`spec_for`) for a NULL or
+    unknown key rather than echoing the raw key like :func:`label_for` does:
+    Idea has a hard 40-char budget that reserves a fixed slot for this value,
+    so a raw enum label ("seedance-fast") leaking through would overrun it.
+    """
+    return spec_for(model).short_label
 
 
 def kie_model_id(model: Optional[str]) -> str:
@@ -265,7 +447,10 @@ def resolution_or_default(model: Optional[str], resolution: Optional[str]) -> st
     """Return *resolution* if this model supports it, else the closest tier.
 
     This is the guard for "the run asks for something this backend cannot do"
-    (e.g. a 1080p run submitted to Seedance 2.5, which stops at 720p):
+    (e.g. a 1080p run submitted to Seedance 2.0 Fast, which stops at 720p). It
+    used to return ``spec.resolutions[0]``, which for those models is **480p** —
+    so the guard against an unsupported resolution silently downgraded a
+    production run to test quality. Instead:
 
     * exact match → pass it straight through;
     * otherwise the HIGHEST supported tier that does not exceed the request —
@@ -277,8 +462,8 @@ def resolution_or_default(model: Optional[str], resolution: Optional[str]) -> st
       Gemini Omni, whose cheapest option is 720p.
 
     Ranked via :data:`_RESOLUTION_RANK`, not by tuple position: display order
-    happens to be ascending today, and a positional ``resolutions[0]`` would
-    silently downgrade a 1080p production run to Seedance 2.5's 480p.
+    happens to be ascending today, and relying on that is how the 480p bug got
+    in.
     """
     spec = spec_for(model)
     if resolution in spec.resolutions:
@@ -295,11 +480,6 @@ def resolution_or_default(model: Optional[str], resolution: Optional[str]) -> st
 def max_clip_sec(model: Optional[str]) -> float:
     """Hard per-clip ceiling (seconds) for *model*."""
     return spec_for(model).max_clip_sec
-
-
-def min_clip_sec(model: Optional[str]) -> float:
-    """Shortest reference clip *model* accepts; swap clips are padded up to it."""
-    return spec_for(model).min_clip_sec
 
 
 # Sentinel duration meaning "match the input video". Not a length — do not clamp
@@ -340,6 +520,21 @@ def aspect_for(model: Optional[str], raw: Optional[str]) -> str:
     return raw if raw in SEEDANCE_ASPECTS else "adaptive"
 
 
+def min_clip_sec(model: Optional[str]) -> float:
+    """Shortest reference clip *model* accepts; swap clips are padded up to it."""
+    return spec_for(model).min_clip_sec
+
+
+def supports_reference_audio(model: Optional[str]) -> bool:
+    """True when *model* accepts a voice reference (``reference_audio_urls``)."""
+    return spec_for(model).max_reference_audios > 0
+
+
+def models_supporting_reference_audio() -> list[str]:
+    """Keys of every model that accepts a voice reference, in registry order."""
+    return [k for k, s in AI_MODELS.items() if s.max_reference_audios > 0]
+
+
 def validate_duration(model: Optional[str], duration: int) -> None:
     """Raise ``ValueError`` if *duration* is not requestable for *model*."""
     spec = spec_for(model)
@@ -367,44 +562,109 @@ def validate_duration(model: Optional[str], duration: int) -> None:
 
 
 def models_supporting_segment_len(seconds: float) -> list[str]:
-    """Keys of every model that can generate a clip of *seconds* length."""
-    return [k for k, s in AI_MODELS.items() if s.max_clip_sec + 0.05 >= seconds]
+    """Keys of every v2v model that can generate a clip of *seconds* length."""
+    return [k for k, s in V2V_MODELS.items() if s.max_clip_sec + 0.05 >= seconds]
 
 
 def models_excluded_by_segment_len(seconds: float) -> list[str]:
-    """Keys of every model that CANNOT generate a clip of *seconds* length."""
-    return [k for k, s in AI_MODELS.items() if s.max_clip_sec + 0.05 < seconds]
+    """Keys of every v2v model that CANNOT generate a clip of *seconds* length."""
+    return [k for k, s in V2V_MODELS.items() if s.max_clip_sec + 0.05 < seconds]
 
 
-def resolution_choices_json() -> str:
+def supports_v2v(model: Optional[str]) -> bool:
+    """True when *model* is registered and can edit a source clip."""
+    return model in AI_MODELS and AI_MODELS[model].supports_v2v
+
+
+def supports_images_only(model: Optional[str]) -> bool:
+    """True when *model* is registered and has an images-only mode."""
+    return model in AI_MODELS and AI_MODELS[model].supports_images_only
+
+
+def images_only_duration(model: str, chunk_sec: float) -> int:
+    """Integer output seconds to request for an images-only chunk of *chunk_sec*.
+
+    ``clamp(ceil(chunk_sec - 0.02), images_only_min_sec, images_only_max_sec)``
+    (design §6.4): the 0.02s slack keeps a chunk that is a hair over a whole
+    second (frame rounding) from buying a whole extra second; a chunk shorter
+    than the model's minimum is requested at the minimum and trimmed back by
+    the fit. ``validate_duration`` is NOT used here — its
+    ``follows_input_geometry`` rule is about an input video, which an
+    images-only request does not have. Raises ``ValueError`` for a model
+    without an images-only mode or a chunk longer than the model's ceiling
+    (+0.02s): the caller must refuse such a chunk, never truncate it.
+    """
+    import math
+
+    if not supports_images_only(model):
+        raise ValueError(f"model {model!r} has no images-only mode")
+    spec = AI_MODELS[model]
+    sec = float(chunk_sec)
+    if not sec > 0:
+        raise ValueError(f"chunk length must be positive, got {chunk_sec!r}")
+    want = math.ceil(sec - 0.02)
+    if want > spec.images_only_max_sec:
+        raise ValueError(
+            f"a {sec:.2f}s chunk exceeds {spec.key}'s images-only ceiling of "
+            f"{spec.images_only_max_sec}s"
+        )
+    return max(spec.images_only_min_sec, want)
+
+
+def validate_images_only_duration(model: str, duration: int) -> None:
+    """Raise ``ValueError`` unless *duration* is a legal images-only request."""
+    if not supports_images_only(model):
+        raise ValueError(f"model {model!r} has no images-only mode")
+    spec = AI_MODELS[model]
+    if not isinstance(duration, int) or isinstance(duration, bool):
+        raise ValueError(f"images-only duration must be an int, got {duration!r}")
+    if not (spec.images_only_min_sec <= duration <= spec.images_only_max_sec):
+        raise ValueError(
+            f"images-only duration must be between {spec.images_only_min_sec} and "
+            f"{spec.images_only_max_sec} for {spec.key}, got {duration}"
+        )
+
+
+def image_ref(model: str, n: int) -> str:
+    """How a prompt for *model* names its *n*-th (1-based) image reference."""
+    spec = AI_MODELS[model]
+    if not spec.image_ref_token or n < 1:
+        raise ValueError(f"model {model!r} has no image reference token (n={n})")
+    return spec.image_ref_token.format(n=n)
+
+
+def resolution_choices_json(models: Optional[dict] = None) -> str:
     """JSON ``{model: [[value, label], ...]}`` for the New Run form's JS.
 
     Serialised once and injected into the template so the client-side
     resolution dropdown is rebuilt from this table rather than a hand-kept copy.
+    *models*: the form's model set (default every model).
     """
     return json.dumps(
         {
             key: [[r, _RESOLUTION_LABELS.get(r, r)] for r in spec.resolutions]
-            for key, spec in AI_MODELS.items()
+            for key, spec in (AI_MODELS if models is None else models).items()
         }
     )
 
 
-def model_limits_json() -> str:
-    """JSON ``{model: {max_clip_sec, produces_audio, label}}`` for the form's JS.
+def model_limits_json(models: Optional[dict] = None) -> str:
+    """JSON ``{model: {max_clip_sec, produces_audio, reference_audio, label}}``
+    for the form's JS.
 
     Powers the client-side "these swap segments are too long for the selected
-    model" warning and the audio-control locking, without hardcoding either
-    model's limits in the template.
+    model" warning, the audio-control locking and the voice-reference control's
+    visibility, without hardcoding any model's limits in the template.
     """
     return json.dumps(
         {
             key: {
                 "max_clip_sec": spec.max_clip_sec,
                 "produces_audio": spec.produces_audio,
+                "reference_audio": spec.max_reference_audios,
                 "label": spec.label,
             }
-            for key, spec in AI_MODELS.items()
+            for key, spec in (AI_MODELS if models is None else models).items()
         }
     )
 

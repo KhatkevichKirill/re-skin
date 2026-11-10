@@ -1,0 +1,12 @@
+# AICP-150. Twice a day, like certbot's own timer; certbot only renews when
+# the certificate is due, so most runs are a no-op plus the expiry check.
+[Unit]
+Description=Twice-daily re-skin certificate renewal check
+
+[Timer]
+OnCalendar=*-*-* 04,16:00:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

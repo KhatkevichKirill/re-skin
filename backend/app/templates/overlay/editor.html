@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+{% block title %}Overlay editor — re-skin{% endblock %}
+
+{% block content %}
+
+<p style="font-size:12px">
+  <a href="/v2/overlays/">← all overlays</a>
+  {% if parent_run_id %}
+  &nbsp;·&nbsp; <a href="/v2/runs/{{ parent_run_id }}">← back to run {{ parent_run_id[:8] }}</a>
+  {% if status_val == "done" and job.result_local_path %}
+  {# AICP-331: the run page's "Move to new project" card, with this overlay picked #}
+  &nbsp;·&nbsp; <a id="overlay-move-to-project" href="/v2/runs/{{ parent_run_id }}?move_source=overlay:{{ job.id }}#move-to-project">New project from this overlay</a>
+  {% endif %}
+  {% endif %}
+</p>
+<h2>Overlay job <code>{{ job.id[:8] }}</code></h2>
+
+<div class="card">
+  <div class="card-body">
+    <h3>2. Add transparent PNG(s)</h3>
+    <div style="margin-bottom:8px">
+      <input type="file" id="png-input" accept="image/png" />
+      <button type="button" class="btn btn-sm btn-primary" onclick="uploadPng()">Upload PNG</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <input type="text" id="drive-link" placeholder="…or paste a Google Drive PNG link / id" style="flex:1;min-width:280px" />
+      <button type="button" class="btn btn-sm btn-secondary" onclick="addFromDrive()">Add from Drive</button>
+    </div>
+    {% include "_drive_sa_notice.html" %}
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px">
+      <select id="library-select" style="flex:1;min-width:280px">
+        <option value="">…or pick a saved card from the library</option>
+      </select>
+      <button type="button" class="btn btn-sm btn-secondary" onclick="addFromLibrary()">Use card</button>
+      <a href="/v2/library" target="_blank" style="font-size:12px">Manage library</a>
+    </div>
+    <p class="hint">Each added PNG appears on the preview below. Drag it to position, drag the corner to resize.</p>
+    <div id="upload-msg" class="hint"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <h3>3. Position &amp; time</h3>
+    {% if preview_url %}
+    <div id="stage" style="position:relative;display:inline-block;max-width:100%;background:#000;line-height:0">
+      <video id="src-video" src="{{ preview_url }}" controls preload="metadata"
+             style="display:block;max-width:100%;height:auto"></video>
+      <div id="overlay-layer" style="position:absolute;inset:0;pointer-events:none"></div>
+    </div>
+    {% else %}
+    <p class="hint">No inline preview available for this source — use the numeric inputs below.</p>
+    <div id="stage" style="display:none"></div>
+    {% endif %}
+
+    <div id="cards" style="margin-top:12px"></div>
+
+    <div class="action-row" style="margin-top:12px">
+      <button type="button" class="btn btn-secondary" onclick="savePlacements()">Save placement</button>
+      <span id="save-msg" class="hint"></span>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <h3>4. Render</h3>
+    <p class="hint">The rendered result uploads to Google Drive automatically.</p>
+    <div class="action-row" style="margin-top:8px">
+      <button type="button" class="btn btn-primary" onclick="renderJob()">Render</button>
+    </div>
+    <div id="status-content" style="margin-top:12px">
+      {% include "partials/status_content.html" %}
+    </div>
+  </div>
+</div>
+
+<script>
+const JOB_ID = {{ job.id|tojson }};
+const DURATION = {{ duration_sec|tojson if duration_sec is not none else 'null' }};
+let overlays = {{ overlays|tojson }};   // [{asset_path, nx, ny, sw, start_sec, end_sec, fade_sec}]
+
+const layer = document.getElementById('overlay-layer');
+const stage = document.getElementById('stage');
+const video = document.getElementById('src-video');
+
+function stageBox() { return stage.getBoundingClientRect(); }
+
+// Render one overlay's draggable image + its control card.
+function renderOverlay(ov, idx) {
+  // Draggable image on the preview (only when we have a stage).
+  if (layer) {
+    const img = document.createElement('img');
+    img.src = assetUrl(ov.asset_path);
+    img.dataset.idx = idx;
+    img.style.position = 'absolute';
+    img.style.left = (ov.nx * 100) + '%';
+    img.style.top = (ov.ny * 100) + '%';
+    img.style.width = (ov.sw ? ov.sw * 100 : 25) + '%';
+    img.style.pointerEvents = 'auto';
+    img.style.cursor = 'move';
+    img.style.outline = '1px dashed rgba(0,200,255,.8)';
+    img.draggable = false;
+    img.addEventListener('mousedown', (e) => startDrag(e, idx, img));
+    layer.appendChild(img);
+    ov._img = img;
+  }
+
+  const card = document.createElement('div');
+  card.className = 'form-group';
+  card.style.cssText = 'border:1px solid var(--color-border,#ccc);padding:8px;margin-bottom:8px';
+  // AICP-160: only the static markup and a numeric index go through
+  // innerHTML; every value that came from the job (asset name, timings,
+  // positions) is assigned via textContent / .value so it can never be parsed
+  // as HTML.
+  const i = Number(idx) | 0;
+  card.innerHTML = `
+    <strong data-f="name"></strong>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;font-size:12px">
+      <label>start s <input data-f="start" type="number" step="0.1" min="0" style="width:70px"
+        oninput="overlays[${i}].start_sec=parseFloat(this.value)" onchange="seek(this.value)"></label>
+      <label>end s <input data-f="end" type="number" step="0.1" min="0" style="width:70px"
+        oninput="overlays[${i}].end_sec=parseFloat(this.value)" onchange="seek(this.value)"></label>
+      <label>fade s <input data-f="fade" type="number" step="0.1" min="0" style="width:70px"
+        oninput="overlays[${i}].fade_sec=parseFloat(this.value)"></label>
+      <label>width % <input data-f="width" type="number" step="1" min="1" max="100"
+        placeholder="native" style="width:70px"
+        oninput="setWidth(${i}, this.value)"></label>
+      <button type="button" class="btn btn-sm btn-secondary" onclick="removeOverlay(${i})">remove</button>
+    </div>
+    <div style="font-size:11px;color:var(--color-muted)">
+      pos: <span data-f="pos"></span>
+    </div>`;
+  const f = (k) => card.querySelector('[data-f="' + k + '"]');
+  f('name').textContent = String(ov.asset_path).split('/').pop();
+  f('start').value = ov.start_sec;
+  f('end').value = ov.end_sec;
+  f('fade').value = ov.fade_sec || 0;
+  f('width').value = ov.sw ? Math.round(ov.sw * 100) : '';
+  const posEl = f('pos');
+  posEl.id = 'pos-' + i;
+  posEl.textContent = (ov.nx * 100).toFixed(1) + '%, ' + (ov.ny * 100).toFixed(1) + '%';
+  document.getElementById('cards').appendChild(card);
+}
+
+function assetUrl(rel) {
+  // The web router serves uploaded PNGs (operator-only) for in-editor preview.
+  return '/v2/overlays/' + JOB_ID + '/asset?path=' + encodeURIComponent(rel);
+}
+
+function redraw() {
+  if (layer) layer.innerHTML = '';
+  document.getElementById('cards').innerHTML = '';
+  overlays.forEach(renderOverlay);
+}
+
+function seek(t) { if (video && !isNaN(t)) { try { video.currentTime = parseFloat(t); } catch(e){} } }
+
+function setWidth(idx, val) {
+  const v = parseFloat(val);
+  overlays[idx].sw = (val === '' || isNaN(v)) ? null : Math.max(0.01, Math.min(1, v/100));
+  if (overlays[idx]._img) overlays[idx]._img.style.width = (overlays[idx].sw ? overlays[idx].sw*100 : 25) + '%';
+}
+
+function removeOverlay(idx) { overlays.splice(idx, 1); redraw(); }
+
+// Drag handling: convert pixel motion to normalized nx/ny.
+let drag = null;
+function startDrag(e, idx, img) {
+  e.preventDefault();
+  const box = stageBox();
+  const r = img.getBoundingClientRect();
+  drag = {idx, img, offX: e.clientX - r.left, offY: e.clientY - r.top, box};
+  document.addEventListener('mousemove', onDrag);
+  document.addEventListener('mouseup', endDrag);
+}
+function onDrag(e) {
+  if (!drag) return;
+  const {box, offX, offY, img, idx} = drag;
+  let nx = (e.clientX - box.left - offX) / box.width;
+  let ny = (e.clientY - box.top - offY) / box.height;
+  nx = Math.max(0, Math.min(1, nx));
+  ny = Math.max(0, Math.min(1, ny));
+  overlays[idx].nx = nx; overlays[idx].ny = ny;
+  img.style.left = (nx*100) + '%';
+  img.style.top = (ny*100) + '%';
+  const p = document.getElementById('pos-' + idx);
+  if (p) p.textContent = (nx*100).toFixed(1) + '%, ' + (ny*100).toFixed(1) + '%';
+}
+function endDrag() {
+  drag = null;
+  document.removeEventListener('mousemove', onDrag);
+  document.removeEventListener('mouseup', endDrag);
+}
+
+async function uploadPng() {
+  const input = document.getElementById('png-input');
+  const msg = document.getElementById('upload-msg');
+  if (!input.files.length) { msg.textContent = 'Choose a PNG first.'; return; }
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  msg.textContent = 'Uploading…';
+  try {
+    const resp = await fetch('/api/v2/overlays/' + JOB_ID + '/assets', {method:'POST', body: fd});
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    overlays.push({asset_path: data.asset_path, nx: 0.06, ny: 0.72, sw: 0.40,
+                   start_sec: 0, end_sec: DURATION || 5, fade_sec: 0});
+    msg.textContent = 'Added ' + data.asset_path;
+    input.value = '';
+    redraw();
+  } catch (e) { msg.textContent = 'Upload failed: ' + e.message; }
+}
+
+async function addFromDrive() {
+  const inp = document.getElementById('drive-link');
+  const msg = document.getElementById('upload-msg');
+  const link = inp.value.trim();
+  if (!link) { msg.textContent = 'Paste a Drive link or id first.'; return; }
+  msg.textContent = 'Fetching from Drive…';
+  try {
+    const resp = await fetch('/api/v2/overlays/' + JOB_ID + '/assets/from-drive', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({link})});
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    overlays.push({asset_path: data.asset_path, nx: 0.06, ny: 0.72, sw: 0.40,
+                   start_sec: 0, end_sec: DURATION || 5, fade_sec: 0});
+    msg.textContent = 'Added ' + data.asset_path;
+    inp.value = '';
+    redraw();
+  } catch (e) { msg.textContent = 'Drive add failed: ' + e.message; }
+}
+
+// Populate the "pick a saved card" dropdown from the overlay asset library
+// (same global list shown on /v2/library).
+async function loadLibrarySelect() {
+  const sel = document.getElementById('library-select');
+  try {
+    const resp = await fetch('/api/v2/overlays/library-assets');
+    if (!resp.ok) return;
+    const assets = await resp.json();
+    for (const a of assets) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = a.name + (a.width && a.height ? ' (' + a.width + '×' + a.height + ')' : '');
+      sel.appendChild(opt);
+    }
+  } catch (e) { /* library picker is optional — leave it as just the placeholder */ }
+}
+
+// Attach a picked library card: the API copies the PNG into this job's own
+// assets dir and returns the same {asset_path} shape as uploadPng()/
+// addFromDrive(), so it feeds the identical success path.
+async function addFromLibrary() {
+  const sel = document.getElementById('library-select');
+  const msg = document.getElementById('upload-msg');
+  const assetId = sel.value;
+  if (!assetId) { msg.textContent = 'Pick a card from the library first.'; return; }
+  msg.textContent = 'Adding from library…';
+  try {
+    const resp = await fetch('/api/v2/overlays/' + JOB_ID + '/library-assets/' + assetId, {method:'POST'});
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    overlays.push({asset_path: data.asset_path, nx: 0.06, ny: 0.72, sw: 0.40,
+                   start_sec: 0, end_sec: DURATION || 5, fade_sec: 0});
+    msg.textContent = 'Added ' + data.asset_path;
+    sel.value = '';
+    redraw();
+  } catch (e) { msg.textContent = 'Library add failed: ' + e.message; }
+}
+
+async function savePlacements() {
+  const msg = document.getElementById('save-msg');
+  const payload = {overlays: overlays.map(o => ({
+    asset_path: o.asset_path, nx: o.nx, ny: o.ny,
+    sw: o.sw == null ? null : o.sw,
+    start_sec: o.start_sec, end_sec: o.end_sec, fade_sec: o.fade_sec || 0,
+  }))};
+  msg.textContent = 'Saving…';
+  try {
+    const resp = await fetch('/api/v2/overlays/' + JOB_ID + '/overlays', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    if (!resp.ok) throw new Error(await resp.text());
+    msg.textContent = 'Saved ✓';
+  } catch (e) { msg.textContent = 'Save failed: ' + e.message; }
+}
+
+async function renderJob() {
+  const payload = {overlays: overlays.map(o => ({
+    asset_path: o.asset_path, nx: o.nx, ny: o.ny,
+    sw: o.sw == null ? null : o.sw,
+    start_sec: o.start_sec, end_sec: o.end_sec, fade_sec: o.fade_sec || 0,
+  }))};
+  try {
+    const resp = await fetch('/api/v2/overlays/' + JOB_ID + '/render', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    // A re-render forks a new job (the prior result is kept) — open it so this
+    // render has its own editor + result. First render stays in place.
+    if (data.id && data.id !== JOB_ID) {
+      window.location.href = '/v2/overlays/' + data.id;
+      return;
+    }
+    // Kick off HTMX polling by reloading the status fragment.
+    htmx.ajax('GET', '/v2/overlays/' + JOB_ID + '/status-fragment',
+              {target:'#status-content', swap:'innerHTML'});
+  } catch (e) { alert('Render failed: ' + e.message); }
+}
+
+// Add the overlay result as a row in the Final Creatives sheet (mirrors Runs).
+function exportToSheet(btn) {
+  const jobId = btn.dataset.jobId;
+  const status = btn.parentNode.querySelector('.sheet-export-status');
+  const setStatus = (m) => { if (status) status.textContent = m; };
+  if (!confirm('Add this result as a row in the Final Creatives sheet?')) return;
+  btn.disabled = true;
+  setStatus('Adding…');
+  fetch('/api/v2/overlays/' + encodeURIComponent(jobId) + '/export-to-sheet', {method:'POST'})
+    .then(r => r.json().then(b => ({ok: r.ok, body: b})))
+    .then(r => {
+      if (r.ok) {
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-success');
+        btn.textContent = '✓ In Final Creatives';
+        setStatus(r.body.status === 'exists' ? 'Already added.' : 'Added to Final Creatives.');
+      } else {
+        btn.disabled = false;
+        setStatus('Error: ' + ((r.body && r.body.detail) || 'request failed'));
+      }
+    })
+    .catch(e => { btn.disabled = false; setStatus('Network error: ' + e); });
+}
+
+redraw();
+loadLibrarySelect();
+</script>
+
+{% endblock %}

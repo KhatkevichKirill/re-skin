@@ -1,0 +1,162 @@
+{% from "error_detail.html" import error_detail %}
+{% if tail_edits %}
+<div
+  class="card"
+  id="tail-edits-card"
+  {% if tail_edits_active %}
+  hx-get="/v2/runs/{{ run_id }}/tail-edits-fragment"
+  hx-trigger="every 3s"
+  hx-target="#tail-edits-content"
+  hx-swap="innerHTML"
+  {% endif %}
+>
+  <div class="card-header"><h2>Change-ending history</h2></div>
+  <div class="card-body">
+    <table>
+      <thead>
+        <tr>
+          <th>Source</th>
+          <th>Cut at</th>
+          <th>Clip</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in tail_edits %}
+        {% set esv = e.status.value if e.status.value is defined else e.status|string %}
+        <tr id="tail-edit-{{ e.id }}">
+          <td style="font-size:11px">
+            {% if e.source_type == "caption" %}
+            <span class="text-muted">Caption:</span>
+            {{ tail_edit_source_labels.get(e.source_caption_id, "(deleted)") }}
+            {% else %}
+            <span class="text-muted">Run result</span>
+            {% endif %}
+          </td>
+          <td>{{ "%.1f"|format(e.cut_sec) }}s</td>
+          <td>
+            {% if e.library_clip_id %}
+            {% set clip_name = tail_clip_names.get(e.library_clip_id, e.library_clip_id[:8]) %}
+            <code style="font-size:11px">{{ clip_name }}</code>
+            {% else %}
+            <span class="text-muted">trim only</span>
+            {% endif %}
+          </td>
+          <td>
+            <span class="badge badge-{{ esv }}">{{ esv }}</span>
+            {% if esv == "failed" and e.error_message %}
+            <div style="font-size:11px;color:#c00;margin-top:2px">
+              {{ error_detail(e.error_message, 120) }}
+            </div>
+            {% endif %}
+          </td>
+          <td class="text-right" style="font-size:11px">
+            {% if esv == "done" %}
+            <a class="btn btn-sm btn-success" href="/api/v2/tail-edits/{{ e.id }}/result" download>Download</a>
+            {% if e.gdrive_file_id %}
+            <a class="btn btn-sm btn-secondary"
+               href="https://drive.google.com/file/d/{{ e.gdrive_file_id }}/view"
+               target="_blank" rel="noopener">Drive</a>
+            {% endif %}
+            {% if e.final_creatives_exported_at %}
+            <button type="button" class="btn btn-sm btn-success" disabled title="Already logged to the Final Creatives sheet">✓ Creatives</button>
+            {% else %}
+            <button
+              type="button"
+              class="btn btn-sm btn-secondary"
+              data-tail-edit-id="{{ e.id }}"
+              onclick="tailExportToSheet(this)"
+            >Creatives</button>
+            {% endif %}
+            {# AICP-331: pick this edit as the "Move to new project" source #}
+            <button type="button" class="btn btn-sm btn-secondary" title="Start a new project from this edit's video"
+                    data-move-kind="tail_edit" data-move-id="{{ e.id }}"
+                    data-move-label="Tail edit Cut @{{ '%.1f'|format(e.cut_sec) }}s{% if e.library_clip_id %} + {{ tail_clip_names.get(e.library_clip_id, '(deleted)') }}{% endif %}"
+                    onclick="window.moveStepToProject && moveStepToProject(this.dataset.moveKind, this.dataset.moveId, this.dataset.moveLabel)">New project</button>
+            {% elif esv == "failed" %}
+            <button type="button" class="btn btn-sm btn-warning"
+                    onclick="retryTailEdit('{{ e.id }}', '{{ run_id }}')">Retry</button>
+            {% endif %}
+            {% if esv in ("done", "failed") %}
+            <button type="button" class="btn btn-sm btn-danger"
+                    onclick="deleteTailEdit('{{ e.id }}', '{{ run_id }}')">Delete</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+function retryTailEdit(editId, runId) {
+  fetch('/api/v2/tail-edits/' + encodeURIComponent(editId) + '/retry', { method: 'POST' })
+    .then(function (r) {
+      if (r.ok) {
+        if (window.htmx) {
+          htmx.ajax('GET', '/v2/runs/' + encodeURIComponent(runId) + '/tail-edits-fragment', {
+            target: '#tail-edits-content', swap: 'innerHTML',
+          });
+        } else {
+          location.reload();
+        }
+      } else {
+        return r.json().then(function (b) { alert('Error: ' + (b.detail || r.status)); });
+      }
+    })
+    .catch(function (e) { alert('Network error: ' + e); });
+}
+
+function deleteTailEdit(editId, runId) {
+  if (!confirm('Delete this edit? The video file is removed from the server; the Google Drive copy and any sheet rows stay.')) return;
+  fetch('/api/v2/tail-edits/' + encodeURIComponent(editId), { method: 'DELETE' })
+    .then(function (r) {
+      if (r.ok) {
+        if (window.htmx) {
+          htmx.ajax('GET', '/v2/runs/' + encodeURIComponent(runId) + '/tail-edits-fragment', {
+            target: '#tail-edits-content', swap: 'innerHTML',
+          });
+        } else {
+          location.reload();
+        }
+      } else {
+        return r.json().then(function (b) { alert('Error: ' + (b.detail || r.status)); });
+      }
+    })
+    .catch(function (e) { alert('Network error: ' + e); });
+}
+
+/* Tail edit export functions — guarded against redefinition from HTMX re-renders */
+window.tailExportToSheet = window.tailExportToSheet || function (btn) {
+  var editId = btn.dataset.tailEditId;
+  if (!editId) return;
+  if (!confirm('Add this edit to the Final Creatives sheet?')) return;
+  btn.disabled = true;
+  var origText = btn.textContent;
+  btn.textContent = 'Adding…';
+  fetch('/api/v2/tail-edits/' + encodeURIComponent(editId) + '/export-to-sheet', { method: 'POST' })
+    .then(function (resp) {
+      return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+    })
+    .then(function (r) {
+      if (r.ok) {
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-success');
+        btn.textContent = '✓ Creatives';
+        btn.title = 'Already logged to the Final Creatives sheet';
+      } else {
+        btn.disabled = false;
+        btn.textContent = origText;
+        alert('Error: ' + ((r.body && r.body.detail) || 'request failed'));
+      }
+    })
+    .catch(function (err) {
+      btn.disabled = false;
+      btn.textContent = origText;
+      alert('Network error: ' + err);
+    });
+};
+</script>
+{% endif %}

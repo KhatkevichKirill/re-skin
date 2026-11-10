@@ -1,0 +1,11 @@
+# syntax=docker/dockerfile:1
+ARG PYTHON_IMAGE=python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+FROM ${PYTHON_IMAGE}
+RUN groupadd --gid 10002 assistant-egress \
+    && useradd --uid 10002 --gid 10002 --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin assistant-egress \
+    && install -d -o 10002 -g 10002 -m 0755 /egress /runtime/app
+COPY backend/app/__init__.py backend/app/assistant_egress.py /runtime/app/
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/runtime
+WORKDIR /runtime
+USER 10002:10002
+ENTRYPOINT ["python", "-m", "app.assistant_egress"]

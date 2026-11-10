@@ -1,0 +1,216 @@
+{#- Run-page "Outcome" card (AICP-299; docs/knowledge-feedback-design.md §7).
+    Rendered into #knowledge-card, a sibling AFTER #run-status-content, so the
+    status poll never replaces it. Read-only GET states: not_done / start / cases.
+    Every form re-renders this whole card; each render mints fresh idempotency keys. -#}
+{%- macro defect_row(d, run_case) -%}
+<div class="kb-defect-row" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0">
+  <select name="defect_code" aria-label="Defect">
+    <option value="">— defect —</option>
+    {% for code in defect_codes %}<option value="{{ code }}" {% if d and d.code == code %}selected{% endif %}>{{ code | replace("_", " ") }}</option>{% endfor %}
+  </select>
+  <select name="defect_severity" aria-label="Severity">
+    <option value="">— severity —</option>
+    {% for sev in severities %}<option value="{{ sev }}" {% if d and d.severity == sev %}selected{% endif %}>{{ sev }}</option>{% endfor %}
+  </select>
+  <input name="defect_start" inputmode="decimal" size="6" placeholder="start s" aria-label="Start (seconds)" value="{{ d.start if d else '' }}" />
+  {% if run_case %}<button type="button" class="btn btn-secondary btn-sm" data-kb-set="start">Set start</button>{% endif %}
+  <input name="defect_end" inputmode="decimal" size="6" placeholder="end s" aria-label="End (seconds)" value="{{ d.end if d else '' }}" />
+  {% if run_case %}<button type="button" class="btn btn-secondary btn-sm" data-kb-set="end">Set end</button>{% endif %}
+  <input name="defect_note" size="24" placeholder="note (required for “other”)" aria-label="Defect note" value="{{ d.note if d else '' }}" />
+</div>
+{%- endmacro -%}
+<section class="card" id="knowledge-outcome" aria-labelledby="knowledge-outcome-title" data-run-id="{{ run_id }}">
+  <div class="card-header"><h2 id="knowledge-outcome-title">Outcome</h2></div>
+  <div class="card-body">
+    {% if banner %}<div class="alert alert-{{ banner_kind }}" role="status" data-kb-banner>{{ banner }}</div>{% endif %}
+
+    {% if state == "not_done" %}
+    <p class="hint" data-kb-state="not_done">Feedback opens when this run is delivered.</p>
+
+    {% elif state == "start" %}
+    <div data-kb-state="start">
+      <p>This delivered output isn't recorded yet.</p>
+      <form hx-post="/v2/runs/{{ run_id }}/knowledge/start" hx-target="#knowledge-card" hx-swap="innerHTML"
+            hx-encoding="multipart/form-data">
+        <input type="hidden" name="expected_status" value="done" />
+        <button type="submit" class="btn btn-primary">Start recording outcome</button>
+      </form>
+    </div>
+
+    {% else %}
+    <div data-kb-state="cases">
+    {% for c in cases %}
+    {% set kept = c.kept %}
+    <div class="kb-case" id="kb-case-{{ c.id }}" data-case-id="{{ c.id }}" style="border-top:1px solid #ddd;padding-top:12px;margin-top:12px">
+      <h3 style="margin:0 0 4px">{{ c.title }}</h3>
+      <p class="hint" style="margin:0">
+        Judging <strong>version {{ c.latest.version_no }}</strong>
+        · sha <code>{{ c.latest.hash_prefix }}</code>
+        · current since {{ c.latest.observed_at[:16] | replace("T", " ") }}
+        · {% if c.latest.preserved %}preserved{% else %}not preserved{% endif %}
+        · <span data-kb-verdict="{{ c.state.verdict }}">{{ c.verdict_label }}</span>
+      </p>
+      {% if c.previous_accepted %}
+      <p class="hint" data-kb-previous-accepted>Previous version {{ c.previous_accepted }} was accepted. This version is unreviewed until you judge it.</p>
+      {% endif %}
+      {% if c.holdout %}
+      <p class="alert alert-info" data-kb-holdout>Evaluation holdout: other judgements are hidden here (blinded labeling). What you submit is recorded but not shown.</p>
+      {% endif %}
+
+      <form class="kb-feedback" hx-post="/v2/knowledge/cases/{{ c.id }}/feedback" hx-target="#knowledge-card"
+            hx-swap="innerHTML" hx-encoding="multipart/form-data">
+        <input type="hidden" name="idempotency_key" value="{{ c.feedback_key }}" />
+        <input type="hidden" name="expected_version_no" value="{{ c.latest.version_no }}" />
+        <fieldset style="border:0;padding:0;margin:8px 0">
+          <legend class="hint">Verdict for version {{ c.latest.version_no }}</legend>
+          {% for v in verdicts %}
+          <label style="margin-right:12px"><input type="radio" name="verdict" value="{{ v }}" {% if kept.verdict == v %}checked{% endif %} /> {{ verdict_labels[v] }}</label>
+          {% endfor %}
+        </fieldset>
+        <div class="kb-defects">
+          {% if kept.defects %}{% for d in kept.defects %}{{ defect_row(d, c.run_case) }}{% endfor %}
+          {% else %}{{ defect_row(none, c.run_case) }}{% endif %}
+        </div>
+        <template class="kb-defect-template">{{ defect_row(none, c.run_case) }}</template>
+        <button type="button" class="btn btn-secondary btn-sm" data-kb-add-defect>Add defect</button>
+        <p class="hint" style="margin:4px 0">A blocker/major defect on an accepted version needs Needs repair or Reject in the same submit.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0">
+          <textarea name="note" rows="2" cols="48" placeholder="Note (optional)" aria-label="Note">{{ kept.note or "" }}</textarea>
+          <input name="actor_label" size="18" placeholder="Your name (optional)" aria-label="Your name (unverified)" />
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm">Submit</button>
+      </form>
+
+      <details style="margin-top:8px">
+        <summary>Corrections ({{ c.corrections | length }})</summary>
+        {% if c.corrections %}
+        <ul>
+          {% for e in c.corrections %}<li>{{ e.summary }}{% if e.note %} — {{ e.note }}{% endif %}</li>{% endfor %}
+        </ul>
+        {% else %}<p class="hint">No corrections recorded.</p>{% endif %}
+        <form hx-post="/v2/knowledge/cases/{{ c.id }}/corrections" hx-target="#knowledge-card" hx-swap="innerHTML"
+              hx-encoding="multipart/form-data" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+          <input type="hidden" name="idempotency_key" value="{{ c.correction_key }}" />
+          <label>Before <select name="before_artifact_id">
+            {% for v in c.artifacts | reverse %}<option value="{{ v.artifact_id }}">v{{ v.version_no }} · {{ v.hash_prefix }}</option>{% endfor %}
+          </select></label>
+          <label>After <select name="after_artifact_id">
+            <option value="">— unknown —</option>
+            {% for v in c.artifacts | reverse %}<option value="{{ v.artifact_id }}">v{{ v.version_no }} · {{ v.hash_prefix }}</option>{% endfor %}
+          </select></label>
+          <label>Method <select name="method">{% for m in methods %}<option value="{{ m }}">{{ m }}</option>{% endfor %}</select></label>
+          <label>Resolved <select name="resolved">{% for r in resolved_values %}<option value="{{ r }}" {% if r == "unknown" %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
+          <input name="minutes" inputmode="decimal" size="5" placeholder="minutes" aria-label="Operator minutes" />
+          <input name="note" size="24" placeholder="note" aria-label="Correction note" />
+          <button type="submit" class="btn btn-secondary btn-sm">Add correction</button>
+        </form>
+      </details>
+
+      {% if c.older %}
+      <details style="margin-top:8px">
+        <summary>Older versions ({{ c.older | length }})</summary>
+        <ul>
+          {% for v in c.older | reverse %}
+          <li data-kb-older="{{ v.version_no }}">v{{ v.version_no }} · {{ v.reason }} · <code>{{ v.hash_prefix }}</code>
+            {% if v.historical %}· history{% endif %}
+            {% if v.preserved %}
+            · preserved
+            <form hx-post="/v2/knowledge/cases/{{ c.id }}/feedback" hx-target="#knowledge-card" hx-swap="innerHTML"
+                  hx-encoding="multipart/form-data" style="display:inline">
+              <input type="hidden" name="idempotency_key" value="{{ c.historical_keys[v.version_no] }}" />
+              <input type="hidden" name="expected_version_no" value="{{ v.version_no }}" />
+              <input type="hidden" name="historical" value="true" />
+              <select name="verdict" aria-label="Verdict for older version {{ v.version_no }}" required>
+                <option value="">— verdict —</option>
+                {% for vv in verdicts %}<option value="{{ vv }}">{{ verdict_labels[vv] }}</option>{% endfor %}
+              </select>
+              <button type="submit" class="btn btn-secondary btn-sm">Judge this older version</button>
+            </form>
+            {% else %}
+            · not preserved (cannot be judged after the fact)
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+
+      <details style="margin-top:8px" {% if c.events %}open{% endif %}>
+        <summary>Timeline ({{ c.events | length }})</summary>
+        {% if not c.events %}<p class="hint">Nothing recorded yet.</p>{% endif %}
+        <ul style="list-style:none;padding-left:0">
+          {% for e in c.events %}
+          <li data-kb-event="{{ e.id }}" style="margin:4px 0">
+            <span class="badge" data-kb-actor="{{ e.actor_kind }}">{{ e.badge }}</span>
+            {{ e.summary }}
+            {% if e.actor_label %}<span class="hint">· {{ e.actor_label }} (unverified)</span>{% endif %}
+            {% if e.note and e.type != "correction" %}<span class="hint">— {{ e.note }}</span>{% endif %}
+            {% if e.invalidated %}<span class="badge badge-failed" data-kb-invalidated>invalidated import</span>
+            {% elif not e.effective and e.type != "retraction" %}<span class="badge badge-skipped">retracted</span>{% endif %}
+            {% if e.retractable %}
+            <form hx-post="/v2/knowledge/events/{{ e.id }}/retract" hx-target="#knowledge-card" hx-swap="innerHTML"
+                  hx-encoding="multipart/form-data" style="display:inline">
+              <input type="hidden" name="idempotency_key" value="{{ e.retract_key }}" />
+              <input name="reason" size="16" placeholder="reason" aria-label="Retraction reason" required />
+              <button type="submit" class="btn btn-secondary btn-sm">Retract</button>
+            </form>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+    </div>
+    {% endfor %}
+
+    <details style="margin-top:12px;border-top:1px solid #ddd;padding-top:12px">
+      <summary>Link external repair</summary>
+      <form hx-post="/v2/runs/{{ run_id }}/knowledge/external-repair" hx-target="#knowledge-card" hx-swap="innerHTML"
+            hx-encoding="multipart/form-data" style="display:flex;flex-direction:column;gap:6px;max-width:520px">
+        <input type="hidden" name="idempotency_key" value="{{ external_key }}" />
+        <label>Drive link <input name="drive_link" size="48" placeholder="https://drive.google.com/file/d/…" /></label>
+        {% include "_drive_sa_notice.html" %}
+        <label>or upload <input type="file" name="upload" accept=".mp4,.mov,.m4v,video/mp4,video/quicktime" /></label>
+        <label>Replaced the delivered video?
+          <select name="replaced_delivered"><option value="">unknown</option><option value="true">yes</option><option value="false">no</option></select>
+        </label>
+        <input name="note" placeholder="Reason (optional — leave blank if unknown)" aria-label="Reason" />
+        <button type="submit" class="btn btn-secondary btn-sm" style="align-self:flex-start">Link external repair</button>
+      </form>
+    </details>
+    </div>
+    {% endif %}
+    <p class="hint" style="margin-top:12px">Names are unverified labels — the dashboard has one shared login.</p>
+  </div>
+</section>
+<script>
+(() => {
+  if (window.reskinKnowledgeCard) return;
+  window.reskinKnowledgeCard = true;
+  // htmx 1.9 does not swap 4xx/5xx by default; the card renders its own errors
+  // (409 stale version with the current one, 422 invalid, 413/507 upload).
+  document.addEventListener('htmx:beforeSwap', event => {
+    const target = event.detail.target;
+    if (!target || target.id !== 'knowledge-card') return;
+    const status = event.detail.xhr.status;
+    if (status === 409 || status === 413 || status === 422 || status === 507) {
+      event.detail.shouldSwap = true;
+      event.detail.isError = false;
+    }
+  });
+  document.addEventListener('click', event => {
+    const add = event.target.closest('[data-kb-add-defect]');
+    if (add) {
+      const form = add.closest('form');
+      const tpl = form.querySelector('template.kb-defect-template');
+      form.querySelector('.kb-defects').appendChild(tpl.content.cloneNode(true));
+      return;
+    }
+    const set = event.target.closest('[data-kb-set]');
+    if (set) {
+      const player = document.querySelector('#run-status-content video');
+      const input = set.parentElement.querySelector('input[name="defect_' + set.dataset.kbSet + '"]');
+      if (player && input) input.value = player.currentTime.toFixed(2);
+    }
+  });
+})();
+</script>

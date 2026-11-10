@@ -1,7 +1,5 @@
 """
-Tests for v2 state machine: ProjectStatus and RunStatus transitions.
-
-Also confirms existing v1 Job/Segment transitions still work correctly.
+Tests for the state machine: ProjectStatus, RunStatus, and SegmentStatus transitions.
 """
 
 from __future__ import annotations
@@ -9,8 +7,8 @@ from __future__ import annotations
 import pytest
 
 from app.state_machine import (
+    CaptionStatus,
     InvalidTransition,
-    JobStatus,
     ProjectStatus,
     RunStatus,
     SegmentStatus,
@@ -128,6 +126,10 @@ class TestRunStatusTransitions:
     def test_processing_to_failed(self):
         assert can_transition(RunStatus.processing, RunStatus.failed)
 
+    def test_processing_to_done(self):
+        # No-stitch runs (stitch_plan == []) finish straight from processing.
+        assert can_transition(RunStatus.processing, RunStatus.done)
+
     def test_stitching_to_delivering(self):
         assert can_transition(RunStatus.stitching, RunStatus.delivering)
 
@@ -199,52 +201,11 @@ class TestRunStatusTransitions:
 
 
 # ---------------------------------------------------------------------------
-# v1 regression — Job and Segment transitions still work
+# SegmentStatus transitions (used by RunSegment)
 # ---------------------------------------------------------------------------
 
 
-class TestV1JobTransitionsUnchanged:
-    def test_created_to_analyzing(self):
-        assert can_transition(JobStatus.created, JobStatus.analyzing)
-
-    def test_analyzing_to_review(self):
-        assert can_transition(JobStatus.analyzing, JobStatus.review)
-
-    def test_review_to_queued(self):
-        assert can_transition(JobStatus.review, JobStatus.queued)
-
-    def test_review_to_analyzing(self):
-        assert can_transition(JobStatus.review, JobStatus.analyzing)
-
-    def test_queued_to_processing(self):
-        assert can_transition(JobStatus.queued, JobStatus.processing)
-
-    def test_processing_to_stitching(self):
-        assert can_transition(JobStatus.processing, JobStatus.stitching)
-
-    def test_stitching_to_delivering(self):
-        assert can_transition(JobStatus.stitching, JobStatus.delivering)
-
-    def test_delivering_to_done(self):
-        assert can_transition(JobStatus.delivering, JobStatus.done)
-
-    def test_failed_to_queued_retry(self):
-        assert can_transition(JobStatus.failed, JobStatus.queued)
-
-    def test_done_to_anything_invalid(self):
-        for status in JobStatus:
-            assert not can_transition(JobStatus.done, status)
-
-    def test_created_to_done_invalid(self):
-        assert not can_transition(JobStatus.created, JobStatus.done)
-
-    def test_transition_applies_job(self):
-        e = _Entity(JobStatus.created)
-        transition(e, JobStatus.analyzing)
-        assert e.status == JobStatus.analyzing
-
-
-class TestV1SegmentTransitionsUnchanged:
+class TestSegmentTransitions:
     def test_pending_to_uploading(self):
         assert can_transition(SegmentStatus.pending, SegmentStatus.uploading)
 
@@ -281,3 +242,130 @@ class TestTypeSafetyError:
     def test_unsupported_type_raises_type_error(self):
         with pytest.raises(TypeError, match="Unsupported status type"):
             can_transition("not_an_enum", "also_not")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# CaptionStatus transitions (used by RunCaption — "Add Captions")
+# ---------------------------------------------------------------------------
+
+
+class TestCaptionStatusTransitions:
+    # --- valid transitions ---
+
+    def test_queued_to_transcribing(self):
+        assert can_transition(CaptionStatus.queued, CaptionStatus.transcribing)
+
+    def test_queued_to_burning(self):
+        """Manual lines (lines_source == "manual") skip the transcribe step."""
+        assert can_transition(CaptionStatus.queued, CaptionStatus.burning)
+
+    def test_queued_to_failed(self):
+        assert can_transition(CaptionStatus.queued, CaptionStatus.failed)
+
+    def test_transcribing_to_burning(self):
+        assert can_transition(CaptionStatus.transcribing, CaptionStatus.burning)
+
+    def test_transcribing_to_failed(self):
+        assert can_transition(CaptionStatus.transcribing, CaptionStatus.failed)
+
+    def test_burning_to_delivering(self):
+        assert can_transition(CaptionStatus.burning, CaptionStatus.delivering)
+
+    def test_burning_to_failed(self):
+        assert can_transition(CaptionStatus.burning, CaptionStatus.failed)
+
+    def test_delivering_to_done(self):
+        assert can_transition(CaptionStatus.delivering, CaptionStatus.done)
+
+    def test_delivering_to_failed(self):
+        assert can_transition(CaptionStatus.delivering, CaptionStatus.failed)
+
+    def test_done_to_queued_rerun(self):
+        assert can_transition(CaptionStatus.done, CaptionStatus.queued)
+
+    def test_failed_to_queued_retry(self):
+        assert can_transition(CaptionStatus.failed, CaptionStatus.queued)
+
+    # --- invalid transitions ---
+
+    def test_queued_to_done_invalid(self):
+        assert not can_transition(CaptionStatus.queued, CaptionStatus.done)
+
+    def test_queued_to_delivering_invalid(self):
+        assert not can_transition(CaptionStatus.queued, CaptionStatus.delivering)
+
+    def test_transcribing_to_delivering_invalid(self):
+        assert not can_transition(CaptionStatus.transcribing, CaptionStatus.delivering)
+
+    def test_transcribing_to_done_invalid(self):
+        assert not can_transition(CaptionStatus.transcribing, CaptionStatus.done)
+
+    def test_delivering_to_transcribing_invalid(self):
+        assert not can_transition(CaptionStatus.delivering, CaptionStatus.transcribing)
+
+    def test_delivering_to_burning_invalid(self):
+        assert not can_transition(CaptionStatus.delivering, CaptionStatus.burning)
+
+    def test_done_to_non_queued_invalid(self):
+        """done can only go to queued — all other targets remain invalid."""
+        for status in CaptionStatus:
+            if status != CaptionStatus.queued:
+                assert not can_transition(CaptionStatus.done, status), (
+                    f"Expected done -> {status.value} to be invalid"
+                )
+
+    def test_failed_to_non_queued_invalid(self):
+        """failed can only go to queued — all other targets remain invalid."""
+        for status in CaptionStatus:
+            if status != CaptionStatus.queued:
+                assert not can_transition(CaptionStatus.failed, status), (
+                    f"Expected failed -> {status.value} to be invalid"
+                )
+
+    # --- transition() behaviour ---
+
+    def test_transition_raises_on_invalid(self):
+        e = _Entity(CaptionStatus.queued)
+        with pytest.raises(InvalidTransition) as exc_info:
+            transition(e, CaptionStatus.done)
+        assert exc_info.value.current == CaptionStatus.queued
+        assert exc_info.value.target == CaptionStatus.done
+
+    def test_transition_applies_valid_move(self):
+        e = _Entity(CaptionStatus.queued)
+        transition(e, CaptionStatus.transcribing)
+        assert e.status == CaptionStatus.transcribing
+        assert e.updated_at is not None
+
+    def test_full_happy_path_transcribe_then_burn(self):
+        e = _Entity(CaptionStatus.queued)
+        for target in (
+            CaptionStatus.transcribing,
+            CaptionStatus.burning,
+            CaptionStatus.delivering,
+            CaptionStatus.done,
+        ):
+            transition(e, target)
+        assert e.status == CaptionStatus.done
+
+    def test_full_happy_path_manual_skips_transcribing(self):
+        """lines_source == "manual" goes straight from queued to burning."""
+        e = _Entity(CaptionStatus.queued)
+        for target in (
+            CaptionStatus.burning,
+            CaptionStatus.delivering,
+            CaptionStatus.done,
+        ):
+            transition(e, target)
+        assert e.status == CaptionStatus.done
+
+    def test_retry_flow(self):
+        e = _Entity(CaptionStatus.burning)
+        transition(e, CaptionStatus.failed)
+        transition(e, CaptionStatus.queued)
+        assert e.status == CaptionStatus.queued
+
+    def test_rerun_flow_from_done(self):
+        e = _Entity(CaptionStatus.done)
+        transition(e, CaptionStatus.queued)
+        assert e.status == CaptionStatus.queued

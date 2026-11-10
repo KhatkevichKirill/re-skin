@@ -1,28 +1,9 @@
 # Localisation project type — design spec / build contract
 
+Status: in progress (branch `feat/localisation`).
 This file is the **interface contract** every part of the feature is built
 against. If an implementation disagrees with this document, the document wins —
 raise the conflict rather than silently diverging.
-
-## 0. What this repo ships vs. what the spec describes
-
-The spec below was written against a deployment that also has a **clip library**
-and per-run **stitch plans**, so §1 describes the delivered creative as
-"localised hook + a language-matched tail from the library". That library is not
-part of this repository. Here:
-
-* the hook is transcribed, translated and re-generated exactly as specified;
-* the rest of the source stays as one `keep` segment and is delivered as the
-  **original, untranslated footage** — trim or replace it downstream if that is
-  not what you want to ship.
-
-Everything else in this document — the transcript contract (§4.1), the
-`app/localisation.py` API (§4.2), the prompt requirements (§4.3), the endpoints
-(§4.4), the hook-window precedence rules, the one-line-one-segment partition, the
-segmentation strategy (§5), the `ProjectTypeSpec` fields (§6), the UI (§7) and
-the failure behaviour (§8) — is implemented as written. Passages about
-`stitch_plan`, `library_clips` and tail selection describe the other deployment
-and are kept for reference.
 
 ## 1. What the feature does
 
@@ -52,19 +33,23 @@ These are properties of the type, not operator preferences:
 | `VideoProject.mute_source` | default **true** | Seedance mixes the original language into its output when it can hear the source track. Muting the upload beats prompting. |
 | `Run.audio_mode` | default **`seedance`** | `original` overlays the source (untranslated) soundtrack over the generated video, silently destroying the localisation. |
 | Model | must have `produces_audio=True` | Gemini Omni never emits audio, and `create_run` force-downgrades such runs to `audio_mode="original"` — unusable here. |
+| Voice reference | **optional, strongly recommended on 2.5** | Without one Seedance invents a voice per generation, so the same persona sounds like a different person in every language run — and can drift between segments of one video. Attaching a language-tagged library voice pins the timbre. Seedance 2.5 only (`AIModelSpec.max_reference_audios`); the New Run form pre-picks the voice matching `Run.language`, exactly as it pre-picks the tail. |
 | Default model | **`seedance-fast`** (Seedance 2.0 Fast) | Operational default: faster and cheaper for routine localisation. Hard ceiling **15s per generated clip** — longer material must be split into valid segments (the project `max_segment_sec` / hook clamp already keep proposed hooks ≤ the segmentation cap; submit-time validation refuses to send an over-limit clip). **Seedance 2.5** remains registered and selectable when its 30s ceiling or explicit `generate_audio` switch is worth the extra cost. |
 
 The proven first run (`1736426f` above) used Seedance 2.5; that is historical
 evidence, not the current New Run default.
 
+Note the interaction with **voice references**: they are a Seedance 2.5 feature,
+so a run left on the `seedance-fast` default cannot use one. A localisation
+project that cares about a consistent voice across languages has to pay for 2.5
+— the voice picker disappears on any other model.
+
 ## 3. Data model
 
 ### 3.1 `video_projects` (new columns)
 
-- `project_type` enum is **created** with all four values including
-  `localisation` (migration `b1f3d5a7c920`). In a deployment that already had
-  the other three types this is instead an `ALTER TYPE ... ADD VALUE
-  IF NOT EXISTS`, which is irreversible.
+- `project_type` enum gains **`localisation`** (`ALTER TYPE ... ADD VALUE
+  IF NOT EXISTS`, mirroring the existing enum migrations; irreversible).
 - `hook_sec` FLOAT NULL — how long the localised hook is, as the operator
   intends it. Consumed at **analyze** time (same contract as
   `max_segment_sec`): changing it only affects the next analysis, which is what
@@ -73,19 +58,25 @@ evidence, not the current New Run default.
   the transcript is sliced to — analysis clamps the hook and the operator can
   drag the boundary afterwards, and neither writes back here. See §4.4 "The
   hook window: intent vs. reality vs. override".
+- `localisation_scope` VARCHAR(16) NOT NULL DEFAULT `'hook'`, CHECK in
+  `hook | whole` (AICP-340, migration `o5e1a7c3d649`) — what analysis cuts:
+  the hook split, or the whole video (§5.1). Set by project creation and by
+  `analyze_project` (same commit as the new segments) — **never by PATCH**
+  (400) — so it always names the strategy behind the current SegmentDefs, and
+  the transcript window (§4.4) and the New Run form (§7) can read it as a fact.
+- `localisation_scope_requested` VARCHAR(16) NULL, same CHECK values — the
+  scope `POST /projects/{pid}/analyze?localisation_scope=` asked the next
+  analysis to apply; cleared by the analysis that applies it.
 - `transcript` JSON NULL — the cached transcript (§4.1).
 - `transcript_status` VARCHAR(16) NULL — `pending | running | ready | failed | empty`.
   NULL = never requested. `empty` = the model found no speech (a legal
   outcome, not an error).
 - `transcript_error` TEXT NULL.
 
-### 3.2 `library_clips` (new column) — NOT IN THIS REPO
+### 3.2 `library_clips` (new column)
 
 - `language` VARCHAR(8) NULL — one of `app/languages.py`'s codes. Drives the
   New Run form's automatic tail selection. NULL = language-agnostic clip.
-
-  There is no clip library here, so this column and the tail auto-selection it
-  drives are not part of this branch (see §0).
 
 ### 3.3 `runs` — NO new columns
 
@@ -94,11 +85,11 @@ when the hook spans more than one segment), which is already the record of what
 a run did. The target language is the existing `Run.language`. The
 speech-only/speech+character choice is a **form-level** toggle that selects a
 prompt template — it is not persisted separately, because the prompt and the
-reference list it produced already record the outcome.
+reference list it produced already record the outcome. Where a reader needs the
+mode back (Copy run, §7) it is recovered from the prompt via
+`project_types.localisation_mode_of`.
 
-One migration for all of the above: `b1f3d5a7c920`, which also adds
-`video_projects.project_type` / `mute_source` and `runs.language` — on this
-branch the whole project-type registry arrives together with localisation.
+One migration for all of the above.
 
 ## 4. Contracts
 
@@ -114,7 +105,7 @@ Stored verbatim in `video_projects.transcript`.
   "created_at": "2026-08-09T12:00:00Z",
   "source_language": "en",            // ISO 639-1, DETECTED (never assumed)
   "video_summary": "A street interview promo: an off-screen interviewer asks a woman about listening to emails, then she demonstrates the product.",
-  "scene_context": "Off-screen interviewer holding the camera; woman in a patterned shirt holds a phone. 'Oh, I'm not.' answers whether she is reading emails the hard way. Product is Speechify.",
+  "scene_context": "Off-screen interviewer holding the camera; woman in a patterned shirt holds a phone. 'Oh, I'm not.' answers whether she is reading emails the hard way. Product is Listenify.",
   "lines": [
     {
       "id": 1,                        // 1-based, stable, used to re-join translations
@@ -130,6 +121,43 @@ Stored verbatim in `video_projects.transcript`.
   ]
 }
 ```
+
+Schema v3 (`transcribe/v3`, AICP-335) adds the fields the timed Seedance
+prompt needs. **All optional on read** — a v1/v2 transcript, or a PATCH that
+omits them, still builds a timed prompt, just without the clauses they feed:
+
+```jsonc
+{
+  "schema_version": 3,
+  "speakers": [                       // one per distinct line.speaker
+    { "label": "off-screen interviewer holding a microphone",  // == line.speaker
+      "tag": "INTERVIEWER",           // short UPPERCASE role; unique per person
+      "kind": "person",               // person | device (phone/app/TV voice)
+      "gender": "female",             // female | male | unknown — from the VOICE
+      "voice": "young, higher-pitched",
+      "description": "a young woman off screen — only her hand holding the microphone is visible" }
+  ],
+  "lines": [
+    { "id": 9, "...": "...",
+      "face_visible": false,          // speaker's FACE in frame (stricter than on_screen)
+      "frame": "the camera looks over her shoulder at the phone in her hands" }
+  ],
+  "actions": [                        // body actions a re-generation must keep
+    { "start": 53.6, "end": 54.4, "speaker": "older woman with glasses",
+      "action": "takes her glasses off", "do_not": "put them back on" }
+  ],
+  "brands": [ { "name": "Listenify", "pronunciation": "LISTEN-ih-fy" } ]
+}
+```
+
+- `speakers` is keyed by label. Renaming a speaker in the transcript editor
+  orphans its entry; the builder then falls back to a tag/gender guessed from
+  the label ("older woman …" → WOMAN, female; "voice from the … app" → APP,
+  device) and simply omits what it cannot guess.
+- `face_visible` absent = unknown: the builder falls back to `on_screen`.
+- `PATCH /transcript` keeps `face_visible`/`frame` per line and normalises
+  `speakers`/`actions`/`brands` when present (malformed entries are dropped,
+  never 400 — they only decorate the prompt).
 
 Rules:
 - `video_summary` is a short, high-level description of the video's narrative,
@@ -154,8 +182,8 @@ Rules:
 ### 4.2 `app/localisation.py` public API
 
 ```python
-TRANSCRIBE_PROMPT_VERSION = "transcribe/v2"
-TRANSLATE_PROMPT_VERSION  = "translate/v2"
+TRANSCRIBE_PROMPT_VERSION = "transcribe/v3"
+TRANSLATE_PROMPT_VERSION  = "translate/v3"
 
 class LocalisationError(Exception): ...
 
@@ -164,12 +192,17 @@ def transcribe_video(video_path: str, *, kie=None, model: str | None = None) -> 
 
 def translate_lines(lines: list[dict], *, source_language: str,
                     target_language: str, model: str | None = None,
-                    video_summary: str = "", scene_context: str = "") -> list[dict]
+                    video_summary: str = "", scene_context: str = "",
+                    context_lines: list[dict] | None = None,
+                    on_screen_text: list[dict] | None = None,
+                    frames: list[tuple[float, bytes]] | None = None) -> list[dict]
     # -> same lines with "text" replaced by the translation and
     #    "source_text" carrying the original. Same ids, same order, 1:1.
-    #    video_summary / scene_context are optional keyword-only inputs
-    #    injected into the translate prompt; omit them (or pass "") for
-    #    old cached transcripts.
+    #    Everything after target_language is optional context (translate/v3):
+    #    the full transcript, the burned-in text and JPEG stills of the hook
+    #    (hook_frame_times + media.extract_jpeg_frames, taken by the
+    #    /localisation-prompt endpoint from the project source; a failed grab
+    #    translates without frames).
 
 def slice_lines(lines: list[dict], start: float, end: float) -> list[dict]
     # Lines overlapping [start, end). Used to cut the hook window.
@@ -178,9 +211,80 @@ def format_dialogue(lines: list[dict]) -> str
     # "**Speaker:**  text" blocks, the shape proven in run 1736426f.
 
 def build_prompt(*, lines, source_language: str, target_language: str,
-                 swap_character: bool) -> str
+                 swap_character: bool, window=None, transcript=None,
+                 all_lines=None, reference_audio=False) -> str
     # Assembles the final Seedance prompt from the template + dialogue.
+    # window=None -> the untimed format_dialogue block (pre-AICP-335 output,
+    # byte-identical). With window=(clip_start, clip_end) -> the timed block
+    # of format_timed_dialogue. The localisation-prompt endpoint always passes
+    # a window (clip_window of the segment; (0, hook) for a multi-segment run
+    # prompt).
+
+def format_timed_dialogue(lines, *, window, transcript=None, all_lines=None,
+                          reference_audio=False) -> str
+def clip_window(start_sec, end_sec, pre_roll_sec=0, post_roll_sec=0,
+                duration_sec=None) -> tuple[float, float]
+def background_lines(lines, transcript=None) -> list[dict]
 ```
+
+#### Timed dialogue (AICP-335)
+
+The untimed block left Seedance to guess speaker gender and timing. On
+46cc6443 (es, 7 segments) that gave a male voice to the off-screen
+interviewer in 3 clips, swapped line order in 2, both lines to one speaker in
+one, and a line over a phone close-up to the wrong voice — 5,358 credits of
+re-takes. The format below (hand-written, then scripted for pt/pl/fr with no
+re-takes) is now generated:
+
+```
+Speakers (the reference audio contains both human voices):   # "Speakers:" without a voice ref
+- WOMAN: <description>. Female, <voice> voice. Never a male voice.
+- INTERVIEWER: <description>. Female, <voice> voice. Never a male voice. She says ONLY ONE line in this clip.
+- APP: <description>.                                        # devices only when they speak here
+
+Dialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:
+[0.9–3.7] APP: …
+[7.2–13.9] WOMAN (her face is no longer visible — <frame>; it is still HER voice, the woman, NOT the interviewer): …
+[6.9–8.2] Nobody speaks. Mouths stay closed.
+
+Action — reproduce it exactly as in the reference video: at ~4–5 s the WOMAN takes her glasses OFF. Do not put them back on.
+Pronunciation: "Listenify" is an English brand name — say it exactly as in English, "LISTEN-ih-fy", …
+Every word the WOMAN says is in her own voice, also while her face is out of frame.
+```
+
+Rules: every PERSON in the hook is listed in every clip (primary = most speech
+time, first); every non-primary person gets "ONLY ONE line" / "does not speak"
+when that is true of this clip. Timecodes are relative to the clip start
+(`clip_window`: start − pre_roll, end + post_roll, clamped to the source; the
+model's min-clip padding is not mirrored because the model is chosen later),
+clamped to the clip and to the next line's start, never reversed. The silent
+tail is stated when more than 0.4 s remains after the latest line end; an empty
+clip says "Nobody speaks" for its whole length. A **device** line wholly
+covered by other speakers' lines (the app reading a book under the woman's
+answer) is background: KEPT, marked `APP (BACKGROUND — it plays quietly at the
+same time as the WOMAN's lines …)`, with its own span (it is not clamped into,
+and does not clamp, the strict order), and named in an endpoint warning so
+the operator can delete it by hand (operator decision 2026-10-29). A person's
+interjection is never treated that way.
+
+The Speakers header defaults to `Speakers:`. The New Run form's "the voice
+reference contains these speakers' voices" checkbox (default off) rewrites
+it in the run and per-segment prompts to
+`localisation.reference_audio_header(transcript)` — "Speakers (the reference
+audio contains both human voices):" for two people — and back; the rewrite is
+client-side (`setRefAudioHeader`), mirrored by
+`localisation.set_reference_audio_header`. Nothing is stored, no migration.
+
+`POST /localisation-prompt` takes an optional `model` form field (the form
+sends the selected model). `localisation.resolve_prompt_model(project_type,
+model)` returns its spec (unknown key → 400, checked before the paid
+translate); without it, the type's default model. Its `max_clip_sec` is the
+`clip_window` roll trim. The "timecodes depend on the run's model" warning is
+only emitted when rolls are set and no model was sent. Brand hints come from a built-in table (Listenify,
+the proven wording) plus the transcript's `brands`, matched in the
+translation or its source text. The run-level "Do not replace the character"
+marker is in the template and unaffected.
+
 
 Provider split (they have **different** API shapes — do not build a shared
 "universal LLM client", two functions is the honest design):
@@ -190,9 +294,31 @@ Provider split (they have **different** API shapes — do not build a shared
   `{"type": "image_url", "image_url": {"url": "<kie upload url>"}}` — kie.ai
   uses that envelope for every media type. Send `stream: false`.
   Get the public URL with the existing `KieClient.upload_file()`.
+
+  What is uploaded is **not** the source file but a throwaway re-encode of it
+  (`media.make_llm_proxy`: 480p short side, 15fps, CRF 30, 96k mono audio).
+  The model only has to *read* the video, while `upload_file` refuses anything
+  over 100 MB (`kie_client._UPLOAD_MAX_BYTES` — the host answers an oversized
+  body with a bare HTTP 500, refused on Content-Length before it is sent) and
+  the model bills per input token. `normalize_source` caps resolution but not
+  bitrate, so a 59s 1080x1920 phone capture reaches transcription at 136 MB and
+  proxies down to ~3.6 MB. Audio survives at a real bitrate because it is the
+  half of the input the transcript is built from; the picture survives at all
+  because §4.1's `speaker` labels are visually grounded, which is what rules out
+  an audio-only upload. A failed proxy falls back to uploading the original.
 - **translate** → `POST https://api.kie.ai/codex/v1/responses` (Responses API,
   model in the BODY). Only `input_text` / `input_image` content types exist —
-  no `response_format`. `reasoning.effort` defaults to `low`; send `medium`.
+  no `response_format`. `reasoning.effort` defaults to `low`; we send
+  `LOCALISATION_TRANSLATE_EFFORT` (default `high`). Hook stills go in as
+  `input_image` with a base64 `data:image/jpeg` URL, each after an
+  `input_text` caption "Frame at N.Ns:" (verified live 2026-10-20 on
+  gpt-6-1-sol and gpt-6-luna). Model since 2026-10-20: `gpt-6-1-sol`, falling
+  back to `gpt-5-6-luna` when unavailable
+  (`LOCALISATION_TRANSLATE_FALLBACK_MODELS`). The A/B behind the switch: six
+  real project×language pairs judged blind by gemini-3.1-pro watching the
+  video — v2 prompt on luna 5.6/10, v3 on luna 5.4, v3 on gpt-6-1-sol 8.3,
+  v3 on gpt-6-astra 7.0 at ~5× the price. The context only pays off on the
+  stronger model.
 
 Three things verified live against kie.ai (2026-08-09) that the docs get wrong,
 and that every caller must respect:
@@ -235,8 +361,26 @@ strings above. The final Seedance prompt templates live in
   either races or does not fit);
 - receive `video_summary` and `scene_context` and use them to resolve meaning
   while preserving the hard 1:1 / timing / brand constraints;
+- (v3) receive the full transcript with the hook marked, the on-screen text,
+  per-line visibility and the pause after each line, plus stills of the hook,
+  and trust the frames over a misheard transcript word;
+- (v3, 2026-10-21) receive each line's speaking WINDOW
+  (`localisation.speaking_window`: the line clipped at the hook end and, for a
+  line straddling a seam between swap clips, to the side holding its
+  midpoint) with a character budget in the same chars/sec yardstick the
+  operator warnings use (`CHARS_PER_SEC`, `SPEECH_OVERRUN_RATIO`, now shared
+  from `localisation`). A line still estimated past 1.5× its window gets ONE
+  shorten pass (`_SHORTEN_PROMPT`, same model, previous answer included); a
+  rewrite is kept only for an overrunning line it made shorter, never at the
+  cost of a name/brand/number, and any failure keeps the first answer. The
+  "crosses the hook/seam boundary" warning now fires only when the
+  translation does not fit the window before the cut;
+- (v3) write for the target MARKET (`_TARGET_MARKETS`): es = Mexico / Latin
+  America, pt = Brazil, fr = France, it/pl/ja/de = their countries;
 - be free to rephrase — this is ad copy, punch beats literalness;
-- leave brand/product names (e.g. Speechify), numbers and prices untranslated;
+- leave brand/product names (e.g. Listenify), names, URLs and the numbers
+  themselves untranslated, but translate unit/currency WORDS ("165 miles" →
+  "165 milhas" — v2's "leave units untranslated" kept English "miles");
 - keep the original's casual spoken register;
 - use the target language's native script, never romanisation;
 - return the lines 1:1 with ids preserved;
@@ -275,13 +419,74 @@ POST /api/v2/projects/{pid}/analyze           -> 202 {project_id, status}
 POST /api/v2/projects/{pid}/localisation-prompt
      Form: language (required, languages.py code), swap_character (bool),
            hook_sec (optional float override, does NOT re-segment)
-     -> 200 {source_language, target_language, hook_sec, prompt,
-             segment_prompts: {segment_def_id: text}, lines: [...],
-             warnings: [str]}
+     -> 202 {job_id, status: "queued", deduplicated}   (AICP-338: a background job)
+     -> 400 bad language / hook_sec, 404 no project
      -> 409 when the transcript is not ready
      -> 422 when the hook window contains no speech
-     -> 502 on an upstream model failure
+     -> 429 when today's kie.ai budget cannot cover it
+     -> 503 when no localise-worker is running, or Redis is unreachable
+GET  /api/v2/projects/{pid}/localisation-prompt/jobs/{job_id}
+     -> 200 {job_id, status: queued|running|done|failed|expired,
+             result: {source_language, target_language, hook_sec, prompt,
+                      segment_prompts: {segment_def_id: text}, lines: [...],
+                      warnings: [str]}            (status=done)
+             error: {status_code, detail}        (status=failed:
+                    502 model failure, 409 project changed since the request,
+                    503 interrupted by a restart, 504 job timeout, 500 crash)}
+     -> 404 unknown project, or a job of another project
+     -> 503 Redis unreachable (keep polling)
 ```
+
+#### Translate runs as a background job (AICP-338)
+
+A whole-video translation (project `46cc6443`: 79 s, 23 lines, 7 swap
+segments) takes 180-280 s for ONE model call, past the 90 s per-call timeout
+and nginx's 300 s budget, so the synchronous endpoint answered 502 exactly
+where it was needed. The POST now validates (every refusal above is still
+synchronous), reserves the same 3 x LLM estimate under `localise_scope(pid)`,
+and enqueues `app.tasks.run_localisation_prompt` on the dedicated **`localise`
+queue**, served only by the `re-skin-localise-worker` container
+(`worker/localise_worker.py`; no InsightFace, no scheduler, 512 MB cap). The
+run workers never take it, so a minutes-long translation cannot stall runs, and
+a hook translation never waits behind a stitch.
+
+- **Inputs are snapshotted at admission** (the window lines, the full
+  transcript, the resolved hook and the hook's swap segments) and the job reads
+  no project state. A fingerprint of the transcript, the stored hook, the
+  source and every swap segment's id + bounds travels in the job meta; the poll
+  refuses (`409`) a finished answer when the project has changed since, because
+  its per-segment prompts are keyed to segment ids that may be gone.
+- **The answer lives only in Redis** as the RQ job result
+  (`LOCALISATION_PROMPT_RESULT_TTL_SEC`, default 6 h) — still nothing in the
+  DB. Redis is not persistent here; a lost job reads `expired`, and the
+  operator presses Translate again.
+- **Dedupe:** an identical request (project, language, mode, `hook_sec`
+  override, project fingerprint) while a job is queued or running joins it and
+  reserves nothing. A finished job does not block a fresh click — re-translating
+  is meant to be repeatable. Admission is serialised per key with a Redis lock.
+- **Timeouts:** inside the job the per-call translate timeout is
+  `LOCALISATION_TRANSLATE_JOB_CALL_TIMEOUT_SEC` (420 s; swapped into
+  `LOCALISATION_TRANSLATE_TIMEOUT_SEC` for the job's own forked work-horse).
+  The RQ `job_timeout` is `LOCALISATION_PROMPT_JOB_TIMEOUT_SEC` (2700 s),
+  floored at 4 transport attempts x the call timeout + the shorten pass + a
+  margin. A job may wait `LOCALISATION_PROMPT_QUEUE_TTL_SEC` (30 min) in the
+  queue before RQ discards it. Inside the job only, `translate_lines` also
+  gets larger budgets as arguments (`LOCALISATION_JOB_TRANSLATE_RETRY_BUDGET_SEC`
+  300 s for the 1:1 re-ask / model fallback, `LOCALISATION_JOB_SHORTEN_ADMIT_SEC`
+  600 s, `LOCALISATION_JOB_SHORTEN_TIMEOUT_SEC` 300 s), so a ~280 s whole-video
+  call is still re-asked and shortened; the job timeout floor covers both
+  paths. Outside the job the 120 s / 60 s / 45 s defaults are unchanged.
+- **Restart/deploy:** a killed job is never replayed (the upstream call may
+  already be billed). Its RQ heartbeat stops; after 150 s the poll reports
+  `failed` / 503 "interrupted — press Translate again". Nothing in the DB
+  points at the job, so recovery has nothing to reap and `deploy/drain-check.sql`
+  does not see it — check `rq info localise` (or the queue length) before a
+  deploy if a translation is in flight.
+- **The UI** (`translateHook` in `project_status_content.html`) polls every 3 s
+  with backoff on 5xx/network errors, keeps the job id in `sessionStorage` so a
+  reload resumes the poll, never applies a result for a language/mode the form
+  no longer shows, and asks before overwriting a prompt edited while the job
+  ran.
 
 Error details are operator-facing strings that the panel renders verbatim in an
 alert. Never interpolate a status enum with `!r` (or bare `str()`) — both leak
@@ -349,8 +554,8 @@ generation is paid for:
    were produced at all, since then the run prompt *is* what the single swap
    segment receives and nothing is lost.
 
-`localisation-prompt` writes **nothing** to the database. It returns text the
-New Run form drops into its fields; the operator edits it and submits the run
+`localisation-prompt` writes **nothing** to the database (beyond the spend
+reservation). Its job returns text the New Run form drops into its fields; the operator edits it and submits the run
 through the existing `create_run` path (`prompt` + `segment_prompts`).
 
 `segment_prompts` is only populated when the hook spans more than one swap
@@ -367,23 +572,42 @@ The only way an analyze-time setting can take effect after creation. Both
 sequence is `PATCH /projects/{pid}` then this; before it existed the only
 remedy was deleting and recreating the project.
 
-Destructive by construction: `analyze_project` deletes every `SegmentDef`
-before writing the new proposal, which cascades to every `RunSegment`.
+Destructive to live `SegmentDef`s only — NOT to any Run's own history.
+`analyze_project` deletes every `SegmentDef` before writing the new proposal,
+but `RunSegment.segment_def_id` is deliberately not a foreign key into that
+table (see its docstring in `models.py` — hardened after this endpoint's
+original destructive cascade turned out to also erase a Run's own correction
+history), so that delete no longer reaches any Run's rows.
 
 - **Survives**: every `Run` row — prompt, refs, model, status, and for a
   finished run its delivered video and `result_local_path`. A `done` run stays
   done and its video stays playable. So do the source file, transcript, name
-  and settings.
-- **Does not survive**: every `SegmentDef` (the ids change, so stored
-  `stitch_plan` entries and per-segment `prompt_override`s naming one are
-  gone) and every `RunSegment` of every run, including finished ones — the
-  per-segment breakdown and the "re-run this segment" button go with them. A
-  `failed`/`incomplete` run becomes unretryable; retry it first if you want it.
+  and settings. Also every `RunSegment` of every run, including finished
+  ones — its status, clips, Kie task ids, per-segment overrides and the
+  "re-run this segment" button all keep working exactly as before, because
+  every reader resolves a RunSegment's timing/action from the Run's own
+  frozen `segment_snapshot` first. A `failed`/`incomplete` run stays
+  retryable. Every `RunSegmentRangeAttempt` — a completed run's
+  range-correction history and its ability to accept another range
+  regeneration — survives too.
+- **Does not survive**: every live `SegmentDef` — the ids change, so a NEW
+  run launched after this uses entirely different segment ids than an old
+  one did. A stored `stitch_plan` entry or per-segment `prompt_override` on
+  an OLD run still names its OWN (now-orphaned) segment ids, which is fine —
+  those are read from the run's own snapshot/RunSegment rows, never
+  re-resolved against the live table.
 
 Guards mirror `DELETE /projects/{pid}`, for the same reason (both delete rows a
 worker may hold): 409 while the project is `analyzing`, and 409 while any run
 is in `queued | processing | stitching | delivering`. `created`, `done`,
 `failed` and `incomplete` runs do not block.
+
+`?localisation_scope=hook|whole` (localisation only; `whole` on another type
+is a 400) is stored as `localisation_scope_requested`; `analyze_project`
+applies it to `localisation_scope` (and clears the request) in the same commit
+as the new SegmentDefs. A refused (409) request writes nothing; a queued,
+crashed or failed analysis leaves scope and segments as they were and keeps the
+request for the retry. The analyze job's arguments are unchanged.
 
 On a `localisation` project it also sets `transcript_status="pending"`, because
 analysis chains a fresh transcription (§8) — the same reason project creation
@@ -415,6 +639,42 @@ segments = swap[0, hook] (+ split into <= cap chunks if hook > cap)
          + keep[hook, duration]   (omitted when hook >= duration)
 ```
 
+### 5.1 Whole-video scope (AICP-340)
+
+`localisation_scope="whole"` re-speaks the entire video. `analyze_project`
+then skips the hook split (no clamp, `hook_sec` is not read) and calls
+`pipeline_v2.whole_video_ranges` on the PySceneDetect cuts (same detector and
+`SCENE_MIN_LEN_SECONDS` as subtitle removal):
+
+```
+target = min(LOCALISATION_WHOLE_VIDEO_MAX_SEC (14.72),
+             shortest max_clip_sec among audio-producing models (15),
+             explicit project max_segment_sec, if set)   # NULL is NOT 10s here
+pieces = scenes, each longer than min(10, target) split into equal pieces
+segments = greedy left-to-right merge of pieces while length <= target
+         + a final segment under the audio models' largest min_clip_sec (4s)
+           is halved together with its predecessor
+         + the last segment is extended to the probed duration
+all segments: action = swap
+```
+
+14.72 s is the length Seedance 2.5 intermittently truncates its output to, so
+a segment that fits never loses its tail to that failure; it is a generation
+**target**, not a model limit (the launch gate still checks the model's own
+`max_clip_sec`, and `max_clip_sec` must never be lowered). Boundaries are
+scene cuts or even splits of long scenes; a merge may cross a scene cut.
+Speech pauses are not yet used (the transcript usually lands after analysis).
+
+On project 5b1b9b67's cuts (0, 12.13, 16.17, 35.9, 41.2, 74.2, 78.83) this
+yields 0-12.13-26.03-35.9-49.45-57.7-65.95-78.88, the operator's hand cut of
+AICP-332 (`tests/fixtures/scene_cuts_5b1b9b67.json`).
+
+Downstream, unchanged code does the rest: `_intended_hook_sec` returns the
+probed duration in this scope, so `localisation-prompt` slices the whole
+transcript and gives every swap segment its own timed prompt (§4.4 "One line,
+one segment"); the New Run form leaves the stitch plan at its default and
+appends no library tail (§7).
+
 ## 6. New `ProjectTypeSpec` fields
 
 - `segmentation: str` (§5, replaces the two booleans)
@@ -435,26 +695,77 @@ segments = swap[0, hook] (+ split into <= cap chunks if hook > cap)
 - radio: *Только речь* / *Речь + смена персонажа* — switches the pre-filled
   prompt template; the reference-image input is marked required (client-side)
   in the second mode.
-- language `<select>` already exists (`Run.language`); it now also drives the
-  translation target and the tail pick.
-- **"Перевести"** button → `POST /localisation-prompt` → fills the prompt
-  textarea and the `.seg-prompt-field` textareas. Disabled while the transcript
-  is not `ready`. Shows returned `warnings` inline.
+- language `<select>` (`Run.language`) sits INSIDE the Localisation panel, above
+  the mode radios and the Translate button (other project types keep it as its
+  own form group). It drives the translation target and the tail/voice pick.
+  It starts **blank** ("— choose the target language —"): Translate stays
+  disabled and Start run is refused client-side until a language is chosen, so
+  a hook is never translated or exported as English by accident. A blank
+  pre-picks no tail and no voice.
+- **"Перевести"** button → `POST /localisation-prompt` (202, a job) → polls
+  `GET .../localisation-prompt/jobs/{job_id}` → fills the prompt textarea and
+  the `.seg-prompt-field` textareas. Disabled while the transcript is not
+  `ready` or while no language is chosen. Shows returned `warnings` inline.
 - model `<option>` list filtered by `requires_audio_model`; `audio_mode`
   pre-set to `seedance` with a warning if switched to `original`.
 - stitch plan pre-filled: hook segment included, keep segment excluded, tail
-  auto-selected from the library by matching `language`. *(Not in this repo —
-  see §0. The hook segment and the keep segment are both stitched, so the
-  delivery is the localised hook followed by the original tail.)*
+  auto-selected from the library by matching `language`.
 
 **Project page** — transcript panel: status, detected language, the lines with
 timestamps, a "Распознать заново" button, inline editing (PATCH).
+
+**Run page — Copy run and Automation** are offered for *речь + смена персонажа*
+runs only. Both exist to re-run tuned settings on a NEW face; against a *только
+речь* prompt (which instructs the model to keep the person on screen) the photo
+either attaches is inert, so the result is a byte-identical re-submission that
+spends credits for the same clip — once by hand, or every day on a quota. Both
+cards are replaced by a line saying so, and the server refuses too:
+
+* `POST /runs/{rid}/copy` and `/copy-batch` → **409**;
+* `PUT /runs/{rid}/automation` → **409**, but only when `enabled` is true, so an
+  automation switched on before this rule can still be switched off;
+* `automation._launch_batch` skips such a template and launches nothing — the
+  half that binds on an automation enabled earlier or a template edited after
+  the fact. Deliberately not in `_reconcile_batches`: a batch already in flight
+  still needs its completion webhook.
+
+`_build_copied_run` itself is **not** gated — the cloning helper stays a
+mechanism, and the policy lives at the entry points.
+
+Both gate on one predicate, `project_types.run_copies_are_useful(project_type,
+prompt)`, so the UI and the two server-side refusals can never disagree about
+which runs are worth copying.
+
+Since the mode is not stored (§3.3), `project_types.localisation_mode_of` reads
+it back off `Run.prompt`, keying on the one sentence only the speech-only
+template carries ("Do not replace the character" — the templates stay English
+through translation, only the dialogue block changes language). It answers
+"swap" for anything it cannot recognise: the classification withdraws a
+feature, so an operator's hand-written prompt must fail open. Reference images
+are deliberately not consulted — a photo on a speech-only prompt does nothing,
+and a swap prompt submitted *without* one is exactly the case where copying
+with a photo is the fix.
 
 ## 8. Failure behaviour
 
 - Transcription runs as its **own RQ task after** `analyze_project`, never
   inside it: a Gemini outage must not fail analysis or block segmentation.
+- **Unavailable model → retry, then fallback.** kie.ai reports maintenance as
+  HTTP 200 + `{"code":500,"msg":"The server is currently being maintained..."}`
+  (gemini-2.5-pro, 2026-09-25, for hours, while gemini-3.1-pro answered on the
+  same key). Both LLM routes retry a 5xx/429 envelope like an HTTP 5xx (4
+  attempts). If the transcribe model is still unavailable — or kie.ai answers
+  422 "model/channel is not supported" — `transcribe_video` walks
+  `LOCALISATION_TRANSCRIBE_FALLBACK_MODELS` (comma-separated, default
+  `gemini-3.1-pro,gemini-3-5-flash-openai`, empty disables), each once with
+  the same upload, and records the answering model in the transcript's
+  `model`. Later on 2026-09-25 3-pro and 3.1-pro also went down ("internal
+  error") while `gemini-3-5-flash-openai` still read the video — its
+  transcript is usable but a notch less accurate than 3.1-pro's. A 401 or an unparseable answer never falls back. The
+  translate step walks `LOCALISATION_TRANSLATE_FALLBACK_MODELS` (default
+  `gpt-5-6-luna`) the same way; a broken 1:1 answer is re-asked on the same
+  model, never handed to the fallback.
 - `transcript_status="failed"` leaves the project fully usable — the operator
   pastes a translation by hand, exactly as today.
-- `transcript_status="empty"` is surfaced as "no speech in the hook", and the
+- `transcript_status="empty"` is surfaced as "в хуке нет речи", and the
   Translate button stays disabled.

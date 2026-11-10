@@ -1,0 +1,629 @@
+{% extends "base.html" %}
+{% block title %}Library — re-skin v2{% endblock %}
+
+{% block content %}
+
+<h2>Library</h2>
+<p class="hint">Reusable assets, shared across every project — pick them by name instead of
+  re-uploading each time.</p>
+
+<div class="card">
+  <div class="card-header">
+    <h3>Stitch clips</h3>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">{{ clips|length }} clip(s)</span>
+  </div>
+  <div class="card-body">
+    <p class="hint">
+      Reusable clips for custom stitch plans — e.g. alternative outros to append or
+      swap in when a run replaces the people in a video. Pick them in the
+      <strong>Stitching</strong> section of the New Run form on any project page.
+    </p>
+
+    <!-- Upload form -->
+    <form id="lib-upload-form" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:18px">
+      <div class="form-group" style="margin:0">
+        <label for="lib-name">Name</label>
+        <input type="text" id="lib-name" name="name" placeholder="e.g. Outro EN v2" style="min-width:220px" />
+      </div>
+      <div class="form-group" style="margin:0">
+        <label for="lib-file">Video file</label>
+        <input type="file" id="lib-file" name="file" accept="video/*" />
+      </div>
+      <div style="font-size:13px; color:#666; margin-top:-8px">or</div>
+      <div class="form-group" style="margin:0">
+        <label for="lib-drive-url">Google Drive link</label>
+        <input type="text" id="lib-drive-url" name="gdrive_url" placeholder="https://drive.google.com/file/d/..." style="min-width:320px" />
+        {% include "_drive_sa_notice.html" %}
+      </div>
+      <div class="form-group" style="margin:0">
+        <label for="lib-language">Language</label>
+        <select id="lib-language" name="language">
+          <option value="">— any —</option>
+          {% for code, spec in languages.items() %}
+          <option value="{{ code }}">{{ spec.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group" style="margin:0">
+        <label for="lib-kind">Kind</label>
+        <select id="lib-kind" name="kind">
+          <option value="insert" selected>Insert</option>
+          <option value="end_card">End card</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary" id="lib-upload-btn">Add clip</button>
+    </form>
+    <p class="hint" style="margin-top:-8px">
+      Tagging a clip's spoken language is what lets a <strong>Localisation</strong> run
+      auto-pick the matching tail in its New Run form. Leave it on <em>any</em> for a
+      clip with no speech, or one that suits every language.
+      <strong>Kind</strong>: an <em>End card</em> is a short closing card (e.g. <code>CTA_English</code>, 5–7 s)
+      that a <strong>Rebuild</strong> run puts in place of the source's own end card — it picks the newest
+      end card in the run's language and never an <em>Insert</em> (a demo or scene to append).
+    </p>
+    <div id="lib-messages"></div>
+
+    <!-- Clips table -->
+    {% if clips %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Duration</th>
+          <th>Resolution</th>
+          <th>Language</th>
+          <th>Kind</th>
+          <th>Added</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for clip in clips %}
+        <tr>
+          <td>{{ clip.name }}</td>
+          <td class="text-muted">{{ "%.1f"|format(clip.duration_sec) if clip.duration_sec else "?" }}s</td>
+          <td class="text-muted">{% if clip.width and clip.height %}{{ clip.width }}×{{ clip.height }}{% else %}—{% endif %}</td>
+          <td>
+            {# Editable in place: the column arrived long after the library, so
+               every older clip is NULL and re-uploading one to tag it would
+               orphan the stitch plans that already reference its id. #}
+            <select class="lib-language-select" style="font-size:12px"
+                    data-saved="{{ clip.language or '' }}"
+                    onchange="saveClipLanguage(this, '{{ clip.id }}')">
+              <option value="" {% if not clip.language %}selected{% endif %}>— any —</option>
+              {% for code, spec in languages.items() %}
+              <option value="{{ code }}" {% if clip.language == code %}selected{% endif %}>{{ spec.label }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td>
+            <select class="lib-kind-select" style="font-size:12px"
+                    data-saved="{{ clip.kind or 'insert' }}"
+                    onchange="saveClipKind(this, '{{ clip.id }}')">
+              <option value="insert" {% if clip.kind != 'end_card' %}selected{% endif %}>Insert</option>
+              <option value="end_card" {% if clip.kind == 'end_card' %}selected{% endif %}>End card</option>
+            </select>
+          </td>
+          <td class="text-muted" style="white-space:nowrap">{{ clip.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td class="text-right" style="white-space:nowrap">
+            <button type="button" class="btn btn-sm btn-secondary" onclick="togglePreview(this, '{{ clip.id }}')">Preview</button>
+            <button type="button" class="btn btn-sm btn-danger" data-name="{{ clip.name }}" onclick="deleteClip(this, '{{ clip.id }}')" style="margin-left:4px">Delete</button>
+          </td>
+        </tr>
+        <tr class="lib-preview-row" data-clip-id="{{ clip.id }}" style="display:none">
+          <td colspan="7" style="background:var(--color-surface,#fafafa)">
+            <video controls preload="none" style="width:100%; max-width:420px; border-radius:6px; background:#000; display:block; margin:6px auto"></video>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No clips yet — upload the first one above.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3>Overlay PNG cards</h3>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">{{ overlay_assets|length }} card(s)</span>
+  </div>
+  <div class="card-body">
+    <p class="hint">
+      Reusable transparent PNG cards (e.g. branded logo bugs) for the
+      <strong>overlay</strong> tool. Pick them from the "Add transparent PNG(s)"
+      step of any overlay job's editor instead of uploading each time.
+    </p>
+
+    <!-- Upload form -->
+    <form id="ovlib-upload-form" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:18px">
+      <div class="form-group" style="margin:0">
+        <label for="ovlib-name">Name</label>
+        <input type="text" id="ovlib-name" name="name" placeholder="e.g. Logo bug — bottom left" style="min-width:220px" />
+      </div>
+      <div class="form-group" style="margin:0">
+        <label for="ovlib-file">PNG file</label>
+        <input type="file" id="ovlib-file" name="file" accept="image/png" />
+      </div>
+      <div style="font-size:13px; color:#666; margin-top:-8px">or</div>
+      <div class="form-group" style="margin:0">
+        <label for="ovlib-drive-url">Google Drive link</label>
+        <input type="text" id="ovlib-drive-url" name="gdrive_url" placeholder="https://drive.google.com/file/d/..." style="min-width:320px" />
+        {% include "_drive_sa_notice.html" %}
+      </div>
+      <button type="submit" class="btn btn-primary" id="ovlib-upload-btn">Add card</button>
+    </form>
+    <div id="ovlib-messages"></div>
+
+    <!-- Cards table -->
+    {% if overlay_assets %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Size</th>
+          <th>Added</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for asset in overlay_assets %}
+        <tr>
+          <td>{{ asset.name }}</td>
+          <td class="text-muted">{% if asset.width and asset.height %}{{ asset.width }}×{{ asset.height }}{% else %}—{% endif %}</td>
+          <td class="text-muted" style="white-space:nowrap">{{ asset.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td class="text-right" style="white-space:nowrap">
+            <button type="button" class="btn btn-sm btn-secondary" onclick="ovlibTogglePreview(this, '{{ asset.id }}')">Preview</button>
+            <button type="button" class="btn btn-sm btn-danger" data-name="{{ asset.name }}" onclick="ovlibDeleteAsset(this, '{{ asset.id }}')" style="margin-left:4px">Delete</button>
+          </td>
+        </tr>
+        <tr class="ovlib-preview-row" data-asset-id="{{ asset.id }}" style="display:none">
+          <td colspan="4" style="background:var(--color-surface,#fafafa)">
+            <img style="max-width:280px; max-height:280px; border-radius:6px; background:repeating-conic-gradient(#ccc 0% 25%, #eee 0% 50%) 50%/16px 16px; display:block; margin:6px auto" />
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No cards yet — upload the first one above.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <h3>Voice references</h3>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">{{ voices|length }} voice(s)</span>
+  </div>
+  <div class="card-body">
+    <p class="hint">
+      Voice samples that tell <strong>Seedance 2.5</strong> how the generated speech
+      should sound. Without one it invents a new voice for every generation, so the
+      same character comes back sounding like a different person on each run — and on
+      each segment of the same run. Pick one in the <strong>Voice</strong> section of
+      the New Run form.
+    </p>
+
+    <!-- Upload form -->
+    <form id="voice-upload-form" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:18px">
+      <div class="form-group" style="margin:0">
+        <label for="voice-name">Name</label>
+        <input type="text" id="voice-name" name="name" placeholder="e.g. Marissa — calm read" style="min-width:220px" />
+      </div>
+      <div class="form-group" style="margin:0">
+        <label for="voice-file">Audio or video file</label>
+        <input type="file" id="voice-file" name="file" accept="audio/*,video/*" />
+      </div>
+      <div style="font-size:13px; color:#666; margin-top:-8px">or</div>
+      <div class="form-group" style="margin:0">
+        <label for="voice-drive-url">Google Drive link</label>
+        <input type="text" id="voice-drive-url" name="gdrive_url" placeholder="https://drive.google.com/file/d/..." style="min-width:320px" />
+        {% include "_drive_sa_notice.html" %}
+      </div>
+      <div class="form-group" style="margin:0">
+        <label for="voice-language">Language</label>
+        <select id="voice-language" name="language">
+          <option value="">— any —</option>
+          {% for code, spec in languages.items() %}
+          <option value="{{ code }}">{{ spec.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary" id="voice-upload-btn">Add voice</button>
+    </form>
+    <p class="hint" style="margin-top:-8px">
+      Any file with an audio track works — an mp3, a voice memo, or a whole video:
+      the audio is extracted and re-encoded to a mono mp3, trimmed to the first
+      <strong>{{ voice_max_sec }}s</strong>. It must be at least
+      <strong>{{ voice_min_sec }}s</strong> long. Tagging the language is what lets a
+      <strong>Localisation</strong> run pre-select the matching voice, exactly as it
+      does for tails above.
+    </p>
+    <div id="voice-messages"></div>
+
+    <!-- Voices table -->
+    {% if voices %}
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Duration</th>
+          <th>Language</th>
+          <th>Added</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for voice in voices %}
+        <tr>
+          <td>{{ voice.name }}</td>
+          <td class="text-muted">{{ "%.1f"|format(voice.duration_sec) if voice.duration_sec else "?" }}s</td>
+          <td>
+            <select class="voice-language-select" style="font-size:12px"
+                    data-saved="{{ voice.language or '' }}"
+                    onchange="saveVoiceLanguage(this, '{{ voice.id }}')">
+              <option value="" {% if not voice.language %}selected{% endif %}>— any —</option>
+              {% for code, spec in languages.items() %}
+              <option value="{{ code }}" {% if voice.language == code %}selected{% endif %}>{{ spec.label }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td class="text-muted" style="white-space:nowrap">{{ voice.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td class="text-right" style="white-space:nowrap">
+            <button type="button" class="btn btn-sm btn-secondary" onclick="voiceTogglePreview(this, '{{ voice.id }}')">Preview</button>
+            <button type="button" class="btn btn-sm btn-danger" data-name="{{ voice.name }}" onclick="voiceDelete(this, '{{ voice.id }}')" style="margin-left:4px">Delete</button>
+          </td>
+        </tr>
+        <tr class="voice-preview-row" data-voice-id="{{ voice.id }}" style="display:none">
+          <td colspan="5" style="background:var(--color-surface,#fafafa)">
+            <audio controls preload="none" style="width:100%; max-width:420px; display:block; margin:6px auto"></audio>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No voices yet — upload the first one above.</p>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+function libMsg(text, ok) {
+  var el = document.getElementById('lib-messages');
+  el.textContent = '';
+  var div = document.createElement('div');
+  div.className = 'alert ' + (ok ? 'alert-success' : 'alert-danger');
+  div.textContent = text;
+  el.appendChild(div);
+}
+
+document.getElementById('lib-upload-form').addEventListener('submit', async function (e) {
+  e.preventDefault();
+  var btn = document.getElementById('lib-upload-btn');
+  var fileInp = document.getElementById('lib-file');
+  var driveUrlInp = document.getElementById('lib-drive-url');
+  var hasFile = fileInp.files.length > 0;
+  var hasDriveUrl = driveUrlInp.value.trim().length > 0;
+
+  // Validate: exactly one of file or Drive link.
+  if (!hasFile && !hasDriveUrl) {
+    libMsg('Provide either a file or a Drive link', false);
+    return;
+  }
+  if (hasFile && hasDriveUrl) {
+    libMsg('Provide either a file or a Drive link, not both', false);
+    return;
+  }
+
+  var fd = new FormData();
+  if (hasFile) {
+    fd.append('file', fileInp.files[0]);
+  } else {
+    fd.append('gdrive_url', driveUrlInp.value.trim());
+  }
+  var name = document.getElementById('lib-name').value.trim();
+  if (name) fd.append('name', name);
+  var lang = document.getElementById('lib-language').value;
+  if (lang) fd.append('language', lang);
+  fd.append('kind', document.getElementById('lib-kind').value || 'insert');
+
+  btn.disabled = true;
+  btn.textContent = hasFile ? 'Uploading…' : 'Downloading…';
+  try {
+    var res = await fetch('/api/v2/library-clips', { method: 'POST', body: fd });
+    if (res.ok) { location.reload(); return; }
+    var body = await res.json().catch(function () { return {}; });
+    libMsg('Failed: ' + (body.detail || res.statusText), false);
+  } catch (err) {
+    libMsg('Network error: ' + err.message, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add clip';
+  }
+});
+
+// Retag a clip's spoken language in place (PATCH /library-clips/{id}).
+// "" clears the tag back to language-agnostic, which the API accepts.
+async function saveClipLanguage(sel, clipId) {
+  var previous = sel.dataset.saved || '';
+  sel.disabled = true;
+  try {
+    var res = await fetch('/api/v2/library-clips/' + clipId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: sel.value }),
+    });
+    if (res.ok) {
+      sel.dataset.saved = sel.value;
+      libMsg('Language saved.', true);
+      return;
+    }
+    var body = await res.json().catch(function () { return {}; });
+    // Roll back so the dropdown never shows a tag the server refused.
+    sel.value = previous;
+    libMsg('Could not set language: ' + (body.detail || res.statusText), false);
+  } catch (err) {
+    sel.value = previous;
+    libMsg('Network error: ' + err.message, false);
+  } finally {
+    sel.disabled = false;
+  }
+}
+
+// Change a clip's kind in place (PATCH /library-clips/{id}, AICP-381).
+async function saveClipKind(sel, clipId) {
+  var previous = sel.dataset.saved || 'insert';
+  sel.disabled = true;
+  try {
+    var res = await fetch('/api/v2/library-clips/' + clipId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: sel.value }),
+    });
+    if (res.ok) {
+      sel.dataset.saved = sel.value;
+      libMsg('Kind saved.', true);
+      return;
+    }
+    var body = await res.json().catch(function () { return {}; });
+    sel.value = previous;
+    libMsg('Could not set kind: ' + (body.detail || res.statusText), false);
+  } catch (err) {
+    sel.value = previous;
+    libMsg('Network error: ' + err.message, false);
+  } finally {
+    sel.disabled = false;
+  }
+}
+
+function togglePreview(btn, clipId) {
+  var row = document.querySelector('.lib-preview-row[data-clip-id="' + clipId + '"]');
+  if (!row) return;
+  var video = row.querySelector('video');
+  if (row.style.display === 'none') {
+    if (!video.src) video.src = '/api/v2/library-clips/' + clipId + '/file';
+    row.style.display = '';
+    btn.textContent = 'Hide';
+  } else {
+    video.pause();
+    row.style.display = 'none';
+    btn.textContent = 'Preview';
+  }
+}
+
+async function deleteClip(btn, clipId) {
+  var name = btn.dataset.name || 'this clip';
+  if (!confirm('Delete library clip "' + name + '"? Runs already delivered keep their videos.')) return;
+  btn.disabled = true;
+  try {
+    var res = await fetch('/api/v2/library-clips/' + clipId, { method: 'DELETE' });
+    if (res.status === 204) { location.reload(); return; }
+    var body = await res.json().catch(function () { return {}; });
+    libMsg('Delete failed: ' + (body.detail || res.statusText), false);
+  } catch (err) {
+    libMsg('Network error: ' + err.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function ovlibMsg(text, ok) {
+  var el = document.getElementById('ovlib-messages');
+  el.textContent = '';
+  var div = document.createElement('div');
+  div.className = 'alert ' + (ok ? 'alert-success' : 'alert-danger');
+  div.textContent = text;
+  el.appendChild(div);
+}
+
+document.getElementById('ovlib-upload-form').addEventListener('submit', async function (e) {
+  e.preventDefault();
+  var btn = document.getElementById('ovlib-upload-btn');
+  var fileInp = document.getElementById('ovlib-file');
+  var driveUrlInp = document.getElementById('ovlib-drive-url');
+  var hasFile = fileInp.files.length > 0;
+  var hasDriveUrl = driveUrlInp.value.trim().length > 0;
+
+  // Validate: exactly one of file or Drive link.
+  if (!hasFile && !hasDriveUrl) {
+    ovlibMsg('Provide either a file or a Drive link', false);
+    return;
+  }
+  if (hasFile && hasDriveUrl) {
+    ovlibMsg('Provide either a file or a Drive link, not both', false);
+    return;
+  }
+
+  var fd = new FormData();
+  if (hasFile) {
+    fd.append('file', fileInp.files[0]);
+  } else {
+    fd.append('gdrive_url', driveUrlInp.value.trim());
+  }
+  var name = document.getElementById('ovlib-name').value.trim();
+  if (name) fd.append('name', name);
+
+  btn.disabled = true;
+  btn.textContent = hasFile ? 'Uploading…' : 'Downloading…';
+  try {
+    var res = await fetch('/api/v2/overlays/library-assets', { method: 'POST', body: fd });
+    if (res.ok) { location.reload(); return; }
+    var body = await res.json().catch(function () { return {}; });
+    ovlibMsg('Failed: ' + (body.detail || res.statusText), false);
+  } catch (err) {
+    ovlibMsg('Network error: ' + err.message, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add card';
+  }
+});
+
+function ovlibTogglePreview(btn, assetId) {
+  var row = document.querySelector('.ovlib-preview-row[data-asset-id="' + assetId + '"]');
+  if (!row) return;
+  var img = row.querySelector('img');
+  if (row.style.display === 'none') {
+    if (!img.src) img.src = '/api/v2/overlays/library-assets/' + assetId + '/file';
+    row.style.display = '';
+    btn.textContent = 'Hide';
+  } else {
+    row.style.display = 'none';
+    btn.textContent = 'Preview';
+  }
+}
+
+async function ovlibDeleteAsset(btn, assetId) {
+  var name = btn.dataset.name || 'this card';
+  if (!confirm('Delete library card "' + name + '"? Jobs that already used it keep their own copy.')) return;
+  btn.disabled = true;
+  try {
+    var res = await fetch('/api/v2/overlays/library-assets/' + assetId, { method: 'DELETE' });
+    if (res.status === 204) { location.reload(); return; }
+    var body = await res.json().catch(function () { return {}; });
+    ovlibMsg('Delete failed: ' + (body.detail || res.statusText), false);
+  } catch (err) {
+    ovlibMsg('Network error: ' + err.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// __ Voice references __
+
+function voiceMsg(text, ok) {
+  var el = document.getElementById('voice-messages');
+  el.textContent = '';
+  var div = document.createElement('div');
+  div.className = 'alert ' + (ok ? 'alert-success' : 'alert-danger');
+  div.textContent = text;
+  el.appendChild(div);
+}
+
+document.getElementById('voice-upload-form').addEventListener('submit', async function (e) {
+  e.preventDefault();
+  var btn = document.getElementById('voice-upload-btn');
+  var fileInp = document.getElementById('voice-file');
+  var driveUrlInp = document.getElementById('voice-drive-url');
+  var hasFile = fileInp.files.length > 0;
+  var hasDriveUrl = driveUrlInp.value.trim().length > 0;
+
+  if (!hasFile && !hasDriveUrl) {
+    voiceMsg('Provide either a file or a Drive link', false);
+    return;
+  }
+  if (hasFile && hasDriveUrl) {
+    voiceMsg('Provide either a file or a Drive link, not both', false);
+    return;
+  }
+
+  var fd = new FormData();
+  if (hasFile) {
+    fd.append('file', fileInp.files[0]);
+  } else {
+    fd.append('gdrive_url', driveUrlInp.value.trim());
+  }
+  var name = document.getElementById('voice-name').value.trim();
+  if (name) fd.append('name', name);
+  var lang = document.getElementById('voice-language').value;
+  if (lang) fd.append('language', lang);
+
+  btn.disabled = true;
+  // The server transcodes before replying, so a long video sits here a while.
+  btn.textContent = hasFile ? 'Uploading…' : 'Downloading…';
+  try {
+    var res = await fetch('/api/v2/voice-clips', { method: 'POST', body: fd });
+    if (res.ok) { location.reload(); return; }
+    var body = await res.json().catch(function () { return {}; });
+    voiceMsg('Failed: ' + (body.detail || res.statusText), false);
+  } catch (err) {
+    voiceMsg('Network error: ' + err.message, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add voice';
+  }
+});
+
+async function saveVoiceLanguage(sel, voiceId) {
+  var previous = sel.dataset.saved || '';
+  sel.disabled = true;
+  try {
+    var res = await fetch('/api/v2/voice-clips/' + voiceId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: sel.value }),
+    });
+    if (res.ok) {
+      sel.dataset.saved = sel.value;
+      voiceMsg('Language saved.', true);
+      return;
+    }
+    var body = await res.json().catch(function () { return {}; });
+    // Roll back so the dropdown never shows a tag the server refused.
+    sel.value = previous;
+    voiceMsg('Could not set language: ' + (body.detail || res.statusText), false);
+  } catch (err) {
+    sel.value = previous;
+    voiceMsg('Network error: ' + err.message, false);
+  } finally {
+    sel.disabled = false;
+  }
+}
+
+function voiceTogglePreview(btn, voiceId) {
+  var row = document.querySelector('.voice-preview-row[data-voice-id="' + voiceId + '"]');
+  if (!row) return;
+  var audio = row.querySelector('audio');
+  if (row.style.display === 'none') {
+    if (!audio.src) audio.src = '/api/v2/voice-clips/' + voiceId + '/file';
+    row.style.display = '';
+    btn.textContent = 'Hide';
+  } else {
+    audio.pause();
+    row.style.display = 'none';
+    btn.textContent = 'Preview';
+  }
+}
+
+async function voiceDelete(btn, voiceId) {
+  var name = btn.dataset.name || 'this voice';
+  // Unlike a stitch clip, this genuinely cannot affect any run: runs hold their
+  // own copy of the audio, so there is no "in use" case to warn about.
+  if (!confirm('Delete voice "' + name + '"? Runs that used it keep their own copy.')) return;
+  btn.disabled = true;
+  try {
+    var res = await fetch('/api/v2/voice-clips/' + voiceId, { method: 'DELETE' });
+    if (res.status === 204) { location.reload(); return; }
+    var body = await res.json().catch(function () { return {}; });
+    voiceMsg('Delete failed: ' + (body.detail || res.statusText), false);
+  } catch (err) {
+    voiceMsg('Network error: ' + err.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+
+{% endblock %}

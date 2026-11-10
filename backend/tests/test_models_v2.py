@@ -11,8 +11,25 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.models import Run, RunSegment, SegmentDef, VideoProject
-from app.state_machine import ProjectStatus, RunStatus, SegmentStatus
+from app.models import (
+    InsertExtraction,
+    InsertMerge,
+    Run,
+    RunCaption,
+    RunSegment,
+    RunTailEdit,
+    SegmentDef,
+    VideoProject,
+)
+from app.state_machine import (
+    InvalidTransition,
+    MergeStatus,
+    ProjectStatus,
+    RunStatus,
+    SegmentStatus,
+    can_transition,
+    transition,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -107,6 +124,20 @@ def make_run_segments(session, run_id, segment_defs):
     return rs_list
 
 
+def make_tail_edit(session, run_id, cut_sec=5.0, **kwargs):
+    te = RunTailEdit(run_id=run_id, cut_sec=cut_sec, **kwargs)
+    session.add(te)
+    session.flush()
+    return te
+
+
+def make_caption(session, run_id, **kwargs):
+    rc = RunCaption(run_id=run_id, **kwargs)
+    session.add(rc)
+    session.flush()
+    return rc
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -136,6 +167,37 @@ class TestVideoProject:
         session.commit()
         fetched = session.get(VideoProject, proj.id)
         assert fetched.source_type == "gdrive"
+
+    def test_max_segment_sec_defaults_to_none(self, session):
+        """NULL is the default and means ai_models.UNIVERSAL_MAX_SEGMENT_SEC.
+
+        Storing NULL rather than the resolved number is deliberate: every row
+        that predates the column reads as "no explicit choice" and follows the
+        registry if its universal default ever moves.
+        """
+        proj = make_project(session)
+        session.commit()
+        assert session.get(VideoProject, proj.id).max_segment_sec is None
+
+    @pytest.mark.parametrize("value", [2.0, 10.0, 15.0, 30.0, 12.5])
+    def test_max_segment_sec_round_trips(self, session, value):
+        proj = make_project(session)
+        proj.max_segment_sec = value
+        session.commit()
+
+        fetched = session.get(VideoProject, proj.id)
+        assert fetched.max_segment_sec == value
+        assert isinstance(fetched.max_segment_sec, float)
+
+    def test_max_segment_sec_can_be_cleared_back_to_null(self, session):
+        """Clearing the cap is a real edit (PATCH sends an explicit null)."""
+        proj = make_project(session)
+        proj.max_segment_sec = 30.0
+        session.commit()
+
+        proj.max_segment_sec = None
+        session.commit()
+        assert session.get(VideoProject, proj.id).max_segment_sec is None
 
 
 class TestSegmentDef:
@@ -254,6 +316,39 @@ class TestRun:
         session.commit()
         fetched_run = session.get(Run, run.id)
         assert fetched_run.project.id == proj.id
+
+    @pytest.mark.parametrize(
+        "model",
+        ["seedance", "seedance-fast", "seedance-mini", "seedance-2-5", "gemini-omni"],
+    )
+    def test_model_accepts_every_registered_key(self, session, model):
+        """run_model_enum must carry a label for every app.ai_models entry.
+
+        The enum is mirrored by hand in migrations (Postgres cannot drop a
+        value), so a spec added without its ALTER TYPE would be rejected in
+        production — this pins the two together.
+        """
+        from app import ai_models
+
+        assert model in ai_models.AI_MODELS
+
+        proj = make_project(session)
+        run = Run(
+            project_id=proj.id,
+            prompt="test",
+            reference_image_urls=[],
+            model=model,
+        )
+        session.add(run)
+        session.commit()
+        assert session.get(Run, run.id).model == model
+
+    def test_model_defaults_to_seedance(self, session):
+        proj = make_project(session)
+        run = Run(project_id=proj.id, prompt="test", reference_image_urls=[])
+        session.add(run)
+        session.commit()
+        assert session.get(Run, run.id).model == "seedance"
 
 
 class TestRunSegment:
@@ -431,9 +526,435 @@ class TestTableCreation:
         assert "segment_defs" in tables
         assert "runs" in tables
         assert "run_segments" in tables
+        assert "insert_extractions" in tables
+        assert "insert_merges" in tables
 
-    def test_v1_tables_still_present(self, engine):
+    def test_v1_tables_removed(self, engine):
+        # The v1 Job/Segment pipeline was removed; their ORM models no longer
+        # exist, so create_all() must not recreate the old tables.
         insp = inspect(engine)
         tables = set(insp.get_table_names())
-        assert "jobs" in tables
-        assert "segments" in tables
+        assert "jobs" not in tables
+        assert "segments" not in tables
+
+
+class TestInsertExtraction:
+    """Tests for PIP insert extraction model."""
+
+    def test_create_insertion_extraction(self, session):
+        """Create a parent project, child project, and extraction linking them."""
+        parent = make_project(session, source_ref="s3://bucket/parent.mp4")
+        child = make_project(session, source_ref="s3://bucket/child.mp4")
+        session.flush()
+
+        extraction = InsertExtraction(
+            parent_project_id=parent.id,
+            child_project_id=child.id,
+            x=100,
+            y=50,
+            width=400,
+            height=500,
+            start_sec=5.0,
+            end_sec=25.0,
+            corner_radius_px=10,
+        )
+        session.add(extraction)
+        session.commit()
+
+        fetched = session.get(InsertExtraction, extraction.id)
+        assert fetched is not None
+        assert fetched.parent_project_id == parent.id
+        assert fetched.child_project_id == child.id
+        assert fetched.x == 100
+        assert fetched.y == 50
+        assert fetched.width == 400
+        assert fetched.height == 500
+        assert fetched.start_sec == 5.0
+        assert fetched.end_sec == 25.0
+        assert fetched.corner_radius_px == 10
+
+    def test_corner_radius_defaults_to_zero(self, session):
+        """Verify corner_radius_px defaults to 0."""
+        parent = make_project(session)
+        child = make_project(session, source_ref="s3://bucket/child2.mp4")
+        session.flush()
+
+        extraction = InsertExtraction(
+            parent_project_id=parent.id,
+            child_project_id=child.id,
+            x=0,
+            y=0,
+            width=256,
+            height=256,
+            start_sec=0.0,
+            end_sec=10.0,
+        )
+        session.add(extraction)
+        session.commit()
+
+        fetched = session.get(InsertExtraction, extraction.id)
+        assert fetched.corner_radius_px == 0
+
+    def test_unique_constraint_on_child_project_id(self, session):
+        """Each child project can have at most one extraction."""
+        parent1 = make_project(session, source_ref="s3://bucket/p1.mp4")
+        parent2 = make_project(session, source_ref="s3://bucket/p2.mp4")
+        child = make_project(session, source_ref="s3://bucket/child3.mp4")
+        session.flush()
+
+        ext1 = InsertExtraction(
+            parent_project_id=parent1.id,
+            child_project_id=child.id,
+            x=0, y=0, width=100, height=100,
+            start_sec=0.0, end_sec=5.0,
+        )
+        session.add(ext1)
+        session.commit()
+
+        # Try to create a second extraction with the same child
+        ext2 = InsertExtraction(
+            parent_project_id=parent2.id,
+            child_project_id=child.id,
+            x=0, y=0, width=100, height=100,
+            start_sec=0.0, end_sec=5.0,
+        )
+        session.add(ext2)
+        with pytest.raises(Exception):  # UNIQUE constraint violation
+            session.commit()
+
+
+class TestInsertMerge:
+    """Tests for PIP insert merge model."""
+
+    def test_create_insert_merge(self, session):
+        """Create a merge operation linking a target project and child run."""
+        target = make_project(session, source_ref="s3://bucket/target.mp4")
+        child = make_project(session, source_ref="s3://bucket/child_merge.mp4")
+        run = make_run(session, child.id, name="Child Run")
+        session.flush()
+
+        merge = InsertMerge(
+            target_project_id=target.id,
+            child_run_id=run.id,
+            x=100,
+            y=200,
+            width=300,
+            height=400,
+            start_sec=1.0,
+            end_sec=11.0,
+            corner_radius_px=5,
+        )
+        session.add(merge)
+        session.commit()
+
+        fetched = session.get(InsertMerge, merge.id)
+        assert fetched is not None
+        assert fetched.target_project_id == target.id
+        assert fetched.child_run_id == run.id
+        assert fetched.x == 100
+        assert fetched.y == 200
+        assert fetched.width == 300
+        assert fetched.height == 400
+        assert fetched.start_sec == 1.0
+        assert fetched.end_sec == 11.0
+        assert fetched.corner_radius_px == 5
+
+    def test_default_status_is_queued(self, session):
+        """InsertMerge.status defaults to queued."""
+        target = make_project(session)
+        child = make_project(session, source_ref="s3://bucket/child_default.mp4")
+        run = make_run(session, child.id)
+        session.flush()
+
+        merge = InsertMerge(
+            target_project_id=target.id,
+            child_run_id=run.id,
+            x=0, y=0, width=100, height=100,
+            start_sec=0.0, end_sec=5.0,
+        )
+        session.add(merge)
+        session.commit()
+
+        fetched = session.get(InsertMerge, merge.id)
+        assert fetched.status == MergeStatus.queued
+
+    def test_timestamps_set(self, session):
+        """InsertMerge has created_at and updated_at."""
+        target = make_project(session)
+        child = make_project(session, source_ref="s3://bucket/child_ts.mp4")
+        run = make_run(session, child.id)
+        session.flush()
+
+        merge = InsertMerge(
+            target_project_id=target.id,
+            child_run_id=run.id,
+            x=0, y=0, width=100, height=100,
+            start_sec=0.0, end_sec=5.0,
+        )
+        session.add(merge)
+        session.commit()
+
+        fetched = session.get(InsertMerge, merge.id)
+        assert fetched.created_at is not None
+        assert fetched.updated_at is not None
+
+    def test_optional_result_fields(self, session):
+        """Result fields (output_path, gdrive_url, error_message) default to None."""
+        target = make_project(session)
+        child = make_project(session, source_ref="s3://bucket/child_result.mp4")
+        run = make_run(session, child.id)
+        session.flush()
+
+        merge = InsertMerge(
+            target_project_id=target.id,
+            child_run_id=run.id,
+            x=0, y=0, width=100, height=100,
+            start_sec=0.0, end_sec=5.0,
+        )
+        session.add(merge)
+        session.commit()
+
+        fetched = session.get(InsertMerge, merge.id)
+        assert fetched.output_path is None
+        assert fetched.gdrive_url is None
+        assert fetched.error_message is None
+
+
+class TestMergeStatusTransitions:
+    """Tests for MergeStatus state machine transitions."""
+
+    def test_can_transition_queued_to_compositing(self):
+        """Queued can transition to compositing."""
+        assert can_transition(MergeStatus.queued, MergeStatus.compositing)
+
+    def test_can_transition_queued_to_failed(self):
+        """Queued can transition to failed."""
+        assert can_transition(MergeStatus.queued, MergeStatus.failed)
+
+    def test_cannot_transition_queued_to_done(self):
+        """Queued cannot transition directly to done."""
+        assert not can_transition(MergeStatus.queued, MergeStatus.done)
+
+    def test_can_transition_compositing_to_delivering(self):
+        """Compositing can transition to delivering."""
+        assert can_transition(MergeStatus.compositing, MergeStatus.delivering)
+
+    def test_can_transition_compositing_to_failed(self):
+        """Compositing can transition to failed."""
+        assert can_transition(MergeStatus.compositing, MergeStatus.failed)
+
+    def test_can_transition_delivering_to_done(self):
+        """Delivering can transition to done."""
+        assert can_transition(MergeStatus.delivering, MergeStatus.done)
+
+    def test_can_transition_delivering_to_failed(self):
+        """Delivering can transition to failed."""
+        assert can_transition(MergeStatus.delivering, MergeStatus.failed)
+
+    def test_can_transition_failed_to_queued(self):
+        """Failed can transition back to queued for retry."""
+        assert can_transition(MergeStatus.failed, MergeStatus.queued)
+
+    def test_can_transition_done_to_queued(self):
+        """Done can transition back to queued for re-run."""
+        assert can_transition(MergeStatus.done, MergeStatus.queued)
+
+    def test_transition_updates_merge_status(self, session):
+        """The transition() helper updates InsertMerge.status and updated_at."""
+        target = make_project(session)
+        child = make_project(session, source_ref="s3://bucket/child_transition.mp4")
+        run = make_run(session, child.id)
+        session.flush()
+
+        merge = InsertMerge(
+            target_project_id=target.id,
+            child_run_id=run.id,
+            x=0, y=0, width=100, height=100,
+            start_sec=0.0, end_sec=5.0,
+        )
+        session.add(merge)
+        session.commit()
+
+        # Transition from queued to compositing
+        transition(merge, MergeStatus.compositing)
+        session.commit()
+
+        fetched = session.get(InsertMerge, merge.id)
+        assert fetched.status == MergeStatus.compositing
+
+    def test_invalid_transition_raises(self, session):
+        """An invalid transition raises InvalidTransition."""
+        target = make_project(session)
+        child = make_project(session, source_ref="s3://bucket/child_invalid.mp4")
+        run = make_run(session, child.id)
+        session.flush()
+
+        merge = InsertMerge(
+            target_project_id=target.id,
+            child_run_id=run.id,
+            x=0, y=0, width=100, height=100,
+            start_sec=0.0, end_sec=5.0,
+        )
+        session.add(merge)
+        session.commit()
+
+        # Try invalid transition: queued → done
+        with pytest.raises(InvalidTransition):
+            transition(merge, MergeStatus.done)
+
+
+# ---------------------------------------------------------------------------
+# Tests: source-fallback columns
+# ---------------------------------------------------------------------------
+
+
+class TestSourceFallbackColumns:
+    """`RunSegment.source_fallback` + `Run.source_fallback_segments`.
+
+    Marks a swap segment whose generation was impossible on the run's model
+    (longer than its per-clip ceiling), so the stitch substitutes the ORIGINAL
+    footage instead of blocking the run.
+
+    The two defaults differ deliberately, and the difference is load-bearing:
+    the segment flag is NOT NULL / false, so no pre-existing row can start
+    claiming it delivered original footage; the run count is nullable, so NULL
+    ("not recorded" — predates the column or never finalized) stays
+    distinguishable from 0 ("finalized and verified fully swapped").
+    """
+
+    def test_segment_flag_defaults_to_false(self, session):
+        project = make_project(session)
+        sds = make_segment_defs(session, project.id)
+        run = make_run(session, project.id)
+        rs_list = make_run_segments(session, run.id, sds)
+        session.commit()
+        assert rs_list
+        for rs in rs_list:
+            session.refresh(rs)
+            assert rs.source_fallback is False
+
+    def test_segment_flag_round_trips(self, session):
+        project = make_project(session)
+        sds = make_segment_defs(session, project.id)
+        run = make_run(session, project.id)
+        rs = make_run_segments(session, run.id, sds)[0]
+        rs.status = SegmentStatus.failed
+        rs.source_fallback = True
+        rs.error_message = (
+            "22.0s > 15s Seedance 2.0 limit; original footage used instead"
+        )
+        session.commit()
+        session.refresh(rs)
+        assert rs.source_fallback is True
+        # The status stays `failed` — the swap genuinely did not happen; the flag
+        # is only what lets the completeness gate pass anyway.
+        assert rs.status == SegmentStatus.failed
+
+    def test_run_count_defaults_to_none_not_zero(self, session):
+        project = make_project(session)
+        run = make_run(session, project.id)
+        session.commit()
+        session.refresh(run)
+        assert run.source_fallback_segments is None
+
+    @pytest.mark.parametrize("value", [0, 1, 3])
+    def test_run_count_round_trips(self, session, value):
+        project = make_project(session)
+        run = make_run(session, project.id)
+        run.source_fallback_segments = value
+        session.commit()
+        session.refresh(run)
+        assert run.source_fallback_segments == value
+
+
+class TestChainedDerivedCreativeSources:
+    """`RunTailEdit.source_type`/`source_caption_id` and
+    `RunCaption.source_type`/`source_tail_edit_id` (docs/burned-captions.md
+    §3.7).
+
+    v1 hung both derived creatives off the Run's result only; these columns
+    let a tail edit read a caption job's output (or vice versa) instead.
+    `run_id` is always the parent Run regardless of source_type — it is
+    provenance (project id, language suffix, sheet Idea, filename), never
+    the input video — so it must stay populated and unaffected by these
+    columns in every case.
+    """
+
+    def test_tail_edit_source_type_defaults_to_run(self, session):
+        project = make_project(session)
+        run = make_run(session, project.id)
+        te = make_tail_edit(session, run.id)
+        session.commit()
+        session.refresh(te)
+        assert te.source_type == "run"
+        assert te.source_caption_id is None
+        # run_id is the parent run's provenance, independent of source_type.
+        assert te.run_id == run.id
+
+    def test_tail_edit_source_caption_round_trips(self, session):
+        project = make_project(session)
+        run = make_run(session, project.id)
+        caption = make_caption(session, run.id)
+        te = make_tail_edit(
+            session,
+            run.id,
+            source_type="caption",
+            source_caption_id=caption.id,
+        )
+        session.commit()
+        session.refresh(te)
+        assert te.source_type == "caption"
+        assert te.source_caption_id == caption.id
+        # Chaining a caption as the input does not change whose run this is.
+        assert te.run_id == run.id
+
+    def test_caption_source_type_defaults_to_run(self, session):
+        project = make_project(session)
+        run = make_run(session, project.id)
+        rc = make_caption(session, run.id)
+        session.commit()
+        session.refresh(rc)
+        assert rc.source_type == "run"
+        assert rc.source_tail_edit_id is None
+        assert rc.run_id == run.id
+
+    def test_caption_source_tail_edit_round_trips(self, session):
+        project = make_project(session)
+        run = make_run(session, project.id)
+        te = make_tail_edit(session, run.id)
+        rc = make_caption(
+            session,
+            run.id,
+            source_type="tail_edit",
+            source_tail_edit_id=te.id,
+        )
+        session.commit()
+        session.refresh(rc)
+        assert rc.source_type == "tail_edit"
+        assert rc.source_tail_edit_id == te.id
+        # Chaining a tail edit as the input does not change whose run this is.
+        assert rc.run_id == run.id
+
+    def test_no_foreign_key_on_source_ids(self, session):
+        """Soft references only — same reasoning as OverlayJob.source_run_id:
+        a source row can be deleted independently without breaking the
+        derived creative that once pointed at it."""
+        project = make_project(session)
+        run = make_run(session, project.id)
+        te = make_tail_edit(
+            session,
+            run.id,
+            source_type="caption",
+            source_caption_id="deadbeef-0000-0000-0000-000000000000",
+        )
+        rc = make_caption(
+            session,
+            run.id,
+            source_type="tail_edit",
+            source_tail_edit_id="deadbeef-0000-0000-0000-000000000001",
+        )
+        session.commit()
+        session.refresh(te)
+        session.refresh(rc)
+        assert te.source_caption_id == "deadbeef-0000-0000-0000-000000000000"
+        assert rc.source_tail_edit_id == "deadbeef-0000-0000-0000-000000000001"

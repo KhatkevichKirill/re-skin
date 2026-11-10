@@ -1,0 +1,546 @@
+{# Rebuild-from-reference project body (docs/rebuild-from-reference-design.md §10).
+   Loaded into #rebuild-content by project_status_content.html. Self-polls while a
+   storyboard or a keyframe is in flight, but never while the operator is typing
+   in one of its forms (the swap would wipe the inputs). #}
+{% set pid = project.id %}
+<div id="rebuild-card" data-live="{{ 1 if live else 0 }}"
+  {% if live %}
+  hx-get="/v2/projects/{{ pid }}/rebuild-fragment"
+  hx-trigger="every 4s [!(document.activeElement && document.activeElement.closest('#rebuild-content form'))]"
+  hx-target="#rebuild-content"
+  hx-swap="innerHTML"
+  {% endif %}
+>
+
+{% if not rebuild_enabled %}
+<div class="alert alert-warning" id="rb-flag-off" style="margin-bottom:12px">
+  Rebuild from reference is turned off on this server (<code>REBUILD_ENABLED</code>).
+  This page is read-only: nothing new can be generated or launched.
+</div>
+{% endif %}
+
+<div id="rb-msg" class="text-muted" style="min-height:1em; margin:0 0 8px"></div>
+
+<!-- ── Shots and chunks ── -->
+<div class="card" id="rb-overview">
+  <div class="card-header"><h2>Shots and chunks</h2></div>
+  <div class="card-body">
+    <p style="margin:0 0 8px">
+      <strong>{{ shots|length }}</strong> shots ({{ anchors|length }} after folding short ones),
+      <strong>{{ n_swap_chunks }}</strong> chunk{% if n_swap_chunks != 1 %}s{% endif %} to generate
+      {%- if chunks|selectattr("action", "equalto", "keep")|list %},
+      {{ chunks|selectattr("action", "equalto", "keep")|list|length }} kept as original footage{% endif %}.
+    </p>
+    <div class="rb-strip" style="display:flex; width:100%; height:22px; border-radius:4px; overflow:hidden; font-size:11px">
+      {% for c in chunks %}
+      {% set w = ((c.end - c.start) / (duration or 1) * 100) %}
+      <div title="{{ c.action }} {{ '%.2f'|format(c.start) }}–{{ '%.2f'|format(c.end) }} s ({{ c.shots|length }} shots)"
+           style="flex:0 0 {{ '%.3f'|format(w) }}%; background:{% if c.action == 'swap' %}{% if loop.index is odd %}#4f7cff{% else %}#7b9bff{% endif %}{% else %}#9aa0a6{% endif %}; color:#fff; text-align:center; line-height:22px; border-right:1px solid #fff; overflow:hidden">
+        {% if c.chunk_no %}{{ c.chunk_no }}{% else %}keep{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<!-- ── Storyboard ── -->
+<div class="card" id="rb-storyboard">
+  <div class="card-header"><h2>Storyboard</h2>
+    {% if storyboard %}<span class="badge badge-{{ storyboard.status }}" id="rb-sb-status" style="margin-left:8px">{{ storyboard.status }}</span>{% endif %}
+  </div>
+  <div class="card-body">
+    {% if not storyboard %}
+    <p class="text-muted" id="rb-sb-none">No storyboard yet. Gemini describes the video once, then every shot on its own.</p>
+    {% else %}
+      {% if storyboard_live %}
+      <p id="rb-sb-running"><span class="spinner"></span>
+        Describing the video — {{ storyboard_progress.total }} call{% if storyboard_progress.total != 1 %}s{% endif %} so far,
+        {{ storyboard_progress.in_flight }} in flight.</p>
+      {% endif %}
+      {% if storyboard.error %}<p class="alert alert-warning" style="margin:6px 0">{{ storyboard.error }}</p>{% endif %}
+      {% if storyboard_progress.unknown %}
+      <p class="alert alert-warning" style="margin:6px 0">
+        {{ storyboard_progress.unknown }} call(s) of this storyboard may have been billed without an
+        answer being recorded; building again calls those shots again.
+      </p>
+      {% endif %}
+    {% endif %}
+
+    {% if result and result.style %}
+    <div id="rb-sb-result" style="margin:8px 0">
+      <div><strong>Style:</strong> {{ result.style }}</div>
+      {% if result.characters %}
+      <div><strong>Characters:</strong>
+        <ul style="margin:4px 0 4px 18px">
+        {% for c in result.characters %}
+          <li><code>{{ c.id }}</code> {{ c.name_hint }}{% if c.look %} — {{ c.look }}{% endif %}{% if c.outfit %}; {{ c.outfit }}{% endif %}</li>
+        {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      {% if result.audio %}<div><strong>Audio:</strong> {{ result.audio.kind }}</div>{% endif %}
+      {% if result.on_screen_text %}<div><strong>On-screen text:</strong> {{ result.on_screen_text|join(" · ") }}</div>{% endif %}
+    </div>
+    {% endif %}
+
+    {% if speech_warning %}
+    <p class="alert alert-warning" id="rb-speech-warning" style="margin:6px 0">⚠ {{ speech_warning }}</p>
+    {% endif %}
+
+    {% if rebuild_enabled %}
+    <form id="rb-sb-form" onsubmit="return false" style="margin-top:10px">
+      {% if storyboard_live %}
+      <button type="button" class="btn btn-secondary" id="rb-sb-cancel" onclick="rbCancelStoryboard('{{ pid }}')">Cancel storyboard</button>
+      {% else %}
+      <button type="button" class="btn btn-primary" id="rb-sb-build" onclick="rbStoryboard('{{ pid }}', 'resume')">
+        {% if storyboard %}Build again (resume){% else %}Build storyboard{% endif %}
+        — up to {{ '%.0f'|format(storyboard_estimate) }} cr
+      </button>
+      {% if storyboard %}
+      <button type="button" class="btn btn-secondary" id="rb-sb-scratch" onclick="rbStoryboard('{{ pid }}', 'from_scratch')">From scratch</button>
+      <label style="margin-left:8px; font-size:13px"><input type="checkbox" id="rb-sb-overwrite" /> Overwrite my edits</label>
+      {% endif %}
+      <p class="hint">One Gemini call for the whole video plus one per shot ({{ anchors|length }}); each may fall back to the next model once, so up to {{ '%.0f'|format(storyboard_estimate) }} credits are reserved. Resume reuses the answers of the previous storyboard.</p>
+      {% endif %}
+    </form>
+    {% if applied and brand_card_shots %}
+    <div id="rb-brand-cards" style="margin-top:8px">
+      {% if keeping_brand_cards %}
+      <button type="button" class="btn btn-sm btn-secondary" onclick="rbBrandCards('{{ pid }}', false)">Generate brand-card shots again</button>
+      {% else %}
+      <button type="button" class="btn btn-sm btn-secondary" onclick="rbBrandCards('{{ pid }}', true)">Keep brand-card shots as original footage ({{ brand_card_shots }})</button>
+      {% endif %}
+      <span class="hint">Re-cuts the chunks (free); refused while a run is active.</span>
+    </div>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>
+
+<!-- ── Character sheets ── -->
+{% if sheet_groups %}
+<div class="card" id="rb-sheets">
+  <div class="card-header"><h2>Character sheets</h2></div>
+  <div class="card-body">
+    {% for g in sheet_groups %}
+    {% set sel = selected_sheets.get(g.key) %}
+    <div class="rb-sheet" data-key="{{ g.key }}" style="border-bottom:1px solid var(--color-border,#ddd); padding:8px 0">
+      <strong>{{ g.key }}</strong> <span class="text-muted">{{ g.description }} — {{ g.characters|join(", ") }}</span>
+      {% if g.key in live_kf_sheets %}<span class="badge badge-generating">generating</span>{% endif %}
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px">
+        {% if sel %}
+        <a href="/api/v2/rebuild/keyframes/{{ sel.id }}/image" target="_blank"><img loading="lazy" src="/api/v2/rebuild/keyframes/{{ sel.id }}/image" style="height:120px; border:2px solid #2e7d32; border-radius:4px" alt="selected sheet" /></a>
+        {% else %}
+        <div class="text-muted rb-placeholder" style="height:120px; width:68px; border:1px dashed #aaa; display:flex; align-items:center; justify-content:center; font-size:11px">no sheet</div>
+        {% endif %}
+        {% for a in sheet_attempts.get(g.key, []) %}{% if not sel or a.id != sel.id %}
+          {% include "partials/project_rebuild_attempt.html" %}
+        {% endif %}{% endfor %}
+      </div>
+      {% if rebuild_enabled and g.key not in live_kf_sheets %}
+      <details style="margin-top:6px">
+        <summary style="cursor:pointer">{% if sel %}Regenerate{% else %}Generate{% endif %} this sheet ({{ '%.0f'|format(image_credits) }} cr)</summary>
+        <form onsubmit="return rbSheet(event, '{{ pid }}', '{{ g.key }}')">
+          <p class="hint">Input frames (up to 5):</p>
+          {% set auto = sheet_auto_inputs.get(g.key, []) %}
+          <div style="display:flex; flex-wrap:wrap; gap:6px">
+          {% for s in anchors %}{% if s.sheet_key == g.key or s.id in auto %}
+            <label style="font-size:12px"><input type="checkbox" name="input" value="{{ s.id }}" {% if s.id in auto %}checked{% endif %} /> shot {{ s.index + 1 }}{% if s.framing %} ({{ s.framing }}){% endif %}</label>
+          {% endif %}{% endfor %}
+          </div>
+          <textarea name="sheet_prompt" rows="2" placeholder="optional prompt (default: a clean reference sheet of this group)" style="width:100%; margin-top:6px"></textarea>
+          <button type="submit" class="btn btn-sm btn-primary">{% if sel %}Regenerate{% else %}Generate{% endif %}</button>
+        </form>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Shots grid, grouped by chunk ── -->
+<div class="card" id="rb-shots">
+  <div class="card-header"><h2>Keyframes</h2></div>
+  <div class="card-body">
+    {% if rebuild_enabled and applied %}
+    <div id="rb-batch-bar" style="margin-bottom:10px">
+      {% if missing_keyframes or missing_sheets %}
+      <button type="button" class="btn btn-primary" id="rb-generate-missing" onclick="rbGenerateMissing('{{ pid }}')">
+        Generate missing keyframes ({{ missing_keyframes|length }}{% if missing_sheets %} + {{ missing_sheets|length }} sheet{% if missing_sheets|length != 1 %}s{% endif %}{% endif %} × {{ '%.0f'|format(image_credits) }} cr = {{ '%.0f'|format(keyframe_estimate) }} cr)
+      </button>
+      {% else %}
+      <span class="text-muted" id="rb-all-selected">Every shot has a selected keyframe.</span>
+      {% endif %}
+    </div>
+    {% elif not applied %}
+    <p class="text-muted">Keyframes need an applied storyboard (the prompts use its style and characters).</p>
+    {% endif %}
+
+    {% for c in chunks %}
+    <div class="rb-chunk" data-action="{{ c.action }}" style="margin:12px 0 4px">
+      <h3 style="font-size:13px; margin:0 0 6px">
+        {% if c.action == "swap" %}Chunk {{ c.chunk_no }}{% else %}Original footage (keep){% endif %}
+        <span class="text-muted">{{ '%.2f'|format(c.start) }}–{{ '%.2f'|format(c.end) }} s</span>
+        {% if c.action == "swap" and c.sheet_key %}<span class="text-muted">· sheet {{ c.sheet_key }}</span>{% endif %}
+        {% if c.action == "keep" and keep_with_text %}<span class="badge badge-failed" title="kept source footage still shows the source's burned captions">keeps source captions</span>{% endif %}
+      </h3>
+      {% for msg in c.too_many.values() %}<p class="alert alert-warning" style="margin:4px 0">{{ msg }}</p>{% endfor %}
+      {% for s in c.shots %}
+      {% if s.folded_into %}
+      <div class="rb-folded text-muted" style="font-size:12px; margin:2px 0 2px 12px">
+        shot {{ s.index + 1 }} ({{ '%.2f'|format(s.end_sec - s.start_sec) }} s) folded into shot {{ by_id[s.folded_into].index + 1 if s.folded_into in by_id else "?" }}
+        {% if rebuild_enabled %}<button type="button" class="btn btn-sm btn-secondary" onclick="rbUnfold('{{ s.id }}', '{{ pid }}')">Unfold</button>{% endif %}
+      </div>
+      {% else %}
+      {% set sel = selected_shots.get(s.id) %}
+      {% set live_kf = s.id in live_kf_shots %}
+      {% set call = shot_call_state.get(s.id) %}
+      <div class="rb-shot" data-shot="{{ s.id }}" style="display:flex; gap:12px; align-items:flex-start; border-top:1px solid var(--color-border,#eee); padding:8px 0">
+        <div style="flex:0 0 auto; text-align:center; font-size:11px">
+          <img loading="lazy" src="/api/v2/rebuild/shots/{{ s.id }}/frame" style="height:110px; border-radius:4px" alt="source frame" /><br>source @ {{ '%.2f'|format(s.frame_sec) }} s
+        </div>
+        <div style="flex:0 0 auto; text-align:center; font-size:11px">
+          {% if sel %}
+          <a href="/api/v2/rebuild/keyframes/{{ sel.id }}/image" target="_blank"><img loading="lazy" class="rb-selected" src="/api/v2/rebuild/keyframes/{{ sel.id }}/image" style="height:110px; border:2px solid #2e7d32; border-radius:4px" alt="selected keyframe" /></a><br>selected
+          {% elif live_kf %}
+          <div class="rb-placeholder" style="height:110px; width:62px; display:flex; align-items:center; justify-content:center"><span class="spinner"></span></div>generating
+          {% else %}
+          <div class="rb-placeholder text-muted" style="height:110px; width:62px; border:1px dashed #aaa; display:flex; align-items:center; justify-content:center">—</div>no keyframe
+          {% endif %}
+        </div>
+        <div style="flex:1 1 auto; font-size:13px">
+          <div><strong>Shot {{ s.index + 1 }}</strong> <span class="text-muted">{{ '%.2f'|format(s.start_sec) }}–{{ '%.2f'|format(s.end_sec) }} s</span>
+            {% if s.is_brand_card %}<span class="badge">brand card</span>{% endif %}
+            {% if s.speaking_on_camera %}<span class="badge badge-review" title="lips will not be synced">speaks on camera ({{ s.speaking_on_camera }})</span>{% endif %}
+            {% if s.edited_at %}<span class="badge">edited</span>{% endif %}
+          </div>
+          {% if s.action %}
+          <div>{% if s.framing %}{{ s.framing }}{% endif %}{% if s.camera %}, {{ s.camera }}{% endif %}{% if s.location %} · {{ s.location }}{% endif %}</div>
+          <div>{{ s.action }}</div>
+          <div class="text-muted">characters: {{ (s.characters or [])|join(", ") or "—" }}{% if s.sheet_key %} · sheet {{ s.sheet_key }}{% endif %}</div>
+          {% else %}
+          <div class="text-muted">not described yet</div>
+          {% endif %}
+          {% set sb_err = (result.errors or {}).get(s.id) if result else None %}
+          {% if sb_err %}<div class="alert alert-warning" style="margin:4px 0; padding:4px 8px">{{ sb_err }}</div>{% endif %}
+          {% if call and call.status == "unknown" and storyboard and call.storyboard_id == storyboard.id %}
+          <div class="alert alert-warning" style="margin:4px 0; padding:4px 8px">The storyboard call for this shot may have been billed; Build again calls it again.</div>
+          {% endif %}
+          {% set attempts_here = attempts.get(s.id, []) %}
+          {% set last = attempts_here[0] if attempts_here else None %}
+          {% if last and last.status in ("failed", "unknown") %}
+          <div class="alert alert-warning rb-kf-error" style="margin:4px 0; padding:4px 8px">Last keyframe attempt {{ last.status }}: {{ last.error }}</div>
+          {% endif %}
+          <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px">
+            {% for a in attempts_here %}{% if not sel or a.id != sel.id %}
+              {% include "partials/project_rebuild_attempt.html" %}
+            {% endif %}{% endfor %}
+          </div>
+          {% if rebuild_enabled %}
+          <details style="margin-top:4px">
+            <summary style="cursor:pointer">Edit / regenerate</summary>
+            <form onsubmit="return rbShotEdit(event, '{{ s.id }}', '{{ pid }}')" style="margin:6px 0">
+              <div style="display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:6px">
+                <label>Framing <input name="framing" value="{{ s.framing or '' }}" /></label>
+                <label>Camera <input name="camera" value="{{ s.camera or '' }}" /></label>
+                <label>Location <input name="location" value="{{ s.location or '' }}" /></label>
+                <label>Characters <input name="characters" value="{{ (s.characters or [])|join(',') }}" /></label>
+                <label>Sheet <input name="sheet_key" value="{{ s.sheet_key or '' }}" /></label>
+                <label>Frame time, s <input name="frame_sec" type="number" step="0.01" min="{{ s.start_sec }}" max="{{ s.end_sec }}" value="{{ s.frame_sec }}" /></label>
+                <label>Speaks on camera <input name="speaking_on_camera" value="{{ s.speaking_on_camera or '' }}" /></label>
+                <label>Brand card <select name="is_brand_card"><option value="false" {% if not s.is_brand_card %}selected{% endif %}>no</option><option value="true" {% if s.is_brand_card %}selected{% endif %}>yes</option></select></label>
+              </div>
+              <label style="display:block; margin-top:6px">Action <textarea name="action" rows="2" style="width:100%">{{ s.action or '' }}</textarea></label>
+              <button type="submit" class="btn btn-sm btn-secondary">Save</button>
+            </form>
+            {% if applied and not live_kf %}
+            <form onsubmit="return rbRegenerate(event, '{{ s.id }}', '{{ pid }}')" style="margin:6px 0">
+              <textarea name="prompt" rows="2" placeholder="optional prompt (default: redraw this exact frame without captions)" style="width:100%"></textarea>
+              <button type="submit" class="btn btn-sm btn-primary">{% if attempts_here %}Regenerate{% else %}Generate{% endif %} keyframe ({{ '%.0f'|format(image_credits) }} cr)</button>
+            </form>
+            {% endif %}
+          </details>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- ── Launch ── -->
+<div class="card" id="rb-launch">
+  <div class="card-header"><h2>Launch a rebuild run</h2></div>
+  <div class="card-body">
+    {# The same list create_run enforces (rebuild_launch.preconditions), one per
+       model; rbLaunchModel() shows the selected model's and enables the button. #}
+    {% for key, items in unmet_by_model.items() %}
+    {% if items %}
+    <div {% if key == default_model %}id="rb-unmet" {% endif %}class="alert alert-warning rb-unmet" data-model="{{ key }}" style="margin:0 0 10px"{% if key != default_model %} hidden{% endif %}>
+      Not ready to launch{% if unmet_by_model|length > 1 %} with {{ images_only_models[key].label }}{% endif %}:
+      <ul style="margin:4px 0 0 18px">{% for u in items %}<li>{{ u }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% if speech_warning %}<p class="alert alert-warning" style="margin:0 0 10px">⚠ {{ speech_warning }}</p>{% endif %}
+    {% if keep_with_text %}<p class="alert alert-warning" style="margin:0 0 10px">⚠ Segments kept as original footage still show the source's burned captions.</p>{% endif %}
+    <form id="rb-launch-form" onsubmit="return rbLaunch(event, '{{ pid }}')">
+      <input type="hidden" name="prompt" value="{{ launch_prompt }}" />
+      <input type="hidden" name="audio_mode" value="original" />
+      <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end">
+        <div class="form-group">
+          <label for="rb-model">Model</label>
+          <select id="rb-model" name="model" onchange="rbLaunchModel()">
+            {% for key, spec in images_only_models.items() %}
+            <option value="{{ key }}" {% if key == default_model %}selected{% endif %}>{{ spec.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="rb-resolution">Resolution</label>
+          <select id="rb-resolution" name="resolution" onchange="rbLaunchEstimate()"></select>
+        </div>
+        <div class="form-group">
+          <label for="rb-language">Language</label>
+          <select id="rb-language" name="language" onchange="rbEndCardInfo()">
+            {% for code, spec in languages.items() %}
+            <option value="{{ code }}" {% if code == default_language %}selected{% endif %}>{{ spec.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="rb-name">Name (optional)</label>
+          <input id="rb-name" name="name" type="text" />
+        </div>
+      </div>
+      {% if end_card_ids %}
+      <div class="form-group">
+        <label for="rb-end-card">End card</label>
+        {# AICP-381: library END CARDS only (kind on /v2/library); inserts never. #}
+        <select id="rb-end-card" name="end_card" onchange="rbEndCardInfo()">
+          <option value="auto" selected>Automatic — the newest library end card in the run language</option>
+          <option value="source">Keep the source end card (it shows the source's captions)</option>
+          {% for clip in library_clips %}
+          <option value="clip:{{ clip.id }}">Library: {{ clip.name }}{% if clip.language %} ({{ clip.language }}){% endif %}{% if clip.duration_sec %} — {{ "%.1f"|format(clip.duration_sec) }} s{% endif %}</option>
+          {% endfor %}
+        </select>
+        <p class="hint" id="rb-end-card-info" style="margin:4px 0 0"></p>
+        {% if not library_clips %}<p class="hint" style="margin:2px 0 0">The library has no end cards — mark one as <em>End card</em> on <a href="/v2/library">the Library page</a>.</p>{% endif %}
+      </div>
+      {% endif %}
+      {% if sheet_groups %}
+      <details style="margin:6px 0">
+        <summary style="cursor:pointer">Character sheet per chunk</summary>
+        {% for c in chunks %}{% if c.action == "swap" %}
+        <div class="form-group" style="margin:4px 0">
+          <label>Chunk {{ c.chunk_no }}
+            <select class="rb-chunk-sheet" data-seg="{{ c.seg.id }}" data-auto="{{ c.sheet_key or '' }}">
+              {% for g in sheet_groups %}
+              <option value="{{ g.key }}" {% if g.key == c.sheet_key %}selected{% endif %}>{{ g.key }}{% if g.key == c.sheet_key %} (auto){% endif %}{% if g.key not in selected_sheets %} — no sheet yet{% endif %}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        {% endif %}{% endfor %}
+      </details>
+      {% endif %}
+      <p class="hint" id="rb-estimate"></p>
+      <p class="hint">Launching approves the selected keyframes. The original soundtrack is kept; each chunk is generated from its keyframes and character sheet.</p>
+      <button type="submit" class="btn btn-primary" id="rb-launch-btn" {% if not launch_ready %}disabled{% endif %}>Launch run</button>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  var PID = {{ pid|tojson }};
+  window.RB_EST = {{ run_estimates|tojson }};
+  window.RB_RES = {{ run_resolutions|tojson }};
+  window.RB_READY = {{ launch_ready_by_model|tojson }};
+  window.RB_SEGMENTS = {{ segment_ids|tojson }};
+  window.RB_END_CARD = {{ end_card_ids|tojson }};
+  // AICP-381: what each choice puts at the end, shown before launch.
+  window.RB_AUTO_END_CARD = {{ auto_end_card|tojson }};
+  window.RB_END_CLIPS = {
+    {% for clip in library_clips %}{{ clip.id|tojson }}: {name: {{ clip.name|tojson }}, duration_sec: {{ clip.duration_sec|tojson }}}{% if not loop.last %}, {% endif %}{% endfor %}
+  };
+  window.RB_LANG_LABELS = { {% for code, spec in languages.items() %}{{ code|tojson }}: {{ spec.label|tojson }}{% if not loop.last %}, {% endif %}{% endfor %} };
+  function msg(text) { var el = document.getElementById('rb-msg'); if (el) el.textContent = text || ''; }
+  window.rbRefresh = function (pid) {
+    if (window.htmx) {
+      htmx.ajax('GET', '/v2/projects/' + encodeURIComponent(pid) + '/rebuild-fragment',
+                { target: '#rebuild-content', swap: 'innerHTML' });
+    } else { location.reload(); }
+  };
+  window.rbCall = function (method, url, fd, pid) {
+    msg('Working…');
+    return fetch(url, { method: method, body: fd })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          if (r.ok) { msg(''); rbRefresh(pid); return b; }
+          msg('Error: ' + apiErrorText(b, r)); return null;
+        });
+      })
+      .catch(function (e) { msg('Network error: ' + e); return null; });
+  };
+  function fd(obj) {
+    var f = new FormData();
+    Object.keys(obj).forEach(function (k) { f.append(k, obj[k]); });
+    return f;
+  }
+  window.rbStoryboard = function (pid, mode) {
+    var ow = document.getElementById('rb-sb-overwrite');
+    if (!confirm('Build the storyboard with Gemini (' + mode.replace('_', ' ') + ')? It bills a few LLM credits per shot.')) return;
+    rbCall('POST', '/api/v2/projects/' + encodeURIComponent(pid) + '/rebuild/storyboard',
+           fd({ mode: mode, overwrite_edits: (ow && ow.checked) ? 'true' : 'false' }), pid);
+  };
+  window.rbCancelStoryboard = function (pid) {
+    if (!confirm('Cancel the storyboard? Calls already sent finish on their own.')) return;
+    rbCall('POST', '/api/v2/projects/' + encodeURIComponent(pid) + '/rebuild/storyboard/cancel',
+           fd({ confirm: 'true' }), pid);
+  };
+  window.rbGenerateMissing = function (pid) {
+    var btn = document.getElementById('rb-generate-missing');
+    if (!confirm((btn ? btn.textContent.trim() : 'Generate missing keyframes') + '?')) return;
+    rbCall('POST', '/api/v2/projects/' + encodeURIComponent(pid) + '/rebuild/keyframes',
+           fd({ shots: 'all_missing', sheets: 'all_missing' }), pid);
+  };
+  window.rbRegenerate = function (ev, sid, pid) {
+    ev.preventDefault();
+    var f = new FormData(ev.target);
+    f.append('shots', sid);
+    rbCall('POST', '/api/v2/projects/' + encodeURIComponent(pid) + '/rebuild/keyframes', f, pid);
+    return false;
+  };
+  window.rbSheet = function (ev, pid, key) {
+    ev.preventDefault();
+    var inputs = Array.prototype.map.call(
+      ev.target.querySelectorAll('input[name=input]:checked'), function (x) { return x.value; });
+    if (inputs.length > 5) { msg('Pick at most 5 input frames.'); return false; }
+    var o = {}; o[key] = inputs;
+    var f = fd({ sheets: key, sheet_inputs: JSON.stringify(o) });
+    var p = ev.target.querySelector('textarea[name=sheet_prompt]');
+    if (p && p.value.trim()) f.append('sheet_prompt', p.value);
+    rbCall('POST', '/api/v2/projects/' + encodeURIComponent(pid) + '/rebuild/keyframes', f, pid);
+    return false;
+  };
+  window.rbSelect = function (kid, pid) {
+    rbCall('PATCH', '/api/v2/rebuild/keyframes/' + encodeURIComponent(kid), fd({ selected: 'true' }), pid);
+  };
+  window.rbShotEdit = function (ev, sid, pid) {
+    ev.preventDefault();
+    rbCall('PATCH', '/api/v2/rebuild/shots/' + encodeURIComponent(sid), new FormData(ev.target), pid);
+    return false;
+  };
+  window.rbUnfold = function (sid, pid) {
+    if (!confirm('Unfold this shot? The chunks are re-cut (segment edits are replaced).')) return;
+    rbCall('PATCH', '/api/v2/rebuild/shots/' + encodeURIComponent(sid), fd({ force_anchor: 'true' }), pid);
+  };
+  window.rbBrandCards = function (pid, keep) {
+    if (!confirm('Re-cut the chunks? Segment edits are replaced.')) return;
+    rbCall('POST', '/api/v2/projects/' + encodeURIComponent(pid) + '/rebuild/keep-brand-cards',
+           fd({ keep: keep ? 'true' : 'false' }), pid);
+  };
+  window.rbLaunchModel = function () {
+    var m = document.getElementById('rb-model'), r = document.getElementById('rb-resolution');
+    if (!m || !r) return;
+    // The selected model's precondition list (server-computed) and button.
+    Array.prototype.forEach.call(document.querySelectorAll('#rb-launch .rb-unmet'), function (el) {
+      el.hidden = el.dataset.model !== m.value;
+    });
+    var btn = document.getElementById('rb-launch-btn');
+    if (btn) btn.disabled = !RB_READY[m.value];
+    var keep = r.value || {{ default_resolution|tojson }};
+    r.innerHTML = '';
+    (RB_RES[m.value] || []).forEach(function (res) {
+      var o = document.createElement('option'); o.value = res; o.textContent = res;
+      if (res === keep) o.selected = true;
+      r.appendChild(o);
+    });
+    rbLaunchEstimate();
+  };
+  window.rbLaunchEstimate = function () {
+    var m = document.getElementById('rb-model'), r = document.getElementById('rb-resolution');
+    var el = document.getElementById('rb-estimate');
+    if (!m || !r || !el) return;
+    var c = (RB_EST[m.value] || {})[r.value];
+    el.textContent = (c === undefined) ? '' :
+      'Estimate: about ' + Math.round(c) + ' credits (every chunk once, plus its character check).';
+  };
+  function clipText(c) {
+    return '“' + c.name + '”' + (c.duration_sec ? ' (' + Number(c.duration_sec).toFixed(1) + ' s)' : '');
+  }
+  // The end-card line: what the selected choice resolves to for the selected
+  // language. Returns the text (the launch confirm repeats it); '' when the
+  // project has no trailing end card (no picker).
+  window.rbEndCardInfo = function () {
+    var ec = document.getElementById('rb-end-card');
+    var el = document.getElementById('rb-end-card-info');
+    if (!ec) return '';
+    var lang = (document.getElementById('rb-language') || {}).value || 'en';
+    var text, warn = false;
+    if (ec.value === 'source') {
+      text = 'End card: the source end card is kept — it shows the source\'s burned captions.';
+      warn = true;
+    } else if (ec.value.indexOf('clip:') === 0) {
+      var c = RB_END_CLIPS[ec.value.slice(5)];
+      text = 'End card: ' + (c ? clipText(c) : 'the chosen library clip') + ' replaces the source end card.';
+    } else {
+      var a = RB_AUTO_END_CARD[lang];
+      if (a) {
+        text = 'End card: ' + clipText(a) + ' replaces the source end card.';
+      } else {
+        text = '⚠ No ' + (RB_LANG_LABELS[lang] || lang) + ' end card in the library: the source end card is kept — it shows the source\'s burned captions.';
+        warn = true;
+      }
+    }
+    if (el) { el.textContent = text; el.style.color = warn ? 'var(--color-warning, #b45309)' : ''; }
+    return text;
+  };
+  window.rbLaunch = function (ev, pid) {
+    ev.preventDefault();
+    var form = ev.target;
+    var f = new FormData();
+    ['prompt', 'audio_mode', 'model', 'resolution', 'language', 'name'].forEach(function (k) {
+      var el = form.elements[k];
+      if (el && el.value !== '') f.append(k, el.value);
+    });
+    var ec = form.elements['end_card'];
+    if (ec && ec.value !== 'auto') {
+      var drop = ec.value === 'source' ? [] : RB_END_CARD;
+      var plan = RB_SEGMENTS.filter(function (s) { return drop.indexOf(s) < 0; })
+        .map(function (s) { return { kind: 'segment', segment_def_id: s }; });
+      if (ec.value.indexOf('clip:') === 0) plan.push({ kind: 'library', clip_id: ec.value.slice(5) });
+      f.append('stitch_plan', JSON.stringify(plan));
+    }
+    var sheets = {};
+    Array.prototype.forEach.call(form.querySelectorAll('select.rb-chunk-sheet'), function (s) {
+      if (s.value && s.value !== s.dataset.auto) sheets[s.dataset.seg] = s.value;
+    });
+    if (Object.keys(sheets).length) f.append('chunk_sheets', JSON.stringify(sheets));
+    var btn = document.getElementById('rb-launch-btn');
+    var est = document.getElementById('rb-estimate');
+    var endLine = rbEndCardInfo();
+    if (!confirm('Launch the rebuild run? ' + (est ? est.textContent : '') +
+                 (endLine ? '\n' + endLine : ''))) return false;
+    if (btn) btn.disabled = true;
+    msg('Launching…');
+    fetch('/api/v2/projects/' + encodeURIComponent(pid) + '/runs', { method: 'POST', body: f })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          if (r.ok && b.run_id) { location.href = '/v2/runs/' + encodeURIComponent(b.run_id); return; }
+          if (btn) btn.disabled = false;
+          msg('Error: ' + apiErrorText(b, r));
+        });
+      })
+      .catch(function (e) { if (btn) btn.disabled = false; msg('Network error: ' + e); });
+    return false;
+  };
+  rbLaunchModel();
+  rbEndCardInfo();
+})();
+</script>
+</div>

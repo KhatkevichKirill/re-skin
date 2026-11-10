@@ -17,6 +17,14 @@
   </div>
 </div>
 
+{% elif sv == "ready" and project.project_type == "reframe" %}
+<!-- __ Ready, reframe project: no segments, no runs (docs/reframe-design.md §9) __ -->
+<div id="reframe-content"
+     hx-get="/v2/projects/{{ project.id }}/reframe-fragment"
+     hx-trigger="load" hx-swap="innerHTML">
+  <div class="card"><div class="card-body"><span class="spinner"></span> Loading&hellip;</div></div>
+</div>
+
 {% elif sv == "ready" %}
 <!-- __ Ready: segment editor + runs panel __ -->
 
@@ -40,6 +48,7 @@
     <!-- Public token link to the original video (for external OCR / Gemini) -->
     <div class="form-group" style="max-width:560px; margin:14px auto 0">
       <label style="font-size:12px; font-weight:600">Public link to original (for Gemini / OCR)</label>
+      {% if source_public_token %}
       <div style="display:flex; gap:8px">
         <input
           id="src-public-link"
@@ -54,6 +63,9 @@
         Unauthenticated, tokenized link — paste into Gemini etc. to read on-screen text.
         Anyone with the link can view this source video.
       </p>
+      {% else %}
+      <p class="hint">Public links are disabled: PUBLIC_LINK_SECRET is not configured.</p>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -77,6 +89,345 @@ function copySrcLink(btn) {
 }
 </script>
 
+<!-- Extract insert (picture-in-picture) -->
+<div class="card">
+  <details id="extract-insert-details">
+    <summary style="cursor:pointer;font-weight:600">Extract insert (picture-in-picture)</summary>
+    <div class="card-body">
+      <p class="hint">
+        Draw a rectangle around the insert's <strong>inner content</strong> (inside any
+        border) in the frame below. Submitting crops + trims that rect into a brand-new
+        child project you review and process independently; it starts analyzing right away.
+      </p>
+
+      <!-- Preview-time scrubber: pick which frame to draw the rect on (the
+           insert often appears mid-video, so t=0 may show nothing). -->
+      <div class="form-group" style="max-width:520px">
+        <label for="extract-preview-range">Preview time (s)</label>
+        <div style="display:flex; gap:10px; align-items:center">
+          <input
+            type="range" id="extract-preview-range"
+            min="0" max="{{ '%.1f'|format(project.duration_sec) if project.duration_sec else '0' }}"
+            step="0.1" value="0" style="flex:1"
+          />
+          <input
+            type="number" id="extract-preview-time"
+            min="0" max="{{ '%.1f'|format(project.duration_sec) if project.duration_sec else '0' }}"
+            step="0.1" value="0" style="width:90px"
+          />
+        </div>
+        <p class="hint">Scrub to a frame where the insert is visible, then draw the rect.</p>
+      </div>
+
+      <div id="extract-frame-wrap" style="position:relative; display:inline-block; max-width:100%; touch-action:none">
+        <img
+          id="extract-frame-img"
+          src="/api/v2/projects/{{ project.id }}/frame?t=0"
+          alt="source frame for insert extraction"
+          draggable="false"
+          style="max-width:100%; display:block; border-radius:6px; background:#000"
+        />
+        <div
+          id="extract-rect"
+          style="position:absolute; left:0; top:0; width:60px; height:60px; border:2px solid #ff5722; background:rgba(255,87,34,0.15); cursor:move; box-sizing:border-box"
+        >
+          <div
+            id="extract-handle"
+            title="Drag to resize"
+            style="position:absolute; right:-6px; bottom:-6px; width:14px; height:14px; background:#ff5722; border:1px solid #fff; border-radius:2px; cursor:nwse-resize"
+          ></div>
+        </div>
+      </div>
+
+      <form
+        id="extract-insert-form"
+        hx-post="/api/v2/projects/{{ project.id }}/extract-insert"
+        hx-target="#extract-insert-result"
+        hx-swap="innerHTML"
+        hx-on::after-request="handleExtractInsertCreated(event)"
+        style="margin-top:14px; max-width:520px"
+      >
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px">
+          <div class="form-group" style="margin:0">
+            <label>X (px, native)</label>
+            <input type="number" name="x" id="extract-x" value="0" min="0" step="1" />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>Y (px, native)</label>
+            <input type="number" name="y" id="extract-y" value="0" min="0" step="1" />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>Width (px, native)</label>
+            <input type="number" name="width" id="extract-width" value="100" min="2" step="1" />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>Height (px, native)</label>
+            <input type="number" name="height" id="extract-height" value="100" min="2" step="1" />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>Start (s)
+              <button
+                type="button" id="extract-set-start"
+                class="btn btn-sm btn-secondary"
+                title="Copy the current preview time into Start"
+                style="padding:0 6px; font-size:11px; margin-left:6px"
+              >set to preview</button>
+            </label>
+            <input type="number" name="start_sec" id="extract-start" value="0" min="0" step="0.1" />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>End (s)</label>
+            <input
+              type="number" name="end_sec" id="extract-end" min="0" step="0.1"
+              value="{{ '%.1f'|format(project.duration_sec) if project.duration_sec else '' }}"
+            />
+          </div>
+          <div class="form-group" style="margin:0">
+            <label>Corner radius (px)</label>
+            <input type="number" name="corner_radius_px" id="extract-radius" value="0" min="0" step="1" />
+          </div>
+        </div>
+        <p class="hint" id="extract-insert-err" style="color:var(--color-danger,#c0392b); display:none"></p>
+        <div class="action-row">
+          <button type="submit" class="btn btn-primary">
+            <span class="htmx-indicator spinner"></span>
+            Extract insert
+          </button>
+        </div>
+      </form>
+      <div id="extract-insert-result" style="margin-top:12px"></div>
+    </div>
+  </details>
+</div>
+
+<script>
+// __ Extract-insert rectangle overlay __
+// The numeric inputs (#extract-x/y/width/height) always hold NATIVE source
+// pixel coordinates (project.width x project.height) — the on-screen overlay
+// rect is just a scaled view of them. Every drag/resize recomputes the native
+// values from the rendered rect's on-screen size; every manual edit of the
+// number inputs repaints the on-screen rect from the (possibly edited)
+// native values. Submission sends the number inputs as-is — no further
+// mapping needed at submit time since they're already native-space.
+(function () {
+  var img = document.getElementById('extract-frame-img');
+  var rect = document.getElementById('extract-rect');
+  var handle = document.getElementById('extract-handle');
+  if (!img || !rect || !handle) return;
+
+  var NATIVE_W = {{ project.width or 0 }};
+  var NATIVE_H = {{ project.height or 0 }};
+
+  var xInp = document.getElementById('extract-x');
+  var yInp = document.getElementById('extract-y');
+  var wInp = document.getElementById('extract-width');
+  var hInp = document.getElementById('extract-height');
+
+  // CSS px per native px (native / rendered). Falls back to 1 before the
+  // image has laid out.
+  function scale() {
+    var renderedW = img.clientWidth || NATIVE_W || 1;
+    return (NATIVE_W || renderedW) / renderedW;
+  }
+
+  function paintFromInputs() {
+    var s = scale();
+    var nx = parseFloat(xInp.value) || 0;
+    var ny = parseFloat(yInp.value) || 0;
+    var nw = parseFloat(wInp.value) || 10;
+    var nh = parseFloat(hInp.value) || 10;
+    rect.style.left = (nx / s) + 'px';
+    rect.style.top = (ny / s) + 'px';
+    rect.style.width = (nw / s) + 'px';
+    rect.style.height = (nh / s) + 'px';
+  }
+
+  function syncInputsFromRect() {
+    var s = scale();
+    var left = parseFloat(rect.style.left) || 0;
+    var top = parseFloat(rect.style.top) || 0;
+    var w = parseFloat(rect.style.width) || 0;
+    var h = parseFloat(rect.style.height) || 0;
+    xInp.value = Math.round(left * s);
+    yInp.value = Math.round(top * s);
+    wInp.value = Math.round(w * s);
+    hInp.value = Math.round(h * s);
+  }
+
+  // Keep the on-screen rect inside the rendered image bounds.
+  function clampRect() {
+    var maxW = img.clientWidth || 0;
+    var maxH = img.clientHeight || 0;
+    var left = parseFloat(rect.style.left) || 0;
+    var top = parseFloat(rect.style.top) || 0;
+    var w = parseFloat(rect.style.width) || 10;
+    var h = parseFloat(rect.style.height) || 10;
+    if (w < 10) w = 10;
+    if (h < 10) h = 10;
+    if (w > maxW) w = maxW;
+    if (h > maxH) h = maxH;
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    if (left + w > maxW) left = maxW - w;
+    if (top + h > maxH) top = maxH - h;
+    rect.style.left = left + 'px';
+    rect.style.top = top + 'px';
+    rect.style.width = w + 'px';
+    rect.style.height = h + 'px';
+  }
+
+  var dragState = null;
+
+  function beginDrag(e, mode) {
+    e.preventDefault();
+    dragState = {
+      mode: mode,
+      startX: e.clientX,
+      startY: e.clientY,
+      origLeft: parseFloat(rect.style.left) || 0,
+      origTop: parseFloat(rect.style.top) || 0,
+      origW: parseFloat(rect.style.width) || 0,
+      origH: parseFloat(rect.style.height) || 0,
+    };
+    document.addEventListener('pointermove', onDrag);
+    document.addEventListener('pointerup', endDrag);
+  }
+
+  function onDrag(e) {
+    if (!dragState) return;
+    var dx = e.clientX - dragState.startX;
+    var dy = e.clientY - dragState.startY;
+    if (dragState.mode === 'move') {
+      rect.style.left = (dragState.origLeft + dx) + 'px';
+      rect.style.top = (dragState.origTop + dy) + 'px';
+    } else {
+      rect.style.width = (dragState.origW + dx) + 'px';
+      rect.style.height = (dragState.origH + dy) + 'px';
+    }
+    clampRect();
+    syncInputsFromRect();
+  }
+
+  function endDrag() {
+    dragState = null;
+    document.removeEventListener('pointermove', onDrag);
+    document.removeEventListener('pointerup', endDrag);
+  }
+
+  rect.addEventListener('pointerdown', function (e) {
+    if (e.target === handle) return;
+    beginDrag(e, 'move');
+  });
+  handle.addEventListener('pointerdown', function (e) {
+    e.stopPropagation();
+    beginDrag(e, 'resize');
+  });
+
+  // Manual edits to the numeric inputs reposition/resize the overlay.
+  [xInp, yInp, wInp, hInp].forEach(function (inp) {
+    inp.addEventListener('change', function () {
+      paintFromInputs();
+      clampRect();
+      syncInputsFromRect();
+    });
+  });
+
+  var _rectInitialized = false;
+  function initRect() {
+    if (_rectInitialized) return;
+    _rectInitialized = true;
+    var nw = Math.round((NATIVE_W || 200) * 0.4) || 60;
+    var nh = Math.round((NATIVE_H || 200) * 0.4) || 60;
+    var nx = Math.round(((NATIVE_W || 200) - nw) / 2);
+    var ny = Math.round(((NATIVE_H || 200) - nh) / 2);
+    xInp.value = nx;
+    yInp.value = ny;
+    wInp.value = nw;
+    hInp.value = nh;
+    paintFromInputs();
+  }
+
+  // First load positions the default rect; later loads (preview-time frame
+  // swaps) must NOT reset it — the image dimensions don't change, so just
+  // repaint the overlay from the untouched native-space inputs.
+  img.addEventListener('load', function () {
+    if (!_rectInitialized) initRect();
+    else paintFromInputs();
+  });
+  if (img.complete && img.naturalWidth) initRect();
+  window.addEventListener('resize', paintFromInputs);
+
+  // __ Preview-time scrubber __
+  // Slider + numeric input stay in sync; the frame <img> src is swapped to
+  // /frame?t=<value> after a 300ms debounce so scrubbing doesn't fire one
+  // ffmpeg request per pixel. t is rounded to 0.1s to match the endpoint's
+  // cache quantisation (frames/frame_<t*10>.jpg), so repeat views are cache
+  // hits, and clamped to [0, duration] client-side.
+  var DURATION = {{ project.duration_sec or 0 }};
+  var FRAME_URL_BASE = '/api/v2/projects/{{ project.id }}/frame?t=';
+  var rangeInp = document.getElementById('extract-preview-range');
+  var timeInp = document.getElementById('extract-preview-time');
+  var setStartBtn = document.getElementById('extract-set-start');
+  var startInp = document.getElementById('extract-start');
+
+  function clampPreviewT(v) {
+    v = parseFloat(v);
+    if (!isFinite(v) || v < 0) v = 0;
+    if (DURATION && v > DURATION) v = DURATION;
+    return Math.round(v * 10) / 10;  // match the server's 0.1s cache quantisation
+  }
+
+  var _frameDebounce = null;
+  function schedulePreviewLoad() {
+    clearTimeout(_frameDebounce);
+    _frameDebounce = setTimeout(function () {
+      img.src = FRAME_URL_BASE + clampPreviewT(timeInp ? timeInp.value : 0);
+    }, 300);
+  }
+
+  if (rangeInp && timeInp) {
+    rangeInp.addEventListener('input', function () {
+      timeInp.value = rangeInp.value;
+      schedulePreviewLoad();
+    });
+    timeInp.addEventListener('input', function () {
+      var t = clampPreviewT(timeInp.value);
+      rangeInp.value = t;
+      schedulePreviewLoad();
+    });
+    timeInp.addEventListener('change', function () {
+      timeInp.value = clampPreviewT(timeInp.value);
+      rangeInp.value = timeInp.value;
+    });
+  }
+
+  if (setStartBtn && startInp && timeInp) {
+    setStartBtn.addEventListener('click', function () {
+      startInp.value = clampPreviewT(timeInp.value);
+    });
+  }
+})();
+
+function handleExtractInsertCreated(event) {
+  var errEl = document.getElementById('extract-insert-err');
+  if (event.detail.successful) {
+    try {
+      var data = JSON.parse(event.detail.xhr.responseText);
+      if (data.child_project_id) {
+        window.location.href = '/v2/projects/' + data.child_project_id;
+        return;
+      }
+    } catch (e) {}
+  }
+  if (errEl) {
+    var body = {};
+    try { body = JSON.parse(event.detail.xhr.responseText); } catch (e) {}
+    errEl.textContent = 'Extract failed: ' + (body.detail || event.detail.xhr.statusText || 'unknown error');
+    errEl.style.display = '';
+  }
+}
+</script>
+
 <!-- Segment Editor -->
 <div class="card">
   <div class="card-header">
@@ -87,6 +438,117 @@ function copySrcLink(btn) {
     <p class="hint" style="padding:8px 16px 0; margin:0; font-size:12px; color:var(--color-muted)">
       Boundaries are linked — changing a segment's end shifts the next segment's start by the same amount, so the total length stays fixed.
     </p>
+    {% if project_type == "subtitle_removal" %}
+    <p class="hint" style="padding:4px 16px 0; margin:0; font-size:12px; color:var(--color-muted)">
+      <strong>{{ project_type_label }}</strong> auto-cut this video on scene changes (min
+      {{ "%.0f"|format(scene_min_len_sec) }}s) and marked every scene <em>swap</em> — it's ready to run.
+      Flip any scene to <em>keep</em> to skip it, or merge/split boundaries as needed.
+    </p>
+    {% elif project_type == "localisation" and localisation_whole %}
+    {# Whole-video localisation (AICP-340): no hook, no tail — every segment is
+       a scene-cut swap segment within the whole-video target. #}
+    <p class="hint" id="whole-video-hint" style="padding:4px 16px 0; margin:0; font-size:12px; color:var(--color-muted)">
+      <strong>{{ project_type_label }} — whole video.</strong> The whole video is re-spoken:
+      analysis cut it into <em>swap</em> segments at scene changes, each at most
+      {{ "%g"|format(whole_video_target_sec) }}s (Seedance 2.5 intermittently truncates longer
+      output to 14.72s). Translate gives every segment its own share of the dialogue, and
+      no library tail is appended. Merge or split boundaries as needed — keep each segment
+      within {{ "%g"|format(whole_video_target_sec) }}s.
+    </p>
+    {% elif project_type == "localisation" %}
+    {# Localisation does NOT start as one full-length keep segment (the branch
+       below would have claimed it did): hook_split cuts swap[0, hook] +
+       keep[hook, end]. docs/localisation.md §5. #}
+    <p class="hint" style="padding:4px 16px 0; margin:0; font-size:12px; color:var(--color-muted)">
+      <strong>{{ project_type_label }}</strong> cuts the front of the video into a <em>swap</em>
+      hook — the part re-spoken in the new language — and leaves the rest as one
+      <em>keep</em> segment, excluded from the stitch and replaced by a language-matched
+      tail from the library.
+    </p>
+
+    {# ── What the hook ACTUALLY came out as ────────────────────────────────
+       The clamp used to be visible only in the worker log: the row still said
+       hook_sec=15 while analysis had cut 10s, and nothing on the page
+       distinguished "10s because you asked for 10s" from "10s because your cap
+       is 10s". It belongs HERE, in the Segment Editor, because the segments
+       below are the evidence and the subject — the transcript panel is about
+       the transcript, and the settings card can only ever describe the value
+       currently in its box, not the analysis that produced these rows. This
+       block reads the hook off the segments themselves, so it stays true even
+       after the boundary is dragged by hand, and it re-renders with the rest of
+       the polling fragment when a re-analysis finishes. #}
+    {% if hook_cut_sec is none %}
+    <p class="hint" style="padding:4px 16px 0; margin:0; font-size:12px; color:var(--color-muted)">
+      These segments no longer start with a <em>swap</em> segment at 0s, so there is no hook
+      to report — the split has been edited by hand.
+      <strong>Hook length</strong> is set to {{ "%.1f"|format(hook_requested_sec) }}s{% if hook_is_default %}
+      (the default){% endif %} and would be applied only by a re-analysis, which would
+      discard these edits.
+    </p>
+
+    {% elif hook_cut_matches_request and hook_cut_is_current %}
+    <p class="hint" style="padding:4px 16px 0; margin:0; font-size:12px; color:var(--color-muted)">
+      <strong>Hook: {{ "%.1f"|format(hook_cut_sec) }}s</strong>
+      ({{ hook_cut_segment_count }} swap segment{% if hook_cut_segment_count != 1 %}s{% endif %}) —
+      exactly the {{ "%.1f"|format(hook_requested_sec) }}s
+      {%- if hook_is_default %} default{% else %} asked for{% endif %}.
+    </p>
+
+    {% else %}
+    <div class="alert alert-warning" id="hook-clamp-notice" style="margin:8px 16px 0">
+      {% if hook_cut_matches_request %}
+      {# The cut honoured the request, but a setting has moved since — say so
+         without the misleading "asked for X · cut X". #}
+      <strong>Hook: {{ "%.1f"|format(hook_cut_sec) }}s
+        ({{ hook_cut_segment_count }} swap segment{% if hook_cut_segment_count != 1 %}s{% endif %})
+        — but the next analysis would cut {{ "%.1f"|format(hook_planned_sec) }}s.</strong>
+      {% else %}
+      <strong>Hook asked for: {{ "%.1f"|format(hook_requested_sec) }}s{% if hook_is_default %}
+        (the default){% endif %} · hook actually cut:
+        {{ "%.1f"|format(hook_cut_sec) }}s</strong>
+      ({{ hook_cut_segment_count }} swap segment{% if hook_cut_segment_count != 1 %}s{% endif %}).
+      {% endif %}
+      <div style="margin-top:4px">
+        {% if not hook_cut_is_current %}
+        {# What is on screen was cut under different settings from the ones now
+           stored — which, since Hook length became editable on this page, is one
+           keystroke away and is the first thing to say. Neutral about WHICH
+           setting moved: lowering Max segment length gets here too. #}
+        The analyze-time settings have changed since this video was analyzed. Both
+        <strong>Hook length</strong> and <strong>Max segment length</strong> are consumed at
+        analyze time, so these segments still show the old hook — press
+        <a href="#reanalyze-btn"><strong>Re-analyze video</strong></a> in Project settings to
+        cut a {{ "%.1f"|format(hook_planned_sec) }}s hook
+        {%- if hook_clamp_reason %} (itself clamped down from
+        {{ "%.1f"|format(hook_requested_sec) }}s — see the warning there){% endif %}.
+        {% elif hook_clamp_reason == "cap" %}
+        The hook was cut short by this project's <strong>Max segment length</strong>
+        ({{ "%g"|format(hook_cap_sec) }}s): a hook may not exceed the segmentation cap, which is
+        what keeps every segment generatable by the models this project can run on. To get
+        the full {{ "%.1f"|format(hook_requested_sec) }}s, raise the cap in
+        <strong>Project settings</strong> and re-analyze.
+        {% elif hook_clamp_reason == "duration" %}
+        The source video is only {{ "%.1f"|format(project.duration_sec) }}s long, so the hook
+        is the whole clip. Nothing is missing — there is no more video to re-speak.
+        {% elif hook_clamp_reason == "floor" %}
+        The hook was padded up to {{ "%g"|format(hook_floor_sec) }}s, the shortest clip any
+        model in the registry will generate; a shorter one would be a segment no run could
+        submit.
+        {% else %}
+        The segment boundary no longer matches the <strong>Hook length</strong> setting.
+        Re-analyzing would reset it to {{ "%.1f"|format(hook_planned_sec) }}s.
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% elif project_type != "face_swap" %}
+    <p class="hint" style="padding:4px 16px 0; margin:0; font-size:12px; color:var(--color-muted)">
+      <strong>{{ project_type_label }}</strong> projects skip face detection, so this starts as one
+      full-length <em>keep</em> segment. Split it with <em>+ Add segment</em> and set the parts you want
+      processed to <em>swap</em>.
+    </p>
+    {% endif %}
     <form id="seg-form">
       <div style="overflow-x:auto">
         <table class="seg-table" id="segments-table">
@@ -110,7 +572,7 @@ function copySrcLink(btn) {
                 {% if seg.action == "swap" %}
                 <img
                   class="seg-thumb"
-                  src="/api/v2/projects/{{ project.id }}/frame?t={{ seg.start_sec|int }}"
+                  src="/api/v2/projects/{{ project.id }}/frame?t={{ "%.1f"|format(seg.start_sec) }}"
                   alt="frame at {{ seg.start_sec }}s"
                   loading="lazy"
                   style="cursor:pointer"
@@ -182,6 +644,15 @@ function copySrcLink(btn) {
   </div>
 </div>
 
+{% if project.project_type == "rebuild" %}
+<!-- Rebuild from reference: storyboard, keyframes, launch (docs/rebuild-from-reference-design.md §10) -->
+<div id="rebuild-content"
+     hx-get="/v2/projects/{{ project.id }}/rebuild-fragment"
+     hx-trigger="load" hx-swap="innerHTML">
+  <div class="card"><div class="card-body"><span class="spinner"></span> Loading&hellip;</div></div>
+</div>
+{% endif %}
+
 <!-- Runs Panel -->
 <div class="card">
   <div class="card-header">
@@ -190,16 +661,31 @@ function copySrcLink(btn) {
   <div class="card-body">
 
     <!-- New Run Form -->
-    <details id="new-run-details" open>
+    {# A rebuild project launches from its own form (#rb-launch-form); the v2v
+       form stays in the DOM (its scripts expect it) but hidden. #}
+    <details id="new-run-details" {% if project.project_type == "rebuild" %}hidden style="display:none"{% else %}open{% endif %}>
       <summary style="cursor:pointer;font-weight:600;margin-bottom:14px">New run (character)</summary>
+      {% if project.mode == "assistant" %}
+      {# AICP-369: a run started here is a manual run on a by-Assistant project. #}
+      <div class="alert alert-warning" style="margin:6px 0">
+        This project is <strong>by Assistant</strong>. A run you start here is a <strong>manual</strong> run:
+        the assistant does not automatically use it, and once it is billed the assistant pauses
+        until you press Resume in the Assistant card.
+      </div>
+      {% endif %}
+      <p class="hint" style="margin:6px 0 0">
+        Model and prompt below are pre-filled for this project's type
+        (<strong>{{ project_type_label }}</strong>) — edit either freely, nothing is locked.
+      </p>
       <form
         id="new-run-form"
         hx-post="/api/v2/projects/{{ project.id }}/runs"
         hx-encoding="multipart/form-data"
         hx-target="#new-run-result"
         hx-swap="innerHTML"
-        hx-on::config-request="event.detail.parameters['segment_prompts'] = collectSegmentPrompts()"
+        hx-on::config-request="applyRunFormExtras(event)"
         hx-on::after-request="handleRunCreated(event)"
+        {% if project.mode == "assistant" %}hx-confirm="This is a manual run on a by-Assistant project: once billed it pauses the assistant, and the assistant does not automatically use it. Start it?"{% endif %}
         enctype="multipart/form-data"
         style="margin-top:12px"
       >
@@ -207,65 +693,56 @@ function copySrcLink(btn) {
         <div class="form-group">
           <label for="run-name">Character name (optional)</label>
           <input type="text" id="run-name" name="name" placeholder="e.g. Redhead woman" />
-          <p class="hint">A short label to distinguish this run in the list.</p>
+          <p class="hint">A short label to distinguish this run in the list.
+            Only its first <strong>7 characters</strong> reach the sheet’s <code>Idea</code> column
+            (spaces and punctuation dropped, bracketed parts removed).</p>
         </div>
 
-        <!-- Prompt -->
-        <div class="form-group">
-          <label for="run-prompt">Prompt <span style="color:#dc3545">*</span></label>
-          <textarea id="run-prompt" name="prompt" required>{{ default_prompt }}</textarea>
+        {# The run's Language control. Rendered in ONE of two places: inside the
+           Localisation panel (where it is the Translate target, so it sits above
+           the button), or as its own form group everywhere else. Either way it
+           is the single #run-language element the scripts below look up. #}
+        {% macro run_language_field() %}
+          <label for="run-language">Language</label>
+          {# Options come from app/languages.py. A code the downstream
+             renaming pipeline does not know renames as English, so a
+             new code must be parsed downstream before it is exported (see
+             wiki/components/run-language.md). #}
+          {# Localisation starts BLANK on purpose: the language is the Translate
+             target, and a pre-selected English let the operator press Translate
+             (or start the run) without ever choosing one. Translate and Start
+             run both stay blocked until a language is picked. #}
+          <select id="run-language" name="language">
+            {% if is_localisation %}
+            <option value="" selected>— choose the target language —</option>
+            {% endif %}
+            {% for code, spec in languages.items() %}
+            <option value="{{ code }}" {% if not is_localisation and default_language == code %}selected{% endif %}>{{ spec.label }}</option>
+            {% endfor %}
+          </select>
           <p class="hint">
-            Refer to <strong>"the reference image"</strong> and <strong>"the reference video"</strong> in plain words.
-            Do <strong>not</strong> use <code>@Image1</code> / <code>@video1</code> — those work only in the Seedance web UI, not via the API, and the swap will silently fail.
-            Edit the example above to fit your video (e.g. name who to replace).
+            {% if is_localisation %}
+            The language the hook is translated into by <strong>Translate</strong> below —
+            pick it first. It is also the spoken language of the delivered video:
+            {% else %}
+            The spoken language of the delivered video. It changes nothing in the
+            pipeline —
+            {% endif %}
+            it is appended to the run's id (<code>1736426f</code> →
+            <code>1736426f-ja</code>) so the renaming pipeline can tell what language
+            the creative is in when it reaches the sheet. English adds no suffix.
+            Editable later on the run page, up until you export.
           </p>
-        </div>
-
-        <!-- Per-segment prompt additions (optional) -->
-        {% set swap_segs = segments | selectattr("action", "equalto", "swap") | list %}
-        {% if swap_segs %}
-        <div class="form-group">
-          <details>
-            <summary style="cursor:pointer;font-weight:600">Per-segment prompts (optional) — {{ swap_segs|length }} swap segment(s)</summary>
-            <p class="hint" style="margin-top:6px">
-              Extra wording appended to the prompt above for a specific segment, applied on the first run.
-              Leave a segment blank to use the run prompt as-is.
-            </p>
-            <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px">
-              {% for seg in swap_segs %}
-              <details class="seg-prompt-item" style="border:1px solid var(--color-border,#e0e0e0); border-radius:6px; padding:6px 10px">
-                <summary style="cursor:pointer; font-size:13px">
-                  Segment {{ seg.index }}
-                  <span class="text-muted">({{ "%.1f"|format(seg.start_sec) }}–{{ "%.1f"|format(seg.end_sec) }}s)</span>
-                </summary>
-                <div style="display:flex; gap:8px; margin-top:8px">
-                  <img
-                    src="/api/v2/projects/{{ project.id }}/frame?t={{ seg.start_sec|int }}"
-                    alt="segment {{ seg.index }}"
-                    loading="lazy"
-                    style="width:80px; height:45px; object-fit:cover; border-radius:4px; border:1px solid #ccc; flex-shrink:0"
-                    onerror="this.style.display='none'"
-                  />
-                  <textarea
-                    class="seg-prompt-field"
-                    data-seg-id="{{ seg.id }}"
-                    rows="2"
-                    placeholder="Extra instructions for this segment (blank = run prompt)"
-                    style="flex:1; font-size:12px; resize:vertical"
-                  ></textarea>
-                </div>
-              </details>
-              {% endfor %}
-            </div>
-          </details>
-        </div>
-        {% endif %}
+        {% endmacro %}
 
         {% if is_localisation %}
         <!-- Localisation: mode + translation (docs/localisation.md §7) -->
         <div class="form-group" id="localisation-panel"
              style="border:1px solid var(--color-border,#e0e0e0); border-radius:6px; padding:10px 12px">
           <label style="margin-bottom:6px">Localisation</label>
+          <div style="margin-bottom:10px">
+            {{ run_language_field() }}
+          </div>
           <div style="display:flex; flex-direction:column; gap:4px">
             <label style="font-weight:400">
               <input type="radio" name="localisation_mode" value="keep"
@@ -284,18 +761,32 @@ function copySrcLink(btn) {
 
           {# The button and its reason line are re-rendered out-of-band by the
              transcript panel's poll (partials/translate_gate.html) — nothing
-             else in this form ever is, because everything else here holds typed
-             work. #translate-status and #translate-warnings stay OUTSIDE the
-             gate on purpose: they describe the prompt currently in the
-             textarea, which survives a status change. #}
+             else in this form ever is, because everything else here holds
+             typed work. #translate-status and #translate-warnings stay
+             OUTSIDE the gate on purpose: they describe the prompt currently in
+             the textarea, which survives a status change. #}
           <div id="translate-gate">
             {% include "partials/translate_gate.html" %}
           </div>
+          {# Outside #translate-gate: the gate is swapped out-of-band by the
+             transcript poll, this line follows the form's own Language select. #}
+          <p class="hint" id="translate-language-reason" style="font-weight:600; margin:6px 0 0">
+            Choose the <strong>Language</strong> above first — Translate stays off until you do.
+          </p>
           <div style="margin-top:6px">
             <span id="translate-status" style="font-size:12px; color:var(--color-muted)"></span>
           </div>
+          <label style="font-weight:400; margin-top:6px; display:block">
+            <input type="checkbox" id="ref-audio-header" onchange="applyRefAudioHeader()" />
+            The voice reference contains these speakers' voices — say so in the prompt
+            <span class="hint" style="display:block; margin:2px 0 0 20px">
+              Rewrites the prompts' "Speakers:" line to say the reference audio contains
+              the speakers' voices. Tick it only when you attach a voice reference cut
+              from this video.
+            </span>
+          </label>
           <p class="hint" style="margin-bottom:0">
-            Translates the transcript's hook window into the language selected below and
+            Translates the transcript's hook window into the Language selected above and
             fills the prompt (and the per-segment prompts, when the hook spans more than
             one segment) with the mode's template plus the translated dialogue. Nothing is
             saved — edit the result freely before starting the run.
@@ -306,6 +797,64 @@ function copySrcLink(btn) {
         </div>
         {% endif %}
 
+        <!-- Prompt -->
+        <div class="form-group">
+          <label for="run-prompt">Prompt <span style="color:#dc3545">*</span></label>
+          <textarea id="run-prompt" name="prompt" required>{{ default_prompt }}</textarea>
+          {% if project_uses_references %}
+          <p class="hint">
+            Refer to <strong>"the reference image"</strong> and <strong>"the reference video"</strong> in plain words.
+            Do <strong>not</strong> use <code>@Image1</code> / <code>@video1</code> — those work only in the Seedance web UI, not via the API, and the swap will silently fail.
+            Edit the example above to fit your video (e.g. name who to replace).
+          </p>
+          {% else %}
+          <p class="hint">
+            Default prompt for <strong>{{ project_type_label }}</strong>. Edit it to fit your video —
+            keep the "change nothing else" wording, that's what stops the model from redrawing the scene.
+          </p>
+          {% endif %}
+        </div>
+
+        <!-- Per-segment prompt additions (optional) -->
+        {% set swap_segs = segments | selectattr("action", "equalto", "swap") | list %}
+        {% if swap_segs %}
+        <div class="form-group">
+          <details>
+            <summary style="cursor:pointer;font-weight:600">Per-segment prompts (optional) — {{ swap_segs|length }} swap segment(s)</summary>
+            <p class="hint" style="margin-top:6px">
+              Per-segment prompt that fully replaces the run prompt for that segment, applied on the first run.
+              Leave a segment blank to use the run prompt as-is.
+            </p>
+            <div style="display:flex; flex-direction:column; gap:6px; margin-top:8px">
+              {% for seg in swap_segs %}
+              <details class="seg-prompt-item" style="border:1px solid var(--color-border,#e0e0e0); border-radius:6px; padding:6px 10px">
+                <summary style="cursor:pointer; font-size:13px">
+                  Segment {{ seg.index }}
+                  <span class="text-muted">({{ "%.1f"|format(seg.start_sec) }}–{{ "%.1f"|format(seg.end_sec) }}s)</span>
+                </summary>
+                <div style="display:flex; gap:8px; margin-top:8px">
+                  <img
+                    src="/api/v2/projects/{{ project.id }}/frame?t={{ "%.1f"|format(seg.start_sec) }}"
+                    alt="segment {{ seg.index }}"
+                    loading="lazy"
+                    style="width:80px; height:45px; object-fit:cover; border-radius:4px; border:1px solid #ccc; flex-shrink:0"
+                    onerror="this.style.display='none'"
+                  />
+                  <textarea
+                    class="seg-prompt-field"
+                    data-seg-id="{{ seg.id }}"
+                    rows="2"
+                    placeholder="Prompt for this segment (blank = run prompt)"
+                    style="flex:1; font-size:12px; resize:vertical"
+                  ></textarea>
+                </div>
+              </details>
+              {% endfor %}
+            </div>
+          </details>
+        </div>
+        {% endif %}
+
         <!-- Model -->
         <div class="form-group">
           <label for="run-model">Model</label>
@@ -313,9 +862,9 @@ function copySrcLink(btn) {
              Models whose per-clip ceiling is below this project's segmentation
              cap are still selectable (the operator may have hand-edited the
              segments shorter), but they are labelled: picking one without
-             splitting the long segments first delivers the ORIGINAL, un-swapped
-             footage for those segments. `default_model` is already narrowed to a
-             compatible model by web_v2._new_run_defaults.
+             splitting the long segments first produces a run that spends
+             credits and delivers nothing. `default_model` is already narrowed
+             to a compatible model by web_v2._new_run_defaults.
 
              `models_without_audio` is only non-empty for a type whose spec sets
              requires_audio_model (localisation). Those models are DISABLED, not
@@ -327,7 +876,7 @@ function copySrcLink(btn) {
             <option value="{{ key }}"{% if key in models_without_audio %} disabled{% endif %}{% if default_model == key %} selected{% endif %}>
               {{ spec.label }} — {{ spec.hint }}
               {%- if key in models_without_audio %} ⚠ generates no audio — cannot re-voice a hook{% endif %}
-              {%- if key in models_over_cap %} ⚠ max {{ "%g"|format(spec.max_clip_sec) }}s &lt; this project's {{ "%g"|format(segment_cap_sec) }}s segments{% endif %}
+              {%- if key in models_over_cap %} ⚠ max {{ "%g"|format(spec.max_clip_sec) }}s < this project's {{ "%g"|format(segment_cap_sec) }}s segments{% endif %}
             </option>
             {% endfor %}
           </select>
@@ -335,6 +884,9 @@ function copySrcLink(btn) {
           <p class="hint" id="model-hint" style="display:none"></p>
           <p class="hint" id="model-length-warning"
              style="display:none; color:var(--color-danger,#c0392b); font-weight:600"></p>
+          {# AICP-340: advisory only (never blocks the launch). #}
+          <p class="hint" id="whole-video-roll-warning"
+             style="display:none; color:var(--color-warning,#b7791f)"></p>
         </div>
 
         <!-- Resolution (options depend on the selected model) -->
@@ -372,58 +924,274 @@ function copySrcLink(btn) {
           <!-- Shown by onAudioModeChange() when a localisation run picks "Original". -->
           <p class="hint" id="audio-localisation-warning"
              style="display:none; color:var(--color-danger,#c0392b); font-weight:600">
-            &#9888; This is a localisation project. <strong>Original</strong> overlays the
+            ⚠ This is a localisation project. <strong>Original</strong> overlays the
             untranslated source soundtrack over the re-voiced video: the delivered
             creative would look localised and still be spoken in the source language.
             Nothing fails and nothing downstream flags it — the only warning is this
             one. Keep <strong>Generated clip audio</strong>.
           </p>
-
+          {% if project.mute_source %}
+          <p class="hint" style="font-weight:600">
+            This project has <strong>Remove original audio</strong> on — the model receives silent
+            clips and writes its own audio from the prompt. Choose
+            <strong>Generated clip audio</strong> to deliver it; <strong>Original</strong> still
+            overlays the untouched source soundtrack.
+          </p>
+          {% endif %}
         </div>
 
-        <!-- Language -->
-        <div class="form-group">
-          <label for="run-language">Language</label>
-          <select id="run-language" name="language">
-            {% for code, lang in languages.items() %}
-            <option value="{{ code }}" {% if default_language == code %}selected{% endif %}>{{ lang.label }}</option>
-            {% endfor %}
-          </select>
-          <p class="hint">
-            {% if is_localisation %}
-            The language the hook is <strong>re-spoken in</strong> — the translation target
-            the Translate button above sends. Press Translate again after changing it.
-            {% else %}
-            The spoken language of the delivered creative. Descriptive metadata only —
-            nothing in the pipeline branches on it.
-            {% endif %}
+        <!-- Voice reference — shown by onModelChange() only for models whose
+             spec has max_reference_audios > 0 (Seedance 2.5 today). -->
+        <div class="form-group" id="voice-ref-group" style="display:none">
+          <label>Voice</label>
+          <p class="hint" style="margin-top:0">
+            Without a reference the model invents a voice per generation, so the same
+            character sounds like a different person on every run — and across the
+            segments of one run. Attach a sample and the generated speech takes its
+            timbre instead.
           </p>
+          <div style="display:flex; flex-direction:column; gap:6px">
+            <label style="font-weight:normal; display:flex; align-items:center; gap:6px">
+              <input type="radio" name="voice_mode" value="none" checked
+                     onchange="onVoiceModeChange()" />
+              None — let the model choose a voice
+            </label>
+            <label style="font-weight:normal; display:flex; align-items:center; gap:6px">
+              <input type="radio" name="voice_mode" value="library"
+                     onchange="onVoiceModeChange()" {% if not voices %}disabled{% endif %} />
+              From the library
+              {% if not voices %}
+              <span class="text-muted" style="font-size:12px">
+                (empty — add one on the <a href="/v2/library" target="_blank">Library page</a>)
+              </span>
+              {% endif %}
+            </label>
+            {# data-lang mirrors the stitch-tail picker: the localisation pre-fill
+               picks the newest voice matching the run language from it. #}
+            <select id="voice-clip-select" name="voice_clip_id" disabled
+                    style="max-width:340px; margin-left:22px; display:none">
+              {% for voice in voices %}
+              <option value="{{ voice.id }}" data-lang="{{ voice.language or '' }}">
+                {{ voice.name }} ({{ "%.1f"|format(voice.duration_sec) if voice.duration_sec else "?" }}s)
+                {%- if voice.language %} · {{ voice.language | language_label }}{% endif %}
+              </option>
+              {% endfor %}
+            </select>
+            <label style="font-weight:normal; display:flex; align-items:center; gap:6px">
+              <input type="radio" name="voice_mode" value="upload"
+                     onchange="onVoiceModeChange()" />
+              Upload a file just for this run
+            </label>
+            {# Both controls carry a real `name` and are DISABLED unless their mode
+               is picked: a disabled control is not submitted, so htmx sends exactly
+               one of them (or neither) without the config-request hook having to
+               hand-encode a File. #}
+            <input type="file" id="voice-file-input" name="voice_file" disabled
+                   accept="audio/*,video/*"
+                   style="max-width:340px; margin-left:22px; display:none" />
+          </div>
+          <p class="hint" id="voice-ref-status" style="display:none"></p>
+          <!-- Shown by onVoiceModeChange()/onAudioModeChange() when the run would
+               throw the generated track away anyway. -->
+          <p class="hint" id="voice-audio-mode-warning"
+             style="display:none; color:var(--color-danger,#c0392b); font-weight:600">
+            ⚠ This run stitches with <strong>Original</strong> audio, so every generated
+            track is discarded and the voice reference cannot reach the delivered video.
+            Switch Audio to <strong>Generated clip audio</strong>, or leave the voice on
+            <strong>None</strong>.
+          </p>
+        </div>
+
+        {% if not is_localisation %}
+        <!-- Language (on localisation projects it lives inside #localisation-panel) -->
+        <div class="form-group">
+          {{ run_language_field() }}
+        </div>
+        {% endif %}
+
+        <!-- Stitching plan -->
+        <div class="form-group">
+          <details id="stitch-details">
+            <summary style="cursor:pointer;font-weight:600">Stitching (optional)</summary>
+            <p class="hint" style="margin-top:6px">
+              By default every segment is stitched back into one final video. Choose
+              <strong>Custom</strong> to drop segments or swap one for a clip from the
+              <a href="/v2/library" target="_blank">stitch library</a> — e.g. replace the outro
+              after changing the people in the video. Segments excluded from a custom plan
+              are not sent to the AI model at all (no credits spent).
+            </p>
+            <div style="display:flex; flex-direction:column; gap:4px; margin-top:8px">
+              <label style="font-weight:400"><input type="radio" name="stitch_mode" value="all" checked onchange="onStitchModeChange()" /> Stitch all segments (default)</label>
+              <label style="font-weight:400"><input type="radio" name="stitch_mode" value="custom" onchange="onStitchModeChange()" /> Custom — choose what ends up in the final video</label>
+              <label style="font-weight:400"><input type="radio" name="stitch_mode" value="none" onchange="onStitchModeChange()" /> Don't stitch — process segments only, no final video</label>
+            </div>
+
+            <div id="stitch-custom-panel" style="display:none; margin-top:10px; border:1px solid var(--color-border,#e0e0e0); border-radius:6px; padding:10px">
+              {% if not library_clips %}
+              <p class="hint" style="margin-top:0">
+                The stitch library is empty — you can still exclude segments here. Upload
+                reusable clips (outros etc.) on the <a href="/v2/library" target="_blank">Library page</a>.
+              </p>
+              {% endif %}
+              <div style="display:flex; flex-direction:column; gap:6px">
+                {% for seg in segments %}
+                <div style="display:flex; gap:10px; align-items:center">
+                  <span style="font-size:13px; min-width:210px">
+                    Segment {{ seg.index }}
+                    <span class="text-muted">({{ "%.1f"|format(seg.start_sec) }}–{{ "%.1f"|format(seg.end_sec) }}s, {{ seg.action }})</span>
+                  </span>
+                  {# data-action lets the localisation pre-fill keep the hook (swap)
+                     and drop the trailing tail (keep) without re-deriving either. #}
+                  <select class="stitch-seg-choice" data-seg-id="{{ seg.id }}"
+                          data-action="{{ seg.action }}" style="flex:1; max-width:340px">
+                    <option value="segment" selected>Keep in final video</option>
+                    <option value="exclude">Exclude from final video</option>
+                    {% if library_clips %}
+                    <optgroup label="Replace with library clip">
+                      {% for clip in library_clips %}
+                      <option value="lib:{{ clip.id }}">{{ clip.name }} ({{ "%.1f"|format(clip.duration_sec) if clip.duration_sec else "?" }}s)</option>
+                      {% endfor %}
+                    </optgroup>
+                    {% endif %}
+                  </select>
+                </div>
+                {% endfor %}
+              </div>
+              <div style="display:flex; gap:10px; align-items:center; margin-top:10px">
+                <span style="font-size:13px; min-width:210px">Append at the end</span>
+                {# data-lang is LibraryClip.language (blank = language-agnostic); the
+                   localisation pre-fill picks the newest clip matching the run
+                   language from it. Clips are listed newest-first. #}
+                <select id="stitch-append-select" style="flex:1; max-width:340px">
+                  <option value="" data-lang="" selected>— nothing —</option>
+                  {% for clip in library_clips %}
+                  <option value="{{ clip.id }}" data-lang="{{ clip.language or '' }}">
+                    {{ clip.name }} ({{ "%.1f"|format(clip.duration_sec) if clip.duration_sec else "?" }}s)
+                    {%- if clip.language %} · {{ clip.language | language_label }}{% endif %}
+                  </option>
+                  {% endfor %}
+                </select>
+              </div>
+              <p class="hint" id="stitch-tail-status" style="display:none; margin-bottom:0"></p>
+              <p class="hint" style="margin-bottom:0">
+                Custom plans stitch each clip with its own audio (a library outro keeps its
+                own soundtrack); with "Original" audio, swapped segments get the matching
+                slice of the source soundtrack.
+              </p>
+              <p class="hint" id="stitch-plan-err" style="color:var(--color-danger,#c0392b); display:none; margin-bottom:0"></p>
+            </div>
+          </details>
         </div>
 
         <!-- Reference images -->
         <div class="form-group">
-          <label>Reference images (max {{ max_refs }})</label>
+          <label id="ref-section-label">Reference images (max {{ max_refs }})</label>
           {% if not project_uses_references %}
           <p class="hint">
             Not needed for <strong>{{ project_type_label }}</strong> — the prompt does the work. Leave blank.
           </p>
           {% endif %}
-          <p class="hint">Upload up to {{ max_refs }} image files and/or paste comma-separated URLs below. Combined total must not exceed {{ max_refs }}.</p>
+          <p class="hint" id="ref-section-hint">Upload up to {{ max_refs }} image files and/or paste comma-separated URLs below. Combined total must not exceed {{ max_refs }}.</p>
           {% if is_localisation %}
-          <!-- Shown/hidden by onLocalisationModeChange(); enforced on submit. -->
+          <!-- Shown/hidden by onLocalisationModeChange(); enforced in applyRunFormExtras. -->
           <p class="hint" id="ref-localisation-required" style="display:none; font-weight:600">
             <span style="color:#dc3545">*</span> Required in <strong>Speech + character</strong>
             mode — that mode replaces the person, and this is the person it replaces them with.
           </p>
           {% endif %}
-          <input type="file" name="reference_files" accept="image/*" multiple style="margin-bottom:8px" />
-          <input type="text" name="reference_urls" id="reference-urls" placeholder="https://example.com/ref1.jpg, https://example.com/ref2.jpg" />
+          {# Locked by applyTrimSourceLock() while GPT Image preprocessing is on:
+             there this field holds the TRIMS (video frames), and an arbitrary
+             image dropped in generates a junk reference that then goes to the AI
+             video model for every segment. The URL box keeps carrying the staged
+             frame paths, so it goes readonly + hidden rather than disabled —
+             a disabled input submits nothing. #}
+          <div id="trim-manual-inputs">
+            <input type="file" name="reference_files" id="reference-files" accept="image/*" multiple style="margin-bottom:8px" />
+            <input type="text" name="reference_urls" id="reference-urls" placeholder="https://example.com/ref1.jpg, https://example.com/ref2.jpg, https://example.com/ref3.jpg" />
+            {% include "_drive_sa_notice.html" %}
+          </div>
+          <p class="hint" id="trim-source-lock-note" style="display:none; margin-top:0">
+            Trims can only be frames of this video — add them with
+            <strong>Add frame from source video</strong> below. The character
+            photo goes in the preprocess panel, not here.
+          </p>
+
+          <!-- Add a frame from the source video as a reference -->
+          <div style="margin-top:10px; border:1px solid var(--color-border,#e0e0e0); border-radius:6px; padding:8px 10px">
+            <div style="font-size:13px; font-weight:600; margin-bottom:6px">Add a frame from the source video</div>
+            <p class="hint" style="margin-top:0">
+              Grab a screenshot directly from the video at a given timestamp — useful as a GPT Image
+              input (combine it with a reference photo) or as an ordinary reference. The frame is
+              saved and added to the reference list above.
+            </p>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+              <label style="font-size:13px">Timestamp (s)</label>
+              <input type="number" id="frame-timestamp" min="0" step="0.1" value="0" style="width:90px" />
+              <button type="button" class="btn btn-secondary" id="add-frame-btn" onclick="addFrameFromVideo('{{ project.id }}')">
+                <span class="htmx-indicator spinner" id="add-frame-spinner" style="display:none"></span>
+                Add frame
+              </button>
+              <span id="add-frame-status" style="font-size:12px; color:var(--color-muted)"></span>
+            </div>
+            <div id="staged-frame-thumbs" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px"></div>
+          </div>
+        </div>
+
+        <!-- GPT Image reference preprocessing (optional) -->
+        <div class="form-group">
+          <details id="preprocess-details">
+            <summary style="cursor:pointer;font-weight:600">Preprocess with GPT Image (optional)</summary>
+            <p class="hint" style="margin-top:6px">
+              Run each reference image through GPT Image (image-to-image) with a per-image
+              prompt <em>before</em> it reaches Seedance/Gemini Omni — e.g. combine a
+              screenshot from the video with a reference photo into one clean character
+              image. The generated images are what the AI video model actually sees;
+              originals are kept for audit.
+            </p>
+            <label style="font-weight:400; display:flex; align-items:center; gap:6px">
+              <input type="checkbox" id="preprocess-enabled" name="preprocess_enabled" value="true" onchange="onPreprocessToggle()" />
+              Enable GPT Image preprocessing for this run
+            </label>
+            <div id="preprocess-prompts-panel" style="display:none; margin-top:10px">
+              <div style="border:1px solid var(--color-border,#e0e0e0); border-radius:6px; padding:8px 10px; margin-bottom:10px; background:var(--color-surface,#fafafa)">
+                <div style="font-size:13px; font-weight:600; margin-bottom:4px">Character reference photo (required)</div>
+                <p class="hint" style="margin-top:0">
+                  The character reference photo is sent as context to every GPT Image
+                  task (it is <strong>NOT</strong> transformed). Add the video frames as
+                  trims in the "Reference images" section below.
+                </p>
+                <input type="file" name="preprocess_reference_file" id="preprocess-reference-file" accept="image/*" style="margin-bottom:6px" />
+                <input type="text" name="preprocess_reference_url" id="preprocess-reference-url" placeholder="https://example.com/character.jpg" style="width:100%" />
+                {% include "_drive_sa_notice.html" %}
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px; margin-bottom:8px">
+                <label style="font-weight:400"><input type="radio" name="preprocess_mode" value="per_image" checked onchange="onPreprocessModeChange()" /> Generate a new image for EACH reference</label>
+                <label style="font-weight:400"><input type="radio" name="preprocess_mode" value="all_as_refs" onchange="onPreprocessModeChange()" /> Use ALL references together → one image</label>
+              </div>
+              <p class="hint" id="preprocess-prompts-hint" style="margin-top:0">
+                One prompt <strong>per line</strong>, in the same order as the TRIMS
+                (the reference images above — uploaded files first, then URLs
+                left-to-right). A blank line means "pass this trim through
+                unchanged" (no GPT Image task for it). When only one prompt is
+                given with multiple trims, that prompt is reused for every trim.
+                The character reference photo above is never transformed.
+              </p>
+              <textarea
+                id="preprocess-image-prompts"
+                rows="4"
+                placeholder="make the face match the reference photo, keep the background&#10;make a clean side profile&#10;&#10;combine the screenshot with the reference character"
+                style="width:100%; font-size:13px; resize:vertical; font-family:var(--font-mono,monospace)"
+              ></textarea>
+              <p class="hint" id="preprocess-count-hint" style="margin-bottom:0"></p>
+            </div>
+          </details>
         </div>
 
         <!-- GDrive folder -->
         <div class="form-group">
           <label for="run-gdrive">Google Drive output folder ID</label>
           <input type="text" id="run-gdrive" name="gdrive_folder_id" value="{{ gdrive_folder_id }}" placeholder="GDrive folder ID for delivery" />
+          {% with drive_sa_role="editor" %}{% include "_drive_sa_notice.html" %}{% endwith %}
           <p class="hint">Leave blank to use the server default.</p>
         </div>
 
@@ -446,6 +1214,8 @@ function copySrcLink(btn) {
           <tr>
             <th>Name</th>
             <th>Status</th>
+            <th title="AI model this run was generated with — the same tag the Final Creatives Idea column carries">Model</th>
+            <th title="What this run has already put into the Final Creatives sheet">Sent to Final</th>
             <th>Created</th>
             <th></th>
           </tr>
@@ -454,8 +1224,34 @@ function copySrcLink(btn) {
           {% for run in runs %}
           {% set rsv = run.status.value if run.status.value is defined else run.status|string %}
           <tr>
-            <td>{% if run.name %}{{ run.name }}{% else %}<em class="text-muted">unnamed</em>{% endif %}</td>
+            <td>{% if run.name %}{{ run.name }}{% else %}<em class="text-muted">unnamed</em>{% endif %}
+              {# AICP-369: who made the run, on a by-Assistant project. #}
+              {% set rl = (run_labels or {}).get(run.id) %}
+              {% if rl %}
+              <div>{% if rl.kind == "assistant" %}<span class="badge" title="Created by the assistant; its work on this run is on the run page">by Assistant · {{ rl.label }}</span>
+                {% elif rl.kind == "unconfirmed" %}<span class="badge badge-warning" title="An assistant launch has an unconfirmed outcome: this may be the assistant's run">unconfirmed</span>
+                {% else %}<span class="badge" title="Started by hand — the assistant does not automatically use this run">manual</span>{% endif %}</div>
+              {% endif %}
+            </td>
             <td><span class="badge badge-{{ rsv }}">{{ rsv }}</span></td>
+            {# Short tag (SD2 / SDf2 / SDm2 / SD25 / GO) — the full label on
+               hover. Same value the sheet's Idea column exports, so the two
+               can be read against each other. #}
+            <td style="white-space:nowrap"><code style="font-size:12px" title="{{ run.model | model_label }}">{{ run.model | model_short_label }}</code></td>
+            <td style="white-space:nowrap">
+              {# Which KIND of video reached the sheet — the run's own result, a
+                 tail edit, a captioned copy, an overlay burn — not the sheet
+                 status. "Has anything gone out from this run?" is the question
+                 this table is read for. See web_v2._final_creatives_sent. #}
+              {% set sent = final_creatives_sent.get(run.id) %}
+              {% if sent %}
+              {% for item in sent %}
+              <span class="badge badge-sent-{{ item.kind }}" title="{{ item.title }}">{{ item.kind }}{% if item.count > 1 %} ×{{ item.count }}{% endif %}</span>
+              {% endfor %}
+              {% else %}
+              <span class="text-muted">—</span>
+              {% endif %}
+            </td>
             <td class="text-muted" style="white-space:nowrap">{{ run.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
             <td class="text-right">
               <a class="btn btn-sm btn-secondary" href="/v2/runs/{{ run.id }}">View</a>
@@ -485,25 +1281,340 @@ function collectSegmentPrompts() {
   return JSON.stringify(obj);
 }
 
+// __ Stitching plan controls __
+
+function onStitchModeChange() {
+  var mode = document.querySelector('#new-run-form input[name="stitch_mode"]:checked');
+  var panel = document.getElementById('stitch-custom-panel');
+  if (panel) panel.style.display = (mode && mode.value === 'custom') ? '' : 'none';
+  // "Don't stitch" makes every clip's own audio the deliverable, which un-does
+  // the "your voice reference is discarded" warning.
+  onVoiceModeChange();
+}
+
+// Serialize the stitching controls into the stitch_plan JSON the API expects.
+// Returns null for the default ("all") mode so the field is omitted entirely.
+function collectStitchPlan() {
+  var mode = document.querySelector('#new-run-form input[name="stitch_mode"]:checked');
+  if (!mode || mode.value === 'all') return null;
+  if (mode.value === 'none') return '[]';
+  var entries = [];
+  document.querySelectorAll('#stitch-custom-panel .stitch-seg-choice').forEach(function (sel) {
+    if (sel.value === 'segment') {
+      entries.push({ kind: 'segment', segment_def_id: sel.dataset.segId });
+    } else if (sel.value.indexOf('lib:') === 0) {
+      entries.push({ kind: 'library', clip_id: sel.value.slice(4) });
+    }
+    // 'exclude' → the segment simply doesn't appear in the plan
+  });
+  var appendSel = document.getElementById('stitch-append-select');
+  if (appendSel && appendSel.value) {
+    entries.push({ kind: 'library', clip_id: appendSel.value });
+  }
+  return JSON.stringify(entries);
+}
+
+// One place that renders a rejection of the New Run form, so every guard (the
+// preprocess character-ref check, the localisation reference check, a server
+// error) looks the same. textContent, never innerHTML — the message can carry
+// a server string.
+function showRunFormError(msg) {
+  var target = document.getElementById('new-run-result');
+  if (!target) { alert(msg); return; }
+  var box = document.createElement('div');
+  box.className = 'alert alert-error';
+  box.style.cssText = 'color:var(--color-danger,#c0392b);border:1px solid var(--color-danger,#c0392b);padding:8px 10px;border-radius:6px;margin-top:8px';
+  box.textContent = '⚠ ' + msg;
+  target.textContent = '';
+  target.appendChild(box);
+}
+
+// htmx config-request hook for the New Run form: per-segment prompts + stitch plan.
+function applyRunFormExtras(event) {
+  // Localisation "speech + character" needs a reference image; the whole point
+  // of the mode is the person in it. Defined only on localisation projects.
+  if (typeof localisationSubmitBlocker === 'function') {
+    var blocked = localisationSubmitBlocker();
+    if (blocked) {
+      showRunFormError(blocked);
+      event.preventDefault();
+      return;
+    }
+  }
+  event.detail.parameters['segment_prompts'] = collectSegmentPrompts();
+  var errEl = document.getElementById('stitch-plan-err');
+  if (errEl) errEl.style.display = 'none';
+  var plan = collectStitchPlan();
+  var mode = document.querySelector('#new-run-form input[name="stitch_mode"]:checked');
+  if (mode && mode.value === 'custom' && plan === '[]') {
+    if (errEl) {
+      errEl.textContent = 'Custom plan is empty — every entry is excluded. Pick "Don\'t stitch" if you want no final video.';
+      errEl.style.display = '';
+    }
+    event.preventDefault();
+    return;
+  }
+  if (plan !== null) event.detail.parameters['stitch_plan'] = plan;
+
+  // GPT Image preprocessing: serialize the per-line prompts into a JSON list
+  // parallel to the TRIMS (the general reference_files + reference_urls).
+  // The character reference photo is a native form field (preprocess_reference_file
+  // / preprocess_reference_url) and is sent automatically by htmx.
+  var ppEnabled = document.getElementById('preprocess-enabled');
+  if (ppEnabled && ppEnabled.checked) {
+    event.detail.parameters['preprocess_enabled'] = 'true';
+    // Required: a character reference photo (file or URL) must be provided.
+    var ppFile = document.getElementById('preprocess-reference-file');
+    var ppUrl = document.getElementById('preprocess-reference-url');
+    var hasCharRef = (ppFile && ppFile.files && ppFile.files.length > 0)
+      || (ppUrl && ppUrl.value.trim() !== '');
+    if (!hasCharRef) {
+      showRunFormError('Add a character reference photo in the preprocess panel.');
+      event.preventDefault();
+      return;
+    }
+    var ta = document.getElementById('preprocess-image-prompts');
+    var raw = ta ? ta.value : '';
+    // Split on newlines, keep blank lines (pass-through markers), trim trailing
+    // empty lines so the operator can leave a few blank lines at the end without
+    // a length-mismatch error.
+    var lines = raw.split(/\r?\n/);
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+      lines.pop();
+    }
+    event.detail.parameters['preprocess_image_prompts'] = JSON.stringify(lines);
+  }
+}
+
+// __ GPT Image preprocessing toggle __
+function onPreprocessToggle() {
+  var cb = document.getElementById('preprocess-enabled');
+  var panel = document.getElementById('preprocess-prompts-panel');
+  if (!cb || !panel) return;
+  panel.style.display = cb.checked ? '' : 'none';
+  applyTrimSourceLock();
+  updateRefSectionLabel();
+  updatePreprocessCountHint();
+}
+
+// With preprocessing ON the reference field is the TRIMS — the video frames
+// whose pose the character photo is transferred onto — so it accepts frames
+// staged from this video and nothing else. Uploading a stray image there (the
+// character photo a second time, most often) costs a wasted GPT Image
+// generation AND ships a junk reference to the AI video model for every
+// segment. The API enforces the same rule; this only makes the form agree.
+function applyTrimSourceLock() {
+  var cb = document.getElementById('preprocess-enabled');
+  var box = document.getElementById('trim-manual-inputs');
+  var note = document.getElementById('trim-source-lock-note');
+  var fileInput = document.getElementById('reference-files');
+  var urlInput = document.getElementById('reference-urls');
+  var locked = !!(cb && cb.checked);
+
+  if (fileInput) {
+    if (locked) fileInput.value = '';
+    fileInput.disabled = locked;
+  }
+  if (urlInput) {
+    // Keep only staged frames: anything typed before the toggle was flipped
+    // would be rejected by the API anyway.
+    if (locked && urlInput.value) {
+      urlInput.value = urlInput.value
+        .split(',')
+        .map(function (u) { return u.trim(); })
+        .filter(function (u) { return u && u.indexOf('/staged_frames/') !== -1; })
+        .join(',');
+    }
+    urlInput.readOnly = locked;
+  }
+  if (box) box.style.display = locked ? 'none' : '';
+  if (note) note.style.display = locked ? '' : 'none';
+}
+
+function updateRefSectionLabel() {
+  var cb = document.getElementById('preprocess-enabled');
+  var label = document.getElementById('ref-section-label');
+  var hint = document.getElementById('ref-section-hint');
+  if (!label || !cb) return;
+  if (cb.checked) {
+    label.textContent = 'Trims (video frames to transform)';
+    if (hint) {
+      hint.textContent = 'Add frames with "Add frame from source video" below — trims must come from this video. Each trim is transformed by GPT Image using the character reference photo as context.';
+    }
+  } else {
+    label.textContent = 'Reference images (max {{ max_refs }})';
+    if (hint) {
+      hint.textContent = 'Upload up to {{ max_refs }} image files and/or paste comma-separated URLs below. Combined total must not exceed {{ max_refs }}.';
+    }
+  }
+}
+
+function getPreprocessMode() {
+  var checked = document.querySelector('#new-run-form input[name="preprocess_mode"]:checked');
+  return checked ? checked.value : 'per_image';
+}
+
+function onPreprocessModeChange() {
+  var mode = getPreprocessMode();
+  var ta = document.getElementById('preprocess-image-prompts');
+  var hint = document.getElementById('preprocess-prompts-hint');
+  if (mode === 'all_as_refs') {
+    if (ta) ta.rows = 2;
+    if (hint) hint.innerHTML = 'A <strong>single prompt</strong> for all trims combined with the character reference photo into one image. The result becomes the sole preprocessed reference the AI video model sees.';
+  } else {
+    if (ta) ta.rows = 4;
+    if (hint) hint.innerHTML = 'One prompt <strong>per line</strong>, in the same order as the TRIMS (the reference images above — uploaded files first, then URLs left-to-right). A blank line means "pass this trim through unchanged" (no GPT Image task for it). When only one prompt is given with multiple trims, that prompt is reused for every trim. The character reference photo above is never transformed.';
+  }
+  updatePreprocessCountHint();
+}
+
+function updatePreprocessCountHint() {
+  var hint = document.getElementById('preprocess-count-hint');
+  if (!hint) return;
+  var mode = getPreprocessMode();
+  var fileInput = document.querySelector('#new-run-form input[name="reference_files"]');
+  var urlInput = document.querySelector('#new-run-form input[name="reference_urls"]');
+  var nFiles = fileInput && fileInput.files ? fileInput.files.length : 0;
+  var nUrls = 0;
+  if (urlInput && urlInput.value) {
+    nUrls = urlInput.value.split(',').filter(function(u){ return u.trim() !== ''; }).length;
+  }
+  var total = nFiles + nUrls;
+  if (mode === 'all_as_refs') {
+    hint.textContent = total + ' trim(s) combined with the character ref into one generated image — provide one prompt.';
+  } else {
+    hint.textContent = total + ' trim(s) — provide ' + total + ' prompt line(s).';
+  }
+}
+
+// Update the count hint as the operator picks files / types URLs, and put the
+// trim inputs into whatever state the preprocess toggle is already in.
+function initRefSectionHandlers() {
+  var fi = document.querySelector('#new-run-form input[name="reference_files"]');
+  var ui = document.querySelector('#new-run-form input[name="reference_urls"]');
+  if (fi) fi.addEventListener('change', updatePreprocessCountHint);
+  if (ui) ui.addEventListener('input', updatePreprocessCountHint);
+  applyTrimSourceLock();
+}
+document.addEventListener('DOMContentLoaded', initRefSectionHandlers);
+// This partial also arrives as an htmx swap, which runs the script but never
+// fires DOMContentLoaded — the markup above is already in the DOM by now.
+initRefSectionHandlers();
+
+// __ Add a frame from the source video as a reference __
+// POST /api/v2/projects/{pid}/stage-frame?t=<ts> extracts a JPEG frame and
+// stages it; the returned local path is appended to the reference_urls field
+// (treated as an ordinary reference) and a thumbnail is shown.
+function addFrameFromVideo(projectId) {
+  var tsInput = document.getElementById('frame-timestamp');
+  var statusEl = document.getElementById('add-frame-status');
+  var spinner = document.getElementById('add-frame-spinner');
+  var thumbs = document.getElementById('staged-frame-thumbs');
+  var urlInput = document.getElementById('reference-urls');
+  if (!tsInput || !urlInput) return;
+  var t = parseFloat(tsInput.value);
+  if (!isFinite(t) || t < 0) t = 0;
+
+  spinner.style.display = '';
+  statusEl.textContent = '';
+  fetch(
+    '/api/v2/projects/' + encodeURIComponent(projectId) + '/stage-frame?t=' + encodeURIComponent(t),
+    { method: 'POST' }
+  ).then(function(r) {
+    if (!r.ok) {
+      return r.json().then(function(j) { throw new Error(j.detail || ('HTTP ' + r.status)); });
+    }
+    return r.json();
+  }).then(function(data) {
+    var path = data.path;
+    // Append the staged path to the reference URLs field (comma-separated).
+    var existing = urlInput.value.trim();
+    urlInput.value = existing ? existing + ',' + path : path;
+    // Thumbnail preview + a remove button. The button is what makes the
+    // locked (preprocessing-on) mode usable: the URL field is readonly then,
+    // so this is the only way to take a wrong frame back out.
+    var box = document.createElement('div');
+    box.style.cssText = 'position:relative; display:inline-block; text-align:center';
+    var img = document.createElement('img');
+    img.src = '/api/v2/projects/' + encodeURIComponent(projectId) + '/frame?t=' + encodeURIComponent(data.t);
+    img.title = 'frame @ ' + data.t + 's';
+    img.style.cssText = 'width:64px; height:36px; object-fit:cover; border-radius:4px; border:1px solid #ccc; display:block';
+    img.onerror = function() { this.style.display = 'none'; };
+    // The timestamp under the thumb, not only in the tooltip: with several
+    // frames staged, "which moment is which" is the whole question.
+    var cap = document.createElement('div');
+    cap.textContent = '\u23F1 ' + data.t + 's';
+    cap.style.cssText = 'font-size:10px; color:var(--color-muted); line-height:1.4';
+    var del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = '\u00d7';
+    del.title = 'Remove this frame';
+    del.style.cssText = 'position:absolute; top:-6px; right:-6px; width:18px; height:18px; line-height:16px; padding:0; border-radius:50%; border:1px solid #fff; background:rgba(0,0,0,0.6); color:#fff; font-size:12px; cursor:pointer';
+    del.onclick = function() { removeStagedFrame(path, box); };
+    box.appendChild(img);
+    box.appendChild(cap);
+    box.appendChild(del);
+    thumbs.appendChild(box);
+    statusEl.textContent = 'Added frame @ ' + data.t + 's';
+    updatePreprocessCountHint();
+  }).catch(function(err) {
+    statusEl.textContent = 'Failed: ' + (err.message || err);
+    statusEl.style.color = 'var(--color-danger,#c0392b)';
+  }).finally(function() {
+    spinner.style.display = 'none';
+  });
+}
+
+// Take one staged frame back out of the reference_urls field (and the strip).
+// Paths are opaque absolute paths, so match on the exact token.
+function removeStagedFrame(path, boxEl) {
+  var urlInput = document.getElementById('reference-urls');
+  if (urlInput) {
+    urlInput.value = urlInput.value
+      .split(',')
+      .map(function(u) { return u.trim(); })
+      .filter(function(u) { return u && u !== path; })
+      .join(',');
+  }
+  if (boxEl && boxEl.parentNode) boxEl.parentNode.removeChild(boxEl);
+  updatePreprocessCountHint();
+}
+
 function handleRunCreated(event) {
   if (event.detail.successful) {
     try {
       var data = JSON.parse(event.detail.xhr.responseText);
       if (data.run_id) {
+        // Launch advisories (AICP-340): the run IS created; just tell the
+        // operator before leaving the page.
+        if (data.warnings && data.warnings.length) {
+          window.alert('Run created, with a warning:\n\n' + data.warnings.join('\n\n'));
+        }
         window.location.href = '/v2/runs/' + data.run_id;
         return;
       }
     } catch(e) {}
+  } else {
+    // Surface server errors (400/422/500) so a rejected Run is never silent.
+    var msg = 'Run failed to start';
+    try {
+      var body = event.detail.xhr ? event.detail.xhr.responseText : '';
+      if (body) {
+        var j = JSON.parse(body);
+        if (j.detail) msg = j.detail;
+      }
+    } catch(e) {}
+    showRunFormError(String(msg));
   }
 }
 
 // __ Model → resolution options __
-// {model: [[value, label], ...]} — serialised from app/ai_models.py so this map
-// is never a hand-kept copy of the registry. Each backend supports a different
-// resolution set; rebuild the dropdown when the model changes so only valid
-// options are offered.
+// Each backend supports a different resolution set; rebuild the dropdown when
+// the model changes so only valid options are offered.
+// {model: [[value, label], ...]} — serialised from app/ai_models.py.
 var MODEL_RESOLUTIONS = {{ model_resolutions_json | safe }};
 
+// __ Model → capabilities __
 // {model: {max_clip_sec, produces_audio, label}} — serialised from the same
 // registry. Drives the model hint, the audio lock and the too-long-segment
 // warning, so none of those restate a model's limits.
@@ -515,17 +1626,68 @@ var LOCALISATION_RUN = {{ is_localisation | tojson }};
 
 // The audio choice is normally a matter of taste, but on a localisation run
 // "Original" overlays the source (untranslated) soundtrack onto the re-voiced
-// video: the delivery looks right, is spoken in the wrong language, and nothing
-// in the pipeline objects. Warn rather than block — the operator may
+// video: the delivery looks right, is spoken in the wrong language, and
+// nothing in the pipeline objects. Warn rather than block — the operator may
 // deliberately be re-running a hook that was never localised.
 function onAudioModeChange() {
   var sel = document.getElementById('run-audio-mode');
   var warn = document.getElementById('audio-localisation-warning');
   if (!sel || !warn) return;
   warn.style.display = (LOCALISATION_RUN && sel.value === 'original') ? '' : 'none';
+  // The voice warning depends on this choice too (a discarded track cannot
+  // carry a voice), so re-evaluate it whenever the audio mode moves.
+  onVoiceModeChange();
+}
+
+// Voice reference picker. Exactly one of the two inputs is enabled at a time,
+// and a disabled control is not submitted — that is what lets the server see
+// either voice_clip_id or voice_file (or neither) without any hand-encoding.
+function onVoiceModeChange() {
+  var group = document.getElementById('voice-ref-group');
+  if (!group) return;
+  var picked = document.querySelector('#new-run-form input[name="voice_mode"]:checked');
+  var mode = picked ? picked.value : 'none';
+  var sel = document.getElementById('voice-clip-select');
+  var file = document.getElementById('voice-file-input');
+  // A hidden group must submit nothing at all: onModelChange can hide it after
+  // a mode was already picked (operator switches 2.5 -> 2.0), and leaving the
+  // control enabled would post a voice the chosen model rejects with a 400.
+  var visible = group.style.display !== 'none';
+
+  if (sel) {
+    sel.style.display = (mode === 'library') ? '' : 'none';
+    sel.disabled = !(visible && mode === 'library');
+  }
+  if (file) {
+    file.style.display = (mode === 'upload') ? '' : 'none';
+    file.disabled = !(visible && mode === 'upload');
+    if (mode !== 'upload') file.value = '';
+  }
+
+  // Warn when the run would discard every generated track anyway: the backend
+  // then declines to send the reference at all (_build_submit_state), so this
+  // is the only place the operator can find out before spending credits.
+  var warn = document.getElementById('voice-audio-mode-warning');
+  var audioSel = document.getElementById('run-audio-mode');
+  if (warn && audioSel) {
+    var attached = (mode !== 'none');
+    var stitches = stitchModeProducesVideo();
+    var discarded = stitches && audioSel.value === 'original';
+    warn.style.display = (visible && attached && discarded) ? '' : 'none';
+  }
+}
+
+// True when this run will produce a stitched video — the case where audio_mode
+// decides the soundtrack. Mirrors the backend's `run_stitches` (a "don't
+// stitch" run keeps every clip's own audio regardless of audio_mode, so a
+// voice reference is always live there).
+function stitchModeProducesVideo() {
+  var mode = document.querySelector('#new-run-form input[name="stitch_mode"]:checked');
+  return !(mode && mode.value === 'none');
 }
 
 function onModelChange() {
+  if (typeof onLocalisationModelChange === 'function') onLocalisationModelChange();
   var modelSel = document.getElementById('run-model');
   var resSel = document.getElementById('run-resolution');
   var hint = document.getElementById('model-hint');
@@ -557,9 +1719,9 @@ function onModelChange() {
   // Every model has its own per-clip ceiling — say which one applies.
   if (hint) {
     if (limits) {
-      hint.textContent = limits.label + ' generates at most ' + limits.max_clip_sec
-        + 's per segment. Longer swap segments are delivered as the original, '
-        + 'un-swapped footage.';
+      hint.textContent = limits.label + ' caps each segment at ' + limits.max_clip_sec
+        + 's of generated output. A run containing a longer swap segment cannot '
+        + 's. Longer swap segments are delivered as the original, un-swapped footage.';
       hint.style.display = '';
     } else {
       hint.textContent = '';
@@ -583,7 +1745,28 @@ function onModelChange() {
       : '';
     audioNote.style.display = noAudio ? '' : 'none';
   }
+  // Only some backends accept a voice reference (AIModelSpec.max_reference_audios;
+  // Seedance 2.5 today). Hide the control entirely elsewhere rather than showing
+  // one that 400s on submit — and let onVoiceModeChange disable the inputs, so a
+  // voice picked before the model was switched is not posted to a model that
+  // rejects it.
+  var voiceGroup = document.getElementById('voice-ref-group');
+  if (voiceGroup) {
+    var showVoice = !!(limits && limits.reference_audio);
+    var wasHidden = voiceGroup.style.display === 'none';
+    voiceGroup.style.display = showVoice ? '' : 'none';
+    // Localisation defaults to a model WITHOUT the field, so the group starts
+    // hidden and the language pre-pick never got a chance to run. Switching to
+    // a model that takes a voice is the moment to do it — otherwise the picker
+    // appears empty on exactly the flow that cares most about the voice.
+    if (showVoice && wasHidden && typeof pickLocalisationVoice === 'function') {
+      pickLocalisationVoice();
+    }
+  }
+
   // The lock above can force "original" — re-evaluate the localisation warning.
+  // (onAudioModeChange calls onVoiceModeChange, which applies the group state
+  // decided just above.)
   onAudioModeChange();
 
   checkSegmentLengths();
@@ -592,9 +1775,11 @@ function onModelChange() {
 // Each model generates at most max_clip_sec per segment (ai_models.AI_MODELS in
 // the backend). The project's segmentation cap (VideoProject.max_segment_sec)
 // may be higher than the selected model's ceiling, and an operator can hand-edit
-// a segment longer still. Warn about those segments: they are skipped at submit
-// time and the stitch delivers their ORIGINAL, un-swapped footage instead — the
-// run completes and delivers, just with less swapping than was asked for.
+// a segment longer still. Such a run is REFUSED at launch
+// (api_v2._assert_no_overlong_swap_segments) because the over-long segments
+// cannot be swapped at all and would be delivered as the original footage. This
+// banner is the same rule client-side, so the operator sees which segments are
+// the problem before submitting rather than reading it back off a 400.
 function checkSegmentLengths() {
   var modelSel = document.getElementById('run-model');
   var warn = document.getElementById('model-length-warning');
@@ -620,22 +1805,89 @@ function checkSegmentLengths() {
 
   if (offending.length) {
     warn.textContent =
-      '⚠ ' + limits.label + ' generates at most ' + maxSec + 's per segment. '
-      + 'These swap segments are longer, so the ORIGINAL un-swapped footage will '
-      + 'be delivered for them: ' + offending.join(', ') + '. Split them to ≤'
-      + maxSec + 's, mark them "keep", or pick a model with a longer ceiling.';
+      '⚠ ' + limits.label + ' generates at most ' + maxSec + 's per segment, so '
+      + 'this run cannot be launched: ' + offending.join(', ')
+      + '. Those swap segments cannot be generated at all and would be delivered '
+      + 'as the ORIGINAL, un-swapped footage. Split them to ≤' + maxSec
+      + 's, mark them "keep", or switch to a model with a longer limit.';
+    warn.style.display = '';
+  } else {
+    warn.style.display = 'none';
+  }
+  checkWholeVideoClipLengths(maxSec);
+}
+
+// AICP-340: whole-video localisation keeps each segment within the
+// whole-video target, but the clip uploaded is segment + retained pre/post-roll
+// (the same window and roll trim as localisation.clip_window for this model's
+// limit). Advisory only — the server never refuses it either.
+var WHOLE_VIDEO_SCOPE = {{ 'true' if localisation_whole else 'false' }};
+var WHOLE_VIDEO_TARGET_SEC = {{ (whole_video_target_sec or 14.72) | tojson }};
+var WHOLE_VIDEO_DURATION_SEC = {{ (project.duration_sec or 0) | tojson }};
+function checkWholeVideoClipLengths(maxClip) {
+  var warn = document.getElementById('whole-video-roll-warning');
+  if (!warn) return;
+  if (!WHOLE_VIDEO_SCOPE) { warn.style.display = 'none'; return; }
+  // Same filter as the server: a CUSTOM stitch plan submits only the swap
+  // segments it lists, so an excluded segment is never uploaded.
+  var customRadio = document.querySelector('#new-run-form input[name="stitch_mode"][value="custom"]');
+  var excluded = {};
+  if (customRadio && customRadio.checked) {
+    document.querySelectorAll('#stitch-custom-panel .stitch-seg-choice').forEach(function (sel) {
+      if (sel.value !== 'segment') excluded[sel.dataset.segId] = true;
+    });
+  }
+  var over = [];
+  document.querySelectorAll('#seg-tbody .seg-row').forEach(function(row) {
+    var action = row.querySelector('.seg-action');
+    if (!action || action.value !== 'swap') return;
+    if (row.dataset.segId && excluded[row.dataset.segId]) return;
+    var s = parseFloat((row.querySelector('.seg-start') || {}).value);
+    var e = parseFloat((row.querySelector('.seg-end') || {}).value);
+    if (!isFinite(s) || !isFinite(e)) return;
+    var pre = Math.max(0, parseFloat((row.querySelector('.seg-pre') || {}).value) || 0);
+    var post = Math.max(0, parseFloat((row.querySelector('.seg-post') || {}).value) || 0);
+    var cs = Math.max(0, s - pre), ce = e + post;
+    if (WHOLE_VIDEO_DURATION_SEC > 0) ce = Math.min(WHOLE_VIDEO_DURATION_SEC, ce);
+    if (maxClip && ce - cs > maxClip) {
+      ce = Math.max(e, cs + maxClip);
+      if (WHOLE_VIDEO_DURATION_SEC > 0) ce = Math.min(WHOLE_VIDEO_DURATION_SEC, ce);
+      if (ce - cs > maxClip) cs = Math.min(s, ce - maxClip);
+    }
+    if (ce - cs > WHOLE_VIDEO_TARGET_SEC + 1e-6) {
+      var idxCell = row.querySelector('.seg-index-cell');
+      over.push('#' + (idxCell ? idxCell.textContent.trim() : '?') + ' (' + (ce - cs).toFixed(2) + 's)');
+    }
+  });
+  if (over.length) {
+    warn.textContent = '⚠ Whole video: ' + over.join(', ') + ' exceed the '
+      + WHOLE_VIDEO_TARGET_SEC + 's whole-video target once pre/post-roll is added — '
+      + 'Seedance 2.5 may truncate them to 14.72s. Reduce the rolls to stay within it. '
+      + '(Advisory: the run can still be launched.)';
     warn.style.display = '';
   } else {
     warn.style.display = 'none';
   }
 }
+// Re-check when the stitch plan changes what is submitted.
+(function bindWholeVideoStitchCheck() {
+  var form = document.getElementById('new-run-form');
+  if (!form || form._wholeVideoBound) return;
+  form._wholeVideoBound = true;
+  form.addEventListener('change', function (ev) {
+    var t = ev.target;
+    if (t && (t.name === 'stitch_mode' || (t.classList && t.classList.contains('stitch-seg-choice')))) {
+      checkSegmentLengths();
+    }
+  });
+})();
 
 // Re-check whenever segment timings/actions change (delegated so it also covers
 // rows added after load). Selects fire "change"; number inputs fire "input".
 (function bindSegmentLengthCheck() {
   var tbody = document.getElementById('seg-tbody');
-  if (!tbody || tbody._lenBound) return;
-  tbody._lenBound = true;
+  if (!tbody || tbody._segLenBound) return;
+  tbody._segLenBound = true;
   tbody.addEventListener('input', checkSegmentLengths);
   tbody.addEventListener('change', checkSegmentLengths);
 })();
@@ -918,15 +2170,16 @@ async function saveSegments(projectId) {
 }
 </script>
 
-
 {% if is_localisation %}
 <script>
 // __ Localisation New Run form (docs/localisation.md §7) __
 //
-// Two jobs, both client-side: swap the pre-filled prompt template when the mode
-// changes, and fetch a translated prompt from
+// Three jobs, all client-side: swap the pre-filled prompt template when the
+// mode changes, fetch a translated prompt from
 // POST /api/v2/projects/{pid}/localisation-prompt (which writes NOTHING — it
-// returns text this form drops into its own fields).
+// queues a background job whose answer this form polls for and drops into its
+// own fields, AICP-338), and pre-fill the stitch
+// plan with "keep the hook, drop the tail, append a language-matched clip".
 
 // {mode: template} — the two prompt constants from app/project_types.py, the
 // same ones localisation.build_prompt formats server-side.
@@ -935,6 +2188,28 @@ var LOCALISATION_PROMPTS = {{ localisation_prompts | tojson }};
 // Set once the Translate button has filled the prompt, so a later mode switch
 // can say the translated text is being thrown away rather than doing it mutely.
 var _localisationTranslated = false;
+// The model the current translated prompt was timed for (its clip limit
+// decides how much pre/post-roll the clip keeps, so where timecodes start).
+var _localisationTranslatedModel = null;
+// The warnings the last Translate returned, re-shown under the model note.
+var _lastTranslateWarnings = [];
+
+// Called from onModelChange: a prompt timed for another model may now be
+// wrong, so say so instead of letting it reach the run (AICP-335).
+function onLocalisationModelChange() {
+  if (!_localisationTranslated || _localisationTranslatedModel === null) return;
+  var modelSel = document.getElementById('run-model');
+  var base = _lastTranslateWarnings.slice();
+  if (!modelSel || modelSel.value === _localisationTranslatedModel) {
+    renderTranslateWarnings(base);
+    return;
+  }
+  renderTranslateWarnings(base.concat([
+    'The model changed after Translate: the prompt\'s timecodes were built for '
+    + _localisationTranslatedModel + '. Press Translate again before starting the '
+    + 'run — a different per-clip limit can keep a different amount of pre/post-roll.'
+  ]));
+}
 
 function localisationMode() {
   var checked = document.querySelector('#new-run-form input[name="localisation_mode"]:checked');
@@ -951,8 +2226,8 @@ function onLocalisationModeChange() {
 
   var statusEl = document.getElementById('translate-status');
   if (statusEl) {
-    // The template just replaced the prompt, translation included. Say so — the
-    // operator would otherwise submit an untranslated template.
+    // The template just replaced the prompt, translation included. Say so —
+    // the operator would otherwise submit an untranslated template.
     statusEl.textContent = _localisationTranslated
       ? 'Mode changed — the prompt was reset to the template. Press Translate again.'
       : '';
@@ -960,10 +2235,41 @@ function onLocalisationModeChange() {
   _localisationTranslated = false;
 }
 
-// Render the endpoint's `warnings` list as visible bullets. These are the "a
-// line is cut mid-sentence" / "this translation will not fit its shot" /
-// "your swap segments do not cover the hook" notes — swallowing them is how a
-// bad prompt reaches the model and a generation is paid for twice.
+// __ Voice-reference header toggle (AICP-335) __
+//
+// The timed prompt opens its Speakers block with "Speakers:". When the run
+// gets a voice reference holding the speakers' voices, the prompts that worked
+// said so: "Speakers (the reference audio contains both human voices):".
+// localisation.set_reference_audio_header is the server-side twin of this.
+var LOCALISATION_REF_AUDIO_HEADER = {{ (localisation_ref_audio_header or "") | tojson }};
+var _REF_AUDIO_HEADER_RE = /^Speakers \(the reference audio contains [^)\n]*\):$/m;
+
+// The live header: the Translate gate is re-rendered out-of-band by the
+// transcript poll and carries the current transcript's count; the page-load
+// value is only the fallback.
+function refAudioHeader() {
+  var gate = document.getElementById('translate-btn');
+  return (gate && gate.dataset.refAudioHeader) || LOCALISATION_REF_AUDIO_HEADER;
+}
+
+function setRefAudioHeader(text, on) {
+  if (!text) return text;
+  var target = on ? refAudioHeader() : 'Speakers:';
+  if (_REF_AUDIO_HEADER_RE.test(text)) return text.replace(_REF_AUDIO_HEADER_RE, function () { return target; });
+  return text.replace(/^Speakers:$/m, function () { return target; });
+}
+
+function applyRefAudioHeader() {
+  var box = document.getElementById('ref-audio-header');
+  if (!box || !refAudioHeader()) return;
+  var fields = [document.getElementById('run-prompt')];
+  document.querySelectorAll('#new-run-form .seg-prompt-field').forEach(function (t) { fields.push(t); });
+  fields.forEach(function (el) { if (el) el.value = setRefAudioHeader(el.value, box.checked); });
+}
+
+// Render the endpoint's `warnings` list as visible bullets. These are the
+// "your hook window is longer than the transcript" / "line N had no
+// translation" notes — swallowing them is how a bad prompt reaches Seedance.
 function renderTranslateWarnings(warnings) {
   var list = document.getElementById('translate-warnings');
   if (!list) return;
@@ -977,23 +2283,291 @@ function renderTranslateWarnings(warnings) {
   list.style.display = '';
 }
 
-// POST the current language + mode, then fill the run prompt and any per-segment
-// prompt textareas from the response. segment_prompts is keyed by
-// segment_def_id — the same key .seg-prompt-field carries in data-seg-id and
-// collectSegmentPrompts() sends back — and is only populated when the hook spans
-// more than one swap segment.
+// __ Translate = a background job (AICP-338) __
+//
+// POST /localisation-prompt only validates and queues: the translation runs on
+// the localise-worker, because a whole video takes minutes per model call and
+// the request used to die at nginx's 300 s budget (502). The POST answers 202
+// {job_id}; this form then polls GET .../localisation-prompt/jobs/{job_id}
+// every few seconds until it is done or failed, and fills the prompt fields
+// from `result` exactly as the synchronous answer used to. Synchronous
+// refusals (400/404/409/422/429/503) still come straight back from the POST.
+//
+// State lives on `window` rather than in `var`s: this script is part of the
+// status fragment, which htmx may swap in again, and a re-run must neither
+// reset the generation counter (an old poller would then match a new one) nor
+// lose the timer. The job id is also kept in sessionStorage, so a reload
+// resumes the poll instead of orphaning a paid translation.
+window._translateGen = window._translateGen || 0;
+var TRANSLATE_POLL_MS = 3000;
+var TRANSLATE_MAX_POLL_FAILURES = 10;
+
+function _translateStoreKey(pid) { return 'localise-job:' + pid; }
+
+function _translateStore(pid, value) {
+  try {
+    if (value) sessionStorage.setItem(_translateStoreKey(pid), JSON.stringify(value));
+    else sessionStorage.removeItem(_translateStoreKey(pid));
+  } catch (e) { /* storage disabled — the poll still works, only resume is lost */ }
+}
+
+function _translateLoad(pid) {
+  try {
+    var raw = sessionStorage.getItem(_translateStoreKey(pid));
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+function _reenableTranslate() {
+  // Re-query rather than reusing a captured button: the transcript panel may
+  // have swapped the whole gate out-of-band while the job ran, and
+  // re-enabling a button whose transcript is no longer ready would hand back a
+  // control that can only 409.
+  var live = document.getElementById('translate-btn');
+  if (live && live.dataset.transcriptStatus === 'ready') live.disabled = false;
+  syncTranslateLanguageGate();
+}
+
+// __ Translate needs a target language __
+//
+// Localisation's Language select starts blank. While it is, the Translate
+// button is held off and #translate-language-reason says why. The block is
+// marked on the button (data-lang-blocked) so that picking a language lifts
+// ONLY this block — a button disabled for its transcript or for a running job
+// stays disabled. The gate is re-rendered out-of-band by the transcript poll,
+// so this re-runs after every htmx swap (hooked once, below).
+function _runLanguageValue() {
+  var langSel = document.getElementById('run-language');
+  return langSel ? langSel.value : '';
+}
+
+function syncTranslateLanguageGate() {
+  var btn = document.getElementById('translate-btn');
+  var reason = document.getElementById('translate-language-reason');
+  var hasLang = _runLanguageValue() !== '';
+  if (reason) reason.style.display = hasLang ? 'none' : '';
+  if (!btn) return;
+  if (!hasLang) {
+    if (!btn.disabled) { btn.disabled = true; btn.dataset.langBlocked = '1'; }
+  } else if (btn.dataset.langBlocked) {
+    delete btn.dataset.langBlocked;
+    if (btn.dataset.transcriptStatus === 'ready') btn.disabled = false;
+  }
+}
+
+if (!window._translateLangGateHooked) {
+  window._translateLangGateHooked = true;
+  document.addEventListener('htmx:oobAfterSwap', syncTranslateLanguageGate);
+  document.addEventListener('htmx:afterSettle', syncTranslateLanguageGate);
+}
+
+function _fmtElapsed(ms) {
+  var s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+}
+
+function _translateFailed(message) {
+  var statusEl = document.getElementById('translate-status');
+  if (statusEl) statusEl.textContent = '';
+  renderTranslateWarnings(['Translation failed: ' + message]);
+  _reenableTranslate();
+}
+
+// Fill the run prompt and any per-segment prompt textareas from a finished
+// job's result. segment_prompts is keyed by segment_def_id — the same key
+// .seg-prompt-field carries in data-seg-id and collectSegmentPrompts() sends
+// back — and is only populated when the hook spans more than one swap segment.
+//
+// A job can take minutes, so the form may have moved on meanwhile: a result
+// for another language/mode is never applied, and a prompt the operator typed
+// into since the click is only replaced after a confirm.
+function applyTranslation(data, job) {
+  var statusEl = document.getElementById('translate-status');
+  var langSel = document.getElementById('run-language');
+  var currentLang = langSel ? langSel.value : '';
+  if (currentLang !== job.language || localisationMode() !== job.mode) {
+    if (statusEl) {
+      statusEl.textContent = 'The translation into ' + (job.language || '?')
+        + ' (' + job.mode + ') finished, but the language or mode was changed since '
+        + '— it was not applied. Press Translate again.';
+    }
+    return;
+  }
+  var promptEl = document.getElementById('run-prompt');
+  var segPrompts = data.segment_prompts || {};
+  if (_translateFormEdited(job, segPrompts)
+      && !window.confirm('The prompt (or a per-segment prompt) was edited while the '
+                         + 'translation ran. Replace it with the translation?')) {
+    if (statusEl) statusEl.textContent = 'Translation ready but not applied — your edited prompts were kept.';
+    renderTranslateWarnings(data.warnings || []);
+    return;
+  }
+  if (promptEl && data.prompt) promptEl.value = data.prompt;
+
+  document.querySelectorAll('#new-run-form .seg-prompt-field').forEach(function (t) {
+    var text = segPrompts[t.dataset.segId];
+    if (!text) return;
+    t.value = text;
+    // Open the collapsed <details> so a filled-in per-segment prompt is
+    // never hidden behind a closed summary at submit time.
+    var d = t.closest('details');
+    while (d) { d.open = true; d = d.parentElement ? d.parentElement.closest('details') : null; }
+  });
+
+  // Keep the voice-reference toggle's choice on the freshly built text.
+  applyRefAudioHeader();
+  _localisationTranslated = true;
+  // The model the job's timecodes were built for (sent with the click, so a
+  // switch while the job ran is caught by the model note below).
+  _localisationTranslatedModel = job.model || '';
+  if (statusEl) {
+    // Echo the window that was actually cut — hook_sec comes from the
+    // project (or the settings default), not from anything on this form,
+    // so it is the one number the operator can't otherwise see.
+    statusEl.textContent =
+      (data.source_language || '?') + ' → ' + (data.target_language || '?')
+      + ' · ' + ((data.lines || []).length) + ' line(s)'
+      + (data.hook_sec ? ' from the first ' + data.hook_sec.toFixed(1) + 's' : '');
+  }
+  _lastTranslateWarnings = data.warnings || [];
+  // Not a bare renderTranslateWarnings: the model may have been switched
+  // while the job ran, and its note must survive (AICP-335).
+  onLocalisationModelChange();
+}
+
+// What the operator could have typed into since the click: the run prompt
+// and every per-segment prompt. Captured when the job starts (or resumes) and
+// compared before a result overwrites any of them.
+function _translateFormSnapshot() {
+  var promptEl = document.getElementById('run-prompt');
+  var segs = {};
+  document.querySelectorAll('#new-run-form .seg-prompt-field').forEach(function (t) {
+    segs[t.dataset.segId] = t.value;
+  });
+  return { prompt: promptEl ? promptEl.value : null, segs: segs };
+}
+
+function _translateFormEdited(job, segPrompts) {
+  var before = job.formAtSubmit;
+  if (!before) return false;
+  var promptEl = document.getElementById('run-prompt');
+  if (promptEl && before.prompt !== null && promptEl.value !== before.prompt) return true;
+  var edited = false;
+  document.querySelectorAll('#new-run-form .seg-prompt-field').forEach(function (t) {
+    // Only fields this result would overwrite matter.
+    if (!segPrompts[t.dataset.segId]) return;
+    if (t.value !== (before.segs[t.dataset.segId] || '')) edited = true;
+  });
+  return edited;
+}
+
+// One poll of a queued translate job; re-arms itself while it is queued or
+// running. `gen` ties it to the click that started it: a newer Translate
+// bumps window._translateGen and this chain stops on its next tick.
+function pollTranslateJob(job, gen, failures) {
+  if (gen !== window._translateGen) return;
+  var statusEl = document.getElementById('translate-status');
+  var url = '/api/v2/projects/' + encodeURIComponent(job.projectId)
+    + '/localisation-prompt/jobs/' + encodeURIComponent(job.jobId);
+
+  function retryLater(reason) {
+    if (gen !== window._translateGen) return;
+    if (failures + 1 >= TRANSLATE_MAX_POLL_FAILURES) {
+      // The job id stays in sessionStorage: a reload picks the poll up again.
+      _translateFailed('lost contact with the job queue (' + reason + '). '
+        + 'Reload the page to check on it again.');
+      return;
+    }
+    if (statusEl) statusEl.textContent = 'Translating… (' + reason + ', retrying)';
+    var delay = Math.min(30000, TRANSLATE_POLL_MS * Math.pow(2, failures));
+    window._translateTimer = setTimeout(function () {
+      pollTranslateJob(job, gen, failures + 1);
+    }, delay);
+  }
+
+  fetch(url, { cache: 'no-store' })
+    .then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        return { r: r, data: data };
+      });
+    })
+    .then(function (res) {
+      if (gen !== window._translateGen) return;
+      var r = res.r, data = res.data;
+      if (!r.ok) {
+        if (r.status >= 500) { retryLater('HTTP ' + r.status); return; }
+        _translateStore(job.projectId, null);
+        _translateFailed(apiErrorText(data, r));
+        return;
+      }
+      if (data.status === 'queued' || data.status === 'running') {
+        if (statusEl) {
+          statusEl.textContent =
+            (data.status === 'queued' ? 'Waiting for the translation worker… ' : 'Translating… ')
+            + _fmtElapsed(Date.now() - job.startedAt)
+            + ' — a whole video can take several minutes; the form stays editable.';
+        }
+        window._translateTimer = setTimeout(function () {
+          pollTranslateJob(job, gen, 0);
+        }, TRANSLATE_POLL_MS);
+        return;
+      }
+      _translateStore(job.projectId, null);
+      if (data.status === 'done' && data.result) {
+        applyTranslation(data.result, job);
+        _reenableTranslate();
+        return;
+      }
+      if (data.status === 'expired') {
+        _translateFailed('the job is no longer available (it expired, or the '
+          + 'queue was restarted). Press Translate again.');
+        return;
+      }
+      var err = data.error || {};
+      // 409 = the project changed under the job (re-transcribed, segments
+      // edited). Re-render the transcript panel so the button catches up.
+      if (err.status_code === 409 && typeof refreshTranscriptPanel === 'function') {
+        refreshTranscriptPanel(job.projectId);
+      }
+      _translateFailed(err.detail || 'unknown error');
+    })
+    .catch(function (e) { retryLater('network error: ' + (e.message || e)); });
+}
+
+// POST the current language + mode; on 202 start polling the job.
 function translateHook(projectId) {
   var btn = document.getElementById('translate-btn');
   var statusEl = document.getElementById('translate-status');
   var langSel = document.getElementById('run-language');
   if (!btn) return;
+  if (!langSel || !langSel.value) {
+    syncTranslateLanguageGate();
+    renderTranslateWarnings(['Choose the Language above first — it is the language the hook is translated into.']);
+    return;
+  }
 
   var body = new FormData();
   body.append('language', langSel ? langSel.value : '');
   body.append('swap_character', localisationMode() === 'swap' ? 'true' : 'false');
+  // The run's model: its per-clip limit decides how much pre/post-roll the
+  // clip keeps, and so where the prompt's timecodes start (AICP-335).
+  var modelSel = document.getElementById('run-model');
+  if (modelSel && modelSel.value) body.append('model', modelSel.value);
+
+  var gen = ++window._translateGen;
+  clearTimeout(window._translateTimer);
+  var job = {
+    projectId: projectId,
+    language: langSel ? langSel.value : '',
+    mode: localisationMode(),
+    model: modelSel ? modelSel.value : '',
+    formAtSubmit: _translateFormSnapshot(),
+    startedAt: Date.now(),
+    jobId: null,
+  };
 
   btn.disabled = true;
-  if (statusEl) statusEl.textContent = 'Translating…';
+  if (statusEl) statusEl.textContent = 'Starting translation…';
   renderTranslateWarnings([]);
 
   fetch('/api/v2/projects/' + encodeURIComponent(projectId) + '/localisation-prompt',
@@ -1016,53 +2590,69 @@ function translateHook(projectId) {
       });
     })
     .then(function (data) {
-      var promptEl = document.getElementById('run-prompt');
-      if (promptEl && data.prompt) promptEl.value = data.prompt;
-
-      var segPrompts = data.segment_prompts || {};
-      document.querySelectorAll('#new-run-form .seg-prompt-field').forEach(function (t) {
-        var text = segPrompts[t.dataset.segId];
-        if (!text) return;
-        t.value = text;
-        // Open the collapsed <details> so a filled-in per-segment prompt is
-        // never hidden behind a closed summary at submit time.
-        var d = t.closest('details');
-        while (d) { d.open = true; d = d.parentElement ? d.parentElement.closest('details') : null; }
+      if (gen !== window._translateGen) return;
+      if (!data.job_id) throw new Error('the server did not return a job id');
+      job.jobId = data.job_id;
+      _translateStore(projectId, {
+        jobId: job.jobId, language: job.language, mode: job.mode, model: job.model,
+        startedAt: job.startedAt,
       });
-
-      _localisationTranslated = true;
-      if (statusEl) {
-        // Echo the window that was actually cut — hook_sec comes from the
-        // project's analyzed segments (or the settings default), not from
-        // anything on this form, so it is the one number the operator cannot
-        // otherwise see.
-        statusEl.textContent =
-          (data.source_language || '?') + ' → ' + (data.target_language || '?')
-          + ' · ' + ((data.lines || []).length) + ' line(s)'
-          + (data.hook_sec ? ' from the first ' + data.hook_sec.toFixed(1) + 's' : '');
-      }
-      renderTranslateWarnings(data.warnings || []);
+      pollTranslateJob(job, gen, 0);
     })
     .catch(function (err) {
-      if (statusEl) statusEl.textContent = '';
-      renderTranslateWarnings(['Translation failed: ' + (err.message || err)]);
-    })
-    .finally(function () {
-      // Re-query rather than reusing `btn`: the transcript panel may have
-      // swapped the whole gate out-of-band while this request was in flight,
-      // and re-enabling a button whose transcript is no longer ready would hand
-      // back a control that can only 409.
-      var live = document.getElementById('translate-btn');
-      if (live && live.dataset.transcriptStatus === 'ready') live.disabled = false;
+      if (gen !== window._translateGen) return;
+      _translateFailed(err.message || err);
     });
 }
 
-// "Speech + character" replaces the person on screen, so it cannot work without
-// a reference image. Blocked client-side because the API cannot tell the two
-// modes apart — the mode is a form-level choice that only picks a prompt
-// template, so a swap-mode run with no reference is a perfectly valid request
-// that quietly produces the wrong video.
+// A reload (or an htmx re-render of this fragment) while a translation is
+// still running: pick its poll up again with the form set back to the
+// language and mode it was started with, so the result can be applied.
+(function resumeTranslateJob() {
+  var pid = {{ project.id | tojson }};
+  if (!document.getElementById('translate-btn')) return;
+  var saved = _translateLoad(pid);
+  if (!saved || !saved.jobId) return;
+  if (!(Date.now() - (saved.startedAt || 0) < 6 * 3600 * 1000)) { _translateStore(pid, null); return; }
+  var langSel = document.getElementById('run-language');
+  if (langSel && saved.language && langSel.value !== saved.language) {
+    langSel.value = saved.language;
+    if (langSel.value !== saved.language) { _translateStore(pid, null); return; }
+    langSel.dispatchEvent(new Event('change'));
+  }
+  if (saved.mode && localisationMode() !== saved.mode) {
+    var radio = document.querySelector('#new-run-form input[name="localisation_mode"][value="' + saved.mode + '"]');
+    if (!radio) { _translateStore(pid, null); return; }
+    radio.checked = true;
+    onLocalisationModeChange();
+  }
+  // The model it was timed for: put the form back on it, so the result does
+  // not arrive under a "model changed" note the operator never caused.
+  var modelSel = document.getElementById('run-model');
+  if (modelSel && saved.model && modelSel.value !== saved.model) {
+    modelSel.value = saved.model;
+    if (modelSel.value === saved.model) modelSel.dispatchEvent(new Event('change'));
+  }
+  var btn = document.getElementById('translate-btn');
+  if (btn) btn.disabled = true;
+  var gen = ++window._translateGen;
+  clearTimeout(window._translateTimer);
+  pollTranslateJob({
+    projectId: pid, jobId: saved.jobId, language: saved.language, mode: saved.mode,
+    model: saved.model || (modelSel ? modelSel.value : ''),
+    formAtSubmit: _translateFormSnapshot(), startedAt: saved.startedAt,
+  }, gen, 0);
+})();
+
+// Called from applyRunFormExtras. Returns a message when the run must not be
+// submitted, or null when it may.
 function localisationSubmitBlocker() {
+  // A blank language would export as English (a bare Job ID) — the one thing a
+  // localisation run must never be by accident.
+  if (_runLanguageValue() === '') {
+    return 'Choose the Language in the Localisation block — the language this run is '
+      + 'localised into.';
+  }
   if (localisationMode() !== 'swap') return null;
   var files = document.querySelector('#new-run-form input[name="reference_files"]');
   var urls = document.getElementById('reference-urls');
@@ -1073,25 +2663,201 @@ function localisationSubmitBlocker() {
     + 'image: upload one, paste a URL, or switch to "Speech only".';
 }
 
-(function bindLocalisationSubmitGuard() {
-  var form = document.getElementById('new-run-form');
-  if (!form || form._locGuardBound) return;
-  form._locGuardBound = true;
-  form.addEventListener('submit', function (event) {
-    var blocker = localisationSubmitBlocker();
-    if (!blocker) return;
-    event.preventDefault();
-    event.stopPropagation();
-    window.alert(blocker);
-  }, true);
-})();
+// __ Stitch tail: pick the library clip that speaks the run's language __
+//
+// Cleared once the operator picks a tail by hand — the language dropdown must
+// not silently overwrite a deliberate choice.
+var _tailAutoPicked = true;
 
-// Re-stamp the template the server already rendered (same text) and show the
-// reference-required hint for the mode the registry defaulted to. Runs on both
-// paths because this fragment arrives via HTMX swap as often as via page load —
-// a DOMContentLoaded-only binding would never fire on the normal path.
-document.addEventListener('DOMContentLoaded', onLocalisationModeChange);
-onLocalisationModeChange();
+// Whole-video scope (AICP-340): every second is re-spoken, so the stitch plan
+// is left at its default (all segments, nothing appended) — a library tail
+// would make the delivered video longer than its source.
+var LOCALISATION_WHOLE = {{ 'true' if localisation_whole else 'false' }};
+
+function pickLocalisationTail() {
+  if (LOCALISATION_WHOLE) return;
+  var sel = document.getElementById('stitch-append-select');
+  var langSel = document.getElementById('run-language');
+  var statusEl = document.getElementById('stitch-tail-status');
+  if (!sel || !langSel) return;
+  if (!_tailAutoPicked) return;
+
+  var lang = langSel.value;
+  if (!lang) {
+    // No language yet: a blank would "match" every language-agnostic clip.
+    sel.value = '';
+    if (statusEl) {
+      statusEl.textContent = 'Choose the Language in the Localisation block — the tail '
+        + 'is auto-selected to match it.';
+      statusEl.style.color = '';
+      statusEl.style.display = '';
+    }
+    return;
+  }
+  var match = null;
+  // Options are rendered newest-first, so the first match is the newest clip
+  // in that language.
+  for (var i = 0; i < sel.options.length; i++) {
+    var opt = sel.options[i];
+    if (opt.value && opt.dataset.lang === lang) { match = opt; break; }
+  }
+  sel.value = match ? match.value : '';
+  if (statusEl) {
+    statusEl.textContent = match
+      ? 'Tail auto-selected: ' + match.textContent.replace(/\s+/g, ' ').trim()
+      : 'No library clip is tagged with this language — the hook would be delivered '
+        + 'on its own. Pick a tail here, or add a language-tagged clip in the Library.';
+    statusEl.style.color = match ? '' : 'var(--color-danger,#c0392b)';
+    statusEl.style.display = '';
+  }
+}
+
+// The operator picked a tail by hand: stop re-picking on language changes, and
+// say so, so a later language switch that leaves the tail alone is not a
+// mystery.
+function onTailPickedByHand() {
+  _tailAutoPicked = false;
+  var statusEl = document.getElementById('stitch-tail-status');
+  if (!statusEl) return;
+  statusEl.textContent = 'Tail chosen by hand — changing the language no longer re-picks it.';
+  statusEl.style.color = '';
+  statusEl.style.display = '';
+}
+
+// A localisation run is re-speaking the creative in a new language, so the
+// voice matters more here than anywhere else — pre-pick the language-matched
+// one exactly as the tail is picked above. Stays fully editable.
+var _voiceAutoPicked = true;
+function pickLocalisationVoice() {
+  var group = document.getElementById('voice-ref-group');
+  var sel = document.getElementById('voice-clip-select');
+  var langSel = document.getElementById('run-language');
+  var statusEl = document.getElementById('voice-ref-status');
+  if (!group || !sel || !langSel) return;
+  if (!_voiceAutoPicked) return;
+  // Nothing to pre-pick for a model that takes no voice reference, or when the
+  // library has no voices at all.
+  if (group.style.display === 'none' || sel.options.length === 0) return;
+
+  var lang = langSel.value;
+  var match = null;
+  // Rendered newest-first, so the first match is the newest voice in that language.
+  // A blank language matches nothing (it would otherwise pick an untagged voice).
+  for (var i = 0; lang && i < sel.options.length; i++) {
+    var opt = sel.options[i];
+    if (opt.value && opt.dataset.lang === lang) { match = opt; break; }
+  }
+  if (!match) {
+    // Drop a PREVIOUS auto-pick before warning. Without this the voice chosen
+    // for the old language stays selected and is still submitted, so the run
+    // is re-spoken in the new language by a voice sampled from the old one —
+    // and the warning below ("the model will invent one") is simply false.
+    // Only an AUTO pick is cleared: _voiceAutoPicked is still true here, so a
+    // hand-picked voice never reaches this line (see onVoicePickedByHand).
+    var noneRadio = document.querySelector('#new-run-form input[name="voice_mode"][value="none"]');
+    if (noneRadio && !noneRadio.disabled) {
+      noneRadio.checked = true;
+      sel.value = '';
+      onVoiceModeChange();
+    }
+    if (statusEl) {
+      statusEl.textContent = lang
+        ? 'No library voice is tagged with this language — the model '
+          + 'will invent one unless you pick or upload a voice.'
+        : 'Choose the Language in the Localisation block — the voice is auto-selected '
+          + 'to match it.';
+      statusEl.style.color = lang ? 'var(--color-danger,#c0392b)' : '';
+      statusEl.style.display = '';
+    }
+    return;
+  }
+
+  var libRadio = document.querySelector('#new-run-form input[name="voice_mode"][value="library"]');
+  if (libRadio && !libRadio.disabled) {
+    libRadio.checked = true;
+    sel.value = match.value;
+    onVoiceModeChange();
+    if (statusEl) {
+      statusEl.textContent = 'Voice auto-selected: '
+        + match.textContent.replace(/\s+/g, ' ').trim();
+      statusEl.style.color = '';
+      statusEl.style.display = '';
+    }
+  }
+}
+
+// Same contract as onTailPickedByHand: once the operator touches the voice,
+// a later language change must not silently overwrite their choice.
+function onVoicePickedByHand() {
+  _voiceAutoPicked = false;
+  var statusEl = document.getElementById('voice-ref-status');
+  if (!statusEl) return;
+  statusEl.textContent = 'Voice chosen by hand — changing the language no longer re-picks it.';
+  statusEl.style.color = '';
+  statusEl.style.display = '';
+}
+
+// Pre-fill the stitch plan the way a localisation run is always stitched:
+// the hook (the swap segment) is kept, the rest of the source (the keep
+// segment) is dropped, and a language-matched tail is appended in its place.
+// Every control stays editable — this is a starting point, not a lock.
+var _localisationInit = false;
+function initLocalisationRunForm() {
+  if (_localisationInit) return;
+  _localisationInit = true;
+
+  // Re-stamps the template the server already rendered (same text) and shows
+  // the reference-required hint for the mode the registry defaulted to.
+  onLocalisationModeChange();
+
+  var langSelGate = document.getElementById('run-language');
+  if (langSelGate) langSelGate.addEventListener('change', syncTranslateLanguageGate);
+  syncTranslateLanguageGate();
+
+  var langSelEarly = document.getElementById('run-language');
+  if (LOCALISATION_WHOLE) {
+    // No hook/tail pre-fill at all; only the language-matched voice pick.
+    var voiceSelW = document.getElementById('voice-clip-select');
+    if (voiceSelW) voiceSelW.addEventListener('change', onVoicePickedByHand);
+    document.querySelectorAll('#new-run-form input[name="voice_mode"]').forEach(function (r) {
+      r.addEventListener('change', onVoicePickedByHand);
+    });
+    if (langSelEarly) langSelEarly.addEventListener('change', pickLocalisationVoice);
+    pickLocalisationVoice();
+    return;
+  }
+
+  var customRadio = document.querySelector('#new-run-form input[name="stitch_mode"][value="custom"]');
+  if (customRadio) {
+    customRadio.checked = true;
+    onStitchModeChange();
+  }
+  var details = document.getElementById('stitch-details');
+  if (details) details.open = true;
+
+  document.querySelectorAll('#stitch-custom-panel .stitch-seg-choice').forEach(function (sel) {
+    sel.value = (sel.dataset.action === 'swap') ? 'segment' : 'exclude';
+  });
+
+  var appendSel = document.getElementById('stitch-append-select');
+  if (appendSel) appendSel.addEventListener('change', onTailPickedByHand);
+  var langSel = document.getElementById('run-language');
+  if (langSel) {
+    langSel.addEventListener('change', pickLocalisationTail);
+    langSel.addEventListener('change', pickLocalisationVoice);
+  }
+  var voiceSel = document.getElementById('voice-clip-select');
+  if (voiceSel) voiceSel.addEventListener('change', onVoicePickedByHand);
+  document.querySelectorAll('#new-run-form input[name="voice_mode"]').forEach(function (r) {
+    r.addEventListener('change', onVoicePickedByHand);
+  });
+  pickLocalisationTail();
+  pickLocalisationVoice();
+}
+
+document.addEventListener('DOMContentLoaded', initLocalisationRunForm);
+// Fragment may be swapped in by HTMX after DOMContentLoaded already fired.
+initLocalisationRunForm();
 </script>
 {% endif %}
 

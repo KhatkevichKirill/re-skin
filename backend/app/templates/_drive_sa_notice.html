@@ -1,0 +1,32 @@
+{#- Shared "share this with the service account" notice (AICP-274).
+
+    Include next to any input that takes a Google Drive link or ID:
+
+        {% with drive_sa_role="editor" %}{% include "_drive_sa_notice.html" %}{% endwith %}
+
+    drive_sa_role: "editor" for delivery folders (re-skin writes there),
+    anything else / unset for sources (re-skin only reads, Viewer is enough).
+    drive_sa_email() is a Jinja global registered on every templates env
+    (app/drive_sa.py); it returns None when the key file is unreadable, in which
+    case the sentence is kept but the address and Copy button are omitted.
+    The Copy button is wired by /static/drive_sa_notice.js via event delegation
+    (no inline script), so it also works inside HTMX-swapped fragments. -#}
+{%- set _sa_email = drive_sa_email() if drive_sa_email is defined else none -%}
+{%- if drive_sa_role == "editor" -%}
+  {%- set _what = "The folder" -%}
+  {%- set _access = "Editor access" -%}
+{%- else -%}
+  {%- set _what = "The file or folder" -%}
+  {%- set _access = "Viewer access (Editor for delivery folders)" -%}
+{%- endif -%}
+<p class="hint drive-sa-notice" role="note">
+  {{ _what }} must be shared with
+  {% if _sa_email -%}
+  <code class="drive-sa-email">{{ _sa_email }}</code>
+  <button type="button" class="btn btn-sm btn-secondary drive-sa-copy"
+          data-copy-text="{{ _sa_email }}" title="Copy the service-account e-mail">Copy</button>
+  {%- else -%}
+  the re-skin service account (its address could not be read from the key file; ask an admin)
+  {%- endif %}
+  ({{ _access }}). Otherwise the app fails later with a 404.
+</p>

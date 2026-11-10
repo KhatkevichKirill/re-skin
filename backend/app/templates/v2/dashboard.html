@@ -1,7 +1,10 @@
 {% extends "base.html" %}
+{% from "project_source_cell.html" import source_cell %}
+{% from "partials/filter_menu.html" import filter_menu %}
 {% block title %}Projects — re-skin v2{% endblock %}
 
 {% block content %}
+{% import "partials/autopilot_mode.html" as mp %}
 
 <!-- ── New Project Form ── -->
 <div class="card">
@@ -37,25 +40,45 @@
           <p class="hint" id="project-type-hint"></p>
         </div>
 
+        <!-- Mode (AICP-363; cards + localisation fields AICP-378, docs/autopilot-operator-ux.md §1).
+             Manual = today's behaviour; by Assistant = an autopilot runs the type's flow. -->
+        {{ mp.mode_picker("new-project", "mode", "autopilot_params") }}
+
+        <!-- Localisation scope (AICP-340) — shown with the hook group below -->
+        <div class="form-group" id="new-project-scope-group" style="display:none">
+          <label for="new-project-localisation-scope">What to localise</label>
+          {# Disabled while hidden, so a non-localisation project never posts
+             "whole" (api_v2._validate_localisation_scope 400s on it). #}
+          <select id="new-project-localisation-scope" name="localisation_scope" disabled>
+            <option value="hook" selected>Hook only — swap the hook, append a library tail</option>
+            <option value="whole">Whole video — swap segments at scene cuts (≤ {{ "%g"|format(localisation_whole_video_max_sec) }}s each)</option>
+          </select>
+          <p class="hint">
+            <em>Whole video</em> re-speaks every second: analysis cuts the video into swap
+            segments at scene changes, each at most {{ "%g"|format(localisation_whole_video_max_sec) }}s,
+            and the hook length below is not used.
+          </p>
+        </div>
+
         <!-- Hook length — only meaningful for the hook-split (localisation) flow -->
         <div class="form-group" id="new-project-hook-group" style="display:none">
           <label for="new-project-hook-sec">Hook length (s)</label>
           {# min is 0.1, not 0: api_v2._validate_hook_sec REJECTS 0 with a 400
              (a zero-length hook is a segment no model can generate), so a
              browser that accepts it here would only move the refusal to the
-             server. Blank still means "use the default" — an empty number input
-             posts "" and never trips min. #}
+             server. Blank still means "use the default" — an empty number
+             input posts "" and never trips min. #}
           <input type="number" id="new-project-hook-sec" name="hook_sec"
                  min="0.1" step="0.1" placeholder="{{ "%g"|format(localisation_default_hook_sec) }}" />
           <p class="hint">
             How much of the front of the video is the <strong>hook</strong> — the only part
             that gets re-generated in the new language. Analysis cuts one <em>swap</em>
-            segment over <code>[0, hook]</code> and leaves the rest as one <em>keep</em>
-            segment, delivered as the original, untranslated footage.
+            segment over <code>[0, hook]</code> and leaves the rest as <em>keep</em>, to be
+            replaced at stitch time by a language-matched tail from the
+            <a href="/v2/library" target="_blank">library</a>.
             Leave blank for the {{ "%g"|format(localisation_default_hook_sec) }}s default.
             Applied when the video is <strong>analyzed</strong>, so it is the value at
-            creation time that matters (change it later on the project page and
-            re-analyze).
+            creation time that matters.
             <br />
             Keep it at or above the minimum clip length of the model you intend to run
             (Seedance 2.5 needs <strong>4s</strong>): a shorter hook is padded forward at
@@ -77,6 +100,7 @@
             <div style="flex:1">
               <label style="font-weight:400">Google Drive link</label>
               <input type="text" name="gdrive_link" placeholder="https://drive.google.com/file/d/…" />
+              {% include "_drive_sa_notice.html" %}
             </div>
           </div>
           <p class="hint">The prompt and reference images are entered when you create a Run, not here.</p>
@@ -115,7 +139,7 @@
             produce the over-long segments, so it delivers the <strong>original,
             un-swapped footage</strong> for them and flags the run as partly swapped.
             Timing and audio still line up. Pick the cap that matches the model you
-            intend to run — you can change it later on the project page and re-analyze.
+            intend to run.
           </p>
         </div>
 
@@ -131,7 +155,38 @@
   </details>
 </div>
 
+{{ mp.mode_script() }}
 <script>
+// Apply the selected project type's defaults: its one-line explanation, the
+// hook-length field (only the hook-split flow has a hook), and its
+// default_mute_source. Picking a type is a deliberate act, so the checkbox is
+// re-stamped on every change — the operator can still flip it afterwards, and
+// leaving a stale "off" behind on a type that needs it on is the worse failure
+// (the model hears, and reproduces, the source language).
+function onProjectTypeChange() {
+  var sel = document.getElementById('new-project-type');
+  var hint = document.getElementById('project-type-hint');
+  if (!sel || !hint) return;
+  var opt = sel.options[sel.selectedIndex];
+  hint.textContent = (opt && opt.dataset.hint) || '';
+
+  var hookGroup = document.getElementById('new-project-hook-group');
+  if (hookGroup) {
+    hookGroup.style.display = (opt && opt.dataset.hook === '1') ? '' : 'none';
+  }
+  var scopeGroup = document.getElementById('new-project-scope-group');
+  var scopeSel = document.getElementById('new-project-localisation-scope');
+  if (scopeGroup && scopeSel) {
+    var isHook = !!(opt && opt.dataset.hook === '1');
+    scopeGroup.style.display = isHook ? '' : 'none';
+    scopeSel.disabled = !isHook;
+  }
+  var mute = document.getElementById('new-project-mute-source');
+  if (mute) mute.checked = !!(opt && opt.dataset.mute === '1');
+}
+onProjectTypeChange();
+apMode.init('new-project', {typeSelect: 'new-project-type', scopeSelect: 'new-project-localisation-scope'});
+
 function handleProjectCreated(event) {
   if (event.detail.successful) {
     try {
@@ -151,6 +206,71 @@ function handleProjectCreated(event) {
     <h2>All Projects</h2>
     <span class="text-muted" style="font-size:12px; margin-left:auto">click ▸ to see a project's runs</span>
   </div>
+
+  <!-- ── Filter bar ──────────────────────────────────────────────────────
+       Type filters the PROJECT; everything else filters its RUNS, and a
+       project is listed when one run matches all of them at once. Ticked
+       boxes inside one control are ORed, the controls are ANDed.
+       Parsed by web_v2._run_filter_conditions, which the runs pivot reuses —
+       so an expanded project shows only the runs that made it match.
+
+       One row, one control shape: every filter is a dropdown that names
+       itself while idle and shows its selection once active (see
+       partials/filter_menu.html), so none of them needs a caption stacked
+       above it and the whole set stays on a single line. Project-level filter
+       first, then the run-level ones, then the dates. -->
+  <form method="get" action="/v2/" class="filter-bar">
+    <input type="text" class="filter-search" id="filter-run-id" name="run_id"
+           value="{{ filter.run_id }}" placeholder="Run ID…" aria-label="Run ID"
+           title="Filter by run id — the short id shown in the UI is enough" />
+
+    {{ filter_menu("project_type", "Type", filter_options.project_type, filter.project_type) }}
+    {{ filter_menu("model", "Model", filter_options.model, filter.model) }}
+    {{ filter_menu("lang", "Language", filter_options.lang, filter.lang) }}
+    {{ filter_menu("resolution", "Resolution", filter_options.resolution, filter.resolution) }}
+    {# One question, not two: the retired "Caption Demo" tab counts the same
+       as "Final Creatives" — what matters is whether ANYTHING from the run
+       (its result, a tail edit, a captioned copy, an overlay) ever reached a
+       spreadsheet. "Not sent" is the whole point: it lists the leftovers.
+       Radios, not checkboxes: a run either exported something or it did not,
+       so there is nothing to multi-select. #}
+    {{ filter_menu("sent", "Sheet", filter_options.sent, filter.sent, mode="single",
+                   title="Has anything from the run reached a spreadsheet?") }}
+
+    {# Run dates — two inputs behind one dropdown, so they cost one slot like
+       every other filter. The button spells the range out, which is why the
+       panel no longer has to be forced open to keep an active date visible. #}
+    <details class="filter-menu{% if filter.date_from or filter.date_to %} is-active{% endif %}"
+             data-filter-label="Dates">
+      <summary title="Filter by run date">
+        <span class="filter-menu-label">
+          {%- if filter.date_from or filter.date_to -%}
+            Dates: {{ filter.date_from or "…" }} → {{ filter.date_to or "…" }}
+          {%- else -%}
+            Dates
+          {%- endif -%}
+        </span>
+      </summary>
+      <div class="filter-menu-panel filter-menu-panel-wide">
+        <label class="filter-panel-heading">Run date from</label>
+        <input type="date" name="date_from" value="{{ filter.date_from }}"
+               onchange="updateDateFilterLabel(this)" />
+        <label class="filter-panel-heading" style="margin-top:8px">to</label>
+        <input type="date" name="date_to" value="{{ filter.date_to }}"
+               onchange="updateDateFilterLabel(this)" />
+      </div>
+    </details>
+
+    <button type="submit" class="btn btn-sm btn-primary">Filter</button>
+    {% if filters_active %}
+    <a class="btn btn-sm btn-secondary" href="/v2/">Clear</a>
+    <span class="filter-summary">
+      {% if pivot_runs %}Showing projects with a matching run, expanded to those runs
+      {% else %}Showing matching projects{% endif %} ({{ projects|length }})
+    </span>
+    {% endif %}
+  </form>
+
   {% if projects %}
   <table>
     <thead>
@@ -167,20 +287,21 @@ function handleProjectCreated(event) {
     <tbody>
       {% for project in projects %}
       {% set sv = project.status.value if project.status.value is defined else project.status|string %}
+      {# Runs this project matched on, pre-rendered when a run filter is active
+         (see the pivot row below); undefined otherwise, and the pivot is lazy. #}
+      {% set matched = pivot_runs.get(project.id) %}
       <tr id="proj-row-{{ project.id }}">
         <td>
           <button type="button" class="btn btn-sm btn-secondary pivot-toggle"
                   title="Show runs" onclick="toggleRuns('{{ project.id }}', this)"
-                  style="padding:2px 8px">▸</button>
+                  style="padding:2px 8px">{% if matched %}▾{% else %}▸{% endif %}</button>
         </td>
         <td>
           {% if project.name %}<strong>{{ project.name }}</strong>{% else %}<em class="text-muted">unnamed</em>{% endif %}
           <div><code style="font-size:11px;color:var(--color-muted)">{{ project.id[:8] }}…</code></div>
         </td>
-        <td style="font-size:12px">{{ project.project_type | project_type_label }}</td>
-        <td style="max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap" title="{{ project.source_ref }}">
-          {{ project.source_ref }}
-        </td>
+        <td style="white-space:nowrap">{{ project.project_type | project_type_label }}</td>
+        <td style="white-space:nowrap">{{ source_cell(project) }}</td>
         <td><span class="badge badge-{{ sv }}">{{ sv }}</span></td>
         <td class="text-muted" style="white-space:nowrap">{{ project.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
         <td class="text-right" style="white-space:nowrap">
@@ -189,11 +310,23 @@ function handleProjectCreated(event) {
                   onclick="deleteProject('{{ project.id }}', this)">Delete</button>
         </td>
       </tr>
-      <tr id="runs-row-{{ project.id }}" class="runs-row" style="display:none">
+      {# With a run filter active the matching runs are rendered here directly
+         (one query for the whole page in web_v2._pivot_runs_by_project) instead
+         of one lazy HTMX fetch per project — the filtered view exists to be
+         READ, so it must not need a click per row. Unfiltered, the pivot stays
+         lazy exactly as before. #}
+      <tr id="runs-row-{{ project.id }}" class="runs-row"
+          {% if not matched %}style="display:none"{% endif %}>
         <td></td>
-        <td colspan="5" style="background:var(--color-surface,#f8f9fa)">
-          <div id="runs-cell-{{ project.id }}" data-loaded="0">
+        <td colspan="6" style="background:var(--color-surface,#f8f9fa)">
+          <div id="runs-cell-{{ project.id }}" data-loaded="{% if matched %}1{% else %}0{% endif %}">
+            {% if matched %}
+            {% with runs = matched, project_id = project.id %}
+              {% include "partials/project_runs_list.html" %}
+            {% endwith %}
+            {% else %}
             <span class="text-muted" style="font-size:12px">Loading…</span>
+            {% endif %}
           </div>
         </td>
       </tr>
@@ -201,11 +334,21 @@ function handleProjectCreated(event) {
     </tbody>
   </table>
   {% else %}
+  {% if filters_active %}
+  <div class="card-body text-muted">No projects match the filter. <a href="/v2/">Clear filter</a>.</div>
+  {% else %}
   <div class="card-body text-muted">No projects yet. Create one above.</div>
+  {% endif %}
   {% endif %}
 </div>
 
 <script>
+// The page's active RUN-level filters as a query string ("" when none). A
+// lazily-loaded pivot is fetched with them, so it lists the same runs the
+// server matched the project on. Pre-rendered pivots (any run filter active)
+// are already expanded and never hit this path.
+var ACTIVE_RUN_FILTERS = {{ filter_qs | tojson }};
+
 // Lazy-load + toggle a project's Existing-runs list inline (the dashboard pivot).
 // The fragment is swapped in by htmx (server-rendered, auto-escaped) — no manual
 // innerHTML of untrusted data.
@@ -222,11 +365,61 @@ function toggleRuns(pid, btn) {
   btn.textContent = '▾';
   var cell = document.getElementById('runs-cell-' + pid);
   if (cell && cell.dataset.loaded === '0' && window.htmx) {
-    htmx.ajax('GET', '/v2/projects/' + encodeURIComponent(pid) + '/runs-fragment',
-              { target: '#runs-cell-' + pid, swap: 'innerHTML' })
+    var url = '/v2/projects/' + encodeURIComponent(pid) + '/runs-fragment';
+    if (ACTIVE_RUN_FILTERS) url += '?' + ACTIVE_RUN_FILTERS;
+    htmx.ajax('GET', url, { target: '#runs-cell-' + pid, swap: 'innerHTML' })
       .then(function () { cell.dataset.loaded = '1'; });
   }
 }
+
+// Keep a dropdown's closed button in sync with what is ticked inside it: the
+// filter's name on its own while nothing is picked, "Name: a, b" once
+// something is. Mirrors what filter_menu.html renders server-side — the form
+// submits correctly without this, it is only the caption.
+function updateFilterMenuLabel(input) {
+  var menu = input.closest('.filter-menu');
+  if (!menu) return;
+  var out = menu.querySelector('.filter-menu-label');
+  if (!out) return;
+  var picked = menu.querySelectorAll('.filter-menu-panel input:checked');
+  var parts = [];
+  for (var i = 0; i < picked.length; i++) {
+    // A single-select's "Any" option posts an empty value: it is the reset,
+    // not a selection, so it must not light the control up as active.
+    if (picked[i].value) parts.push(picked[i].dataset.short);
+  }
+  var name = menu.dataset.filterLabel || '';
+  var shown = parts.slice(0, 2).join(', ');
+  if (parts.length > 2) shown += ' +' + (parts.length - 2);
+  out.textContent = parts.length ? name + ': ' + shown : name;
+  menu.classList.toggle('is-active', parts.length > 0);
+}
+
+// The same, for the date range — two inputs behind one dropdown, so it
+// captions itself from both rather than from a checked box.
+function updateDateFilterLabel(input) {
+  var menu = input.closest('.filter-menu');
+  if (!menu) return;
+  var out = menu.querySelector('.filter-menu-label');
+  var from = menu.querySelector('input[name="date_from"]');
+  var to = menu.querySelector('input[name="date_to"]');
+  if (!out || !from || !to) return;
+  var name = menu.dataset.filterLabel || 'Dates';
+  var set = !!(from.value || to.value);
+  out.textContent = set
+    ? name + ': ' + (from.value || '…') + ' \u2192 ' + (to.value || '…')
+    : name;
+  menu.classList.toggle('is-active', set);
+}
+
+// Close an open filter dropdown when the click lands outside it (a <details>
+// has no such behaviour of its own, and several open at once obscure the bar).
+document.addEventListener('click', function (ev) {
+  var menus = document.querySelectorAll('.filter-menu[open]');
+  for (var i = 0; i < menus.length; i++) {
+    if (!menus[i].contains(ev.target)) menus[i].removeAttribute('open');
+  }
+});
 
 function deleteProject(pid, btn) {
   if (!confirm('Delete this project and ALL its runs — files removed from disk. This cannot be undone. Continue?')) return;
@@ -269,28 +462,3 @@ function deleteRun(rid, btn) {
 </script>
 
 {% endblock %}
-
-<script>
-// Project type drives two other fields on this form: the hook-length input is
-// meaningful only for the hook-split (localisation) flow, and each type carries
-// its own default for "Remove original audio". Both are read off the selected
-// <option>'s data-* attributes, which the server rendered from
-// app/project_types.py — so adding a type needs no change here.
-function onProjectTypeChange() {
-  var sel = document.getElementById('new-project-type');
-  var hint = document.getElementById('project-type-hint');
-  if (!sel || !hint) return;
-  var opt = sel.options[sel.selectedIndex];
-  hint.textContent = (opt && opt.dataset.hint) || '';
-
-  var hookGroup = document.getElementById('new-project-hook-group');
-  if (hookGroup) {
-    hookGroup.style.display = (opt && opt.dataset.hook === '1') ? '' : 'none';
-  }
-  var mute = document.getElementById('new-project-mute-source');
-  if (mute) mute.checked = !!(opt && opt.dataset.mute === '1');
-}
-
-document.addEventListener('DOMContentLoaded', onProjectTypeChange);
-onProjectTypeChange();
-</script>

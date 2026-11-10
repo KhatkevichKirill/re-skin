@@ -1,0 +1,77 @@
+{
+ "gemini-omni|False": {
+  "body": "{\"model\": \"gemini-omni-video\", \"input\": {\"prompt\": \"swap the character\", \"image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"video_list\": [{\"url\": \"https://x/clip.mp4\", \"start\": 0, \"ends\": 7}], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": \"8\"}}",
+  "method": "create_omni_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "gemini-omni|None": {
+  "body": "{\"model\": \"gemini-omni-video\", \"input\": {\"prompt\": \"swap the character\", \"image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"video_list\": [{\"url\": \"https://x/clip.mp4\", \"start\": 0, \"ends\": 7}], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": \"8\"}}",
+  "method": "create_omni_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "gemini-omni|True": {
+  "body": "{\"model\": \"gemini-omni-video\", \"input\": {\"prompt\": \"swap the character\", \"image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"video_list\": [{\"url\": \"https://x/clip.mp4\", \"start\": 0, \"ends\": 7}], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": \"8\"}}",
+  "method": "create_omni_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance-2-5|False": {
+  "body": "{\"model\": \"bytedance/seedance-2-5\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"adaptive\", \"duration\": -1, \"generate_audio\": false}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance-2-5|None": {
+  "body": "{\"model\": \"bytedance/seedance-2-5\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"adaptive\", \"duration\": -1}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance-2-5|True": {
+  "body": "{\"model\": \"bytedance/seedance-2-5\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"adaptive\", \"duration\": -1, \"generate_audio\": true, \"reference_audio_urls\": [\"https://x/v.mp3\"]}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance-fast|False": {
+  "body": "{\"model\": \"bytedance/seedance-2-fast\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": 7}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance-fast|None": {
+  "body": "{\"model\": \"bytedance/seedance-2-fast\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": 7}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance-fast|True": {
+  "body": "{\"model\": \"bytedance/seedance-2-fast\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": 7}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance-mini|False": {
+  "body": "{\"model\": \"bytedance/seedance-2-mini\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": 7}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance-mini|None": {
+  "body": "{\"model\": \"bytedance/seedance-2-mini\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": 7}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance-mini|True": {
+  "body": "{\"model\": \"bytedance/seedance-2-mini\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": 7}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance|False": {
+  "body": "{\"model\": \"bytedance/seedance-2\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": 7}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance|None": {
+  "body": "{\"model\": \"bytedance/seedance-2\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": 7}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ },
+ "seedance|True": {
+  "body": "{\"model\": \"bytedance/seedance-2\", \"input\": {\"prompt\": \"swap the character\", \"reference_image_urls\": [\"https://x/r1.png\", \"https://x/r2.png\"], \"reference_video_urls\": [\"https://x/clip.mp4\"], \"resolution\": \"720p\", \"aspect_ratio\": \"9:16\", \"duration\": 7}}",
+  "method": "create_task",
+  "url": "https://api.kie.ai/api/v1/jobs/createTask"
+ }
+}

@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Generations — re-skin v2{% endblock %}
+
+{% block content %}
+
+<div class="card">
+  <div class="card-header">
+    <h2>Latest Generations</h2>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">newest {{ limit }} segment videos, all statuses</span>
+  </div>
+
+  <!-- ── Filter bar — exact segment-status + project match ── -->
+  <form method="get" action="/v2/generations" class="filter-bar" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; padding:12px 16px; border-bottom:1px solid var(--color-border,#e0e0e0)">
+    <div class="form-group" style="margin:0">
+      <label style="font-size:12px;font-weight:600">Status</label>
+      <select name="status" style="font-size:13px">
+        <option value="">Any</option>
+        {% for s in segment_statuses %}
+        <option value="{{ s }}" {% if filter_status == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group" style="margin:0">
+      <label style="font-size:12px;font-weight:600">Project</label>
+      <select name="project" style="font-size:13px">
+        <option value="">Any</option>
+        {% for p in project_options %}
+        <option value="{{ p.id }}" {% if filter_project == p.id %}selected{% endif %}>{{ p.name or p.id[:8] ~ "…" }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="action-row" style="margin:0; gap:8px">
+      <button type="submit" class="btn btn-sm btn-primary">Filter</button>
+      {% if filter_status or filter_project %}
+      <a class="btn btn-sm btn-secondary" href="/v2/generations">Clear</a>
+      {% endif %}
+      <a class="btn btn-sm btn-secondary" href="/v2/generations.csv?status={{ filter_status }}&amp;project={{ filter_project }}">Export CSV</a>
+    </div>
+    {% if filter_status or filter_project %}
+    <span class="text-muted" style="font-size:12px;margin-left:auto">
+      Showing{% if filter_status %} "{{ filter_status }}"{% endif %}{% if filter_project %} project-filtered{% endif %} generations ({{ rows|length }})
+    </span>
+    {% endif %}
+  </form>
+
+  {% if rows %}
+  <table style="font-size:13px">
+    <thead>
+      {# No Segment column: the per-segment index/window is noise in a flat,
+         cross-project list. It is still exported — "Segment" and "Segment
+         Range" remain the first two columns of /v2/generations.csv, built from
+         the same _build_generation_rows() dicts. #}
+      <tr>
+        <th>Run</th>
+        <th>Run ID</th>
+        <th>Project</th>
+        <th>Status</th>
+        <th>Model</th>
+        <th>Resolution</th>
+        <th class="text-right">Size (MB)</th>
+        <th>Clip</th>
+        <th>Date</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td style="white-space:nowrap">
+          <a href="/v2/runs/{{ row.run_id }}">{% if row.run_name %}{{ row.run_name }}{% else %}<code style="font-size:11px" title="{{ row.run_id }}">{{ row.run_short_id }}</code>{% endif %}</a>
+        </td>
+        <td style="white-space:nowrap">
+          <code style="font-size:11px" title="{{ row.run_id }}">{{ row.run_short_id }}</code>
+        </td>
+        <td style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+          {% if row.project_id %}
+          <a href="/v2/projects/{{ row.project_id }}">{% if row.project_name %}{{ row.project_name }}{% else %}<code style="font-size:11px">{{ row.project_id[:8] }}…</code>{% endif %}</a>
+          {% else %}
+          <span class="text-muted">—</span>
+          {% endif %}
+        </td>
+        <td><span class="badge badge-{{ row.status }}">{{ row.status }}</span></td>
+        <td>{{ row.model }}</td>
+        <td>{{ row.resolution }}</td>
+        <td class="text-right" style="white-space:nowrap">
+          {% if row.size_mb is not none %}{{ "%.1f"|format(row.size_mb) }}{% else %}<span class="text-muted">—</span>{% endif %}
+        </td>
+        {# The clip kie.ai returned for this one segment, before it was
+           stitched into anything. Absent once the file is off disk. #}
+        <td style="white-space:nowrap">
+          {% if row.clip_url %}
+          <a href="{{ row.clip_url }}" target="_blank" rel="noopener" title="Open this segment's generated clip in a new tab">▶ open</a>
+          <a href="{{ row.clip_url }}&amp;download=1" class="text-muted" style="margin-left:6px" title="Download this segment's clip">↓</a>
+          {% else %}
+          <span class="text-muted">—</span>
+          {% endif %}
+        </td>
+        <td class="text-muted" style="white-space:nowrap">{{ row.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  {% if filter_status or filter_project %}
+  <div class="card-body text-muted">No generations match this filter. <a href="/v2/generations">Clear filter</a>.</div>
+  {% else %}
+  <div class="card-body text-muted">No generations yet — launch a run to see its segment videos here.</div>
+  {% endif %}
+  {% endif %}
+</div>
+
+{% endblock %}

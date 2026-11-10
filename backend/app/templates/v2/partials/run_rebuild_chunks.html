@@ -1,0 +1,165 @@
+{# Images-only (rebuild) run: per-chunk status, attempts, QA flags, re-roll.
+   docs/rebuild-from-reference-design.md §10 "Run page". Context:
+   rebuild_chunks (app/rebuild_run_view.py chunk_cards), rebuild_enabled,
+   rebuild_model_label, rebuild_resolution, rebuild_spent, rebuild_any_live. #}
+<div class="card" id="rebuild-chunks" style="margin-top:16px">
+  <div class="card-header" style="flex-wrap:wrap">
+    <h2>Chunks — rebuilt from keyframes</h2>
+    <span class="badge badge-cost" style="margin-left:auto"
+          title="Credits on the books for this run's chunk attempts: the provider's cost when reported, else the estimate drawn when the request was sent. Character checks are not included.">
+      Chunks: {{ "%g"|format(rebuild_spent) }} credits
+    </span>
+    <p style="font-size:12px;color:var(--color-muted);margin:4px 0 0;flex-basis:100%">
+      {{ rebuild_model_label }} at {{ rebuild_resolution }}, images only, original soundtrack.
+      Each chunk is one paid generation from its keyframes; a flagged chunk is fixed by
+      re-rolling it (a new attempt), then “use this attempt” if an older one was better.
+      QA flags never block delivery.
+    </p>
+    {% if not rebuild_enabled %}
+    <p class="alert alert-warning js-rebuild-disabled" style="margin:8px 0 0;flex-basis:100%">
+      Rebuild from reference is disabled on this server: re-rolls are off. The run and its
+      attempts stay readable.
+    </p>
+    {% endif %}
+  </div>
+  <div class="card-body" style="padding:0">
+    {% for c in rebuild_chunks %}
+    <div class="rebuild-chunk" id="rebuild-chunk-{{ c.index }}" data-status="{{ c.status }}"
+         style="border-bottom:1px solid #e0e0e0;padding:14px 16px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <strong>Chunk #{{ c.index }}</strong>
+        <span class="text-muted" style="font-size:12px">
+          {{ "%.2f"|format(c.start_sec) }}–{{ "%.2f"|format(c.end_sec) }}s
+          · {{ "%.2f"|format(c.chunk_sec) }}s → requested {{ c.request_sec }}s
+          · {{ c.shots }} shot{{ "s" if c.shots != 1 else "" }}
+          {% if c.sheet_key %}· sheet “{{ c.sheet_key }}”{% endif %}
+        </span>
+        <span class="badge {% if c.status == 'completed' %}badge-success{% elif c.status == 'failed' %}badge-danger{% else %}badge-info{% endif %} js-chunk-status">{{ c.status }}</span>
+        {% if c.spent %}<span class="badge badge-cost">{{ "%g"|format(c.spent) }} cr</span>{% endif %}
+      </div>
+      {% if c.status == "failed" and c.error %}
+      <div class="alert alert-danger" style="margin:8px 0 0;font-size:12px">{{ c.error }}</div>
+      {% endif %}
+      {% if c.selected %}
+      <div style="margin-top:8px;font-size:12px" class="js-chunk-flags">
+        {% if c.flags %}
+          {% for f in c.flags %}<span class="badge badge-warning" style="margin-right:4px">⚑ {{ f }}</span>{% endfor %}
+        {% else %}
+          <span class="text-muted">QA: no flags{% if c.selected.check.state == "pending" or c.selected.check.state == "running" %} (character check pending){% endif %}</span>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if c.attempts %}
+      <table class="table" style="margin-top:8px;font-size:12px">
+        <thead><tr><th>#</th><th>Status</th><th>Credits</th><th>Clips</th><th>QA</th><th></th></tr></thead>
+        <tbody>
+        {% for a in c.attempts %}
+        <tr class="js-attempt" data-attempt-id="{{ a.id }}" data-attempt-status="{{ a.status }}">
+          <td>{{ a.n }}{% if a.selected %} <span class="badge badge-success" title="This attempt is the chunk's result">in use</span>{% endif %}</td>
+          <td>
+            {{ a.label }}
+            {% if a.waiting_sender %}<br /><span class="text-muted">waiting for the sending worker</span>{% endif %}
+            {% if a.may_have_billed %}<br /><span class="text-muted">the provider may have billed this attempt; a re-roll bills again</span>{% endif %}
+            {% if a.status == "failed" and a.error %}<br /><span class="text-muted">{{ a.error[:200] }}</span>{% endif %}
+          </td>
+          <td>{% if a.cost is not none %}{{ "%g"|format(a.cost) }}{% else %}~{{ "%g"|format(a.estimate or 0) }}{% endif %}</td>
+          <td>
+            {% if a.raw_url %}<a href="{{ a.raw_url }}" target="_blank" rel="noopener" title="The take as the provider returned it">▶ raw take</a>{% endif %}
+            {% if a.fitted_url %} · <a href="{{ a.fitted_url }}" target="_blank" rel="noopener" title="Trimmed to the chunk's exact frame count">▶ fitted</a>{% endif %}
+            {% if a.sheet_url %} · <a href="{{ a.sheet_url }}" target="_blank" rel="noopener" title="One frame per shot next to its keyframe">contact sheet</a>{% endif %}
+          </td>
+          <td>
+            {% if a.cut_timing %}
+              cuts: max |Δ| {{ "%.2f"|format(a.cut_timing.max_abs_delta or 0) }}s{% if a.cut_timing.missing %}, {{ a.cut_timing.missing|length }} missing{% endif %}{% if a.cut_timing.extra %}, {{ a.cut_timing.extra|length }} extra{% endif %}<br />
+            {% endif %}
+            {% if a.duration %}raw {{ a.duration.raw_duration_sec }}s{% if a.duration.padded_frames %}, padded {{ a.duration.padded_frames }}f{% endif %}<br />{% endif %}
+            {% if a.text_band %}text: {{ a.text_band.state }}<br />{% endif %}
+            {% if a.status == "succeeded" %}character check: {{ a.check.state }}
+              {% if a.check.state == "unavailable" and rebuild_enabled %}
+              <button type="button" class="btn btn-sm js-run-check" data-run-id="{{ run.id }}"
+                      data-attempt-id="{{ a.id }}"
+                      title="One more paid Gemini call (~{{ '%g'|format(check_cost) }} cr)">Run character check</button>
+              <span class="js-check-status"></span>
+              {% endif %}
+            {% endif %}
+            {% if a.flags and not a.selected %}<br />{% for f in a.flags %}<span class="badge badge-warning">⚑ {{ f }}</span> {% endfor %}{% endif %}
+          </td>
+          <td>
+            {% if a.usable and c.can_use %}
+            <button type="button" class="btn btn-sm js-use-attempt" data-run-id="{{ run.id }}"
+                    data-rs-id="{{ c.rs_id }}" data-attempt-id="{{ a.id }}">Use this attempt</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      <details style="margin-top:6px;font-size:12px">
+        <summary>Prompt{% if c.prompt_override %} (edited for the next re-roll){% endif %}</summary>
+        <pre style="white-space:pre-wrap;font-size:11px">{{ c.prompt_override or c.prompt }}</pre>
+      </details>
+
+      {% if c.can_reroll %}
+      <div class="js-reroll" style="margin-top:8px">
+        <textarea class="js-reroll-prompt" rows="3" style="width:100%;font-size:12px"
+                  placeholder="Optional: an edited prompt for the next attempt (blank keeps the frozen prompt)">{{ c.prompt_override or "" }}</textarea>
+        <button type="button" class="btn btn-warning btn-sm js-reroll-btn" data-run-id="{{ run.id }}"
+                data-rs-id="{{ c.rs_id }}">Re-roll chunk #{{ c.index }} (~{{ "%g"|format(c.reroll_cost) }} cr)</button>
+        <span class="js-reroll-status" style="margin-left:8px;font-size:12px"></span>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+<script>
+(function () {
+  function post(url, fd, statusEl, btn) {
+    btn.disabled = true;
+    if (statusEl) { statusEl.textContent = "Working…"; }
+    fetch(url, { method: "POST", body: fd })
+      .then(function (resp) {
+        if (resp.ok) { location.reload(); return; }
+        return resp.json().then(function (body) {
+          btn.disabled = false;
+          var d = body && body.detail;
+          if (statusEl) { statusEl.textContent = "Error: " + (typeof d === "string" ? d : JSON.stringify(d)); }
+        });
+      })
+      .catch(function (e) { btn.disabled = false; if (statusEl) { statusEl.textContent = "Network error: " + e; } });
+  }
+  document.querySelectorAll("#rebuild-chunks .js-reroll-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var box = btn.closest(".js-reroll");
+      var fd = new FormData();
+      // Never an empty FormData (FastAPI 400s on one): the prompt is always sent.
+      fd.append("prompt", box.querySelector(".js-reroll-prompt").value);
+      fd.append("discard_audio_patch", "false");
+      post("/api/v2/runs/" + encodeURIComponent(btn.dataset.runId) + "/segments/" +
+           encodeURIComponent(btn.dataset.rsId) + "/rerun", fd,
+           box.querySelector(".js-reroll-status"), btn);
+    });
+  });
+  document.querySelectorAll("#rebuild-chunks .js-run-check").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var fd = new FormData();
+      fd.append("confirm", "true");
+      post("/api/v2/runs/" + encodeURIComponent(btn.dataset.runId) + "/rebuild/attempts/" +
+           encodeURIComponent(btn.dataset.attemptId) + "/character-check", fd,
+           btn.parentNode.querySelector(".js-check-status"), btn);
+    });
+  });
+  document.querySelectorAll("#rebuild-chunks .js-use-attempt").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var fd = new FormData();
+      fd.append("discard_audio_patch", "false");
+      post("/api/v2/runs/" + encodeURIComponent(btn.dataset.runId) + "/rebuild/segments/" +
+           encodeURIComponent(btn.dataset.rsId) + "/use-attempt/" +
+           encodeURIComponent(btn.dataset.attemptId), fd, null, btn);
+    });
+  });
+})();
+</script>

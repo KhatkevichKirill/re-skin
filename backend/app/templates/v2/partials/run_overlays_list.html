@@ -1,0 +1,156 @@
+{% if overlay_jobs %}
+<div
+  class="card"
+  id="overlays-card"
+  {% if overlays_active %}
+  hx-get="/v2/runs/{{ run_id }}/overlays-fragment"
+  hx-trigger="every 3s"
+  hx-target="#overlays-content"
+  hx-swap="innerHTML"
+  {% endif %}
+>
+  <div class="card-header"><h2>Overlay history</h2></div>
+  <div class="card-body">
+    <table>
+      <thead>
+        <tr>
+          <th>Source</th>
+          <th>Cards</th>
+          <th>Job ID</th>
+          <th>Created</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in overlay_jobs %}
+        <tr id="overlay-{{ o.id }}">
+          <td style="font-size:11px">{{ o.source_label }}</td>
+          <td>{{ o.n_overlays }}</td>
+          <td>
+            <code style="font-size:11px" title="What the Final Creatives sheet receives as Job ID">{{ o.sheet_job_id }}</code>
+          </td>
+          <td class="text-muted" style="white-space:nowrap;font-size:11px">
+            {{ o.created_at.strftime("%Y-%m-%d %H:%M") }}
+          </td>
+          <td>
+            <span class="badge badge-{{ o.status }}">{{ o.status }}</span>
+            {% if o.status == "failed" and o.error %}
+            <div style="font-size:11px;color:#c00;margin-top:2px">
+              {{ o.error[:120] }}{% if o.error|length > 120 %}&hellip;{% endif %}
+            </div>
+            {% endif %}
+          </td>
+          <td class="text-right" style="font-size:11px">
+            <a class="btn btn-sm btn-secondary" href="/v2/overlays/{{ o.id }}">Open editor</a>
+            {% if o.status == "done" %}
+            {% if o.has_result %}
+            <a class="btn btn-sm btn-success" href="/api/v2/overlays/{{ o.id }}/download">Download</a>
+            {% endif %}
+            {% if o.gdrive_file_id %}
+            <a class="btn btn-sm btn-secondary"
+               href="https://drive.google.com/file/d/{{ o.gdrive_file_id }}/view"
+               target="_blank" rel="noopener">Drive</a>
+            {% endif %}
+            {% if o.exported %}
+            <button type="button" class="btn btn-sm btn-success" disabled title="Already logged to the Final Creatives sheet">✓ Creatives</button>
+            {% else %}
+            <button
+              type="button"
+              class="btn btn-sm btn-secondary"
+              data-overlay-id="{{ o.id }}"
+              onclick="overlayExportToSheet(this)"
+            >Creatives</button>
+            {% endif %}
+            {% if o.has_result %}
+            {# AICP-331: pick this overlay as the "Move to new project" source #}
+            <button type="button" class="btn btn-sm btn-secondary" title="Start a new project from this overlay's video"
+                    data-move-kind="overlay" data-move-id="{{ o.id }}"
+                    data-move-label="Overlay {{ o.id[:8] }} ({{ o.source_label }})"
+                    onclick="window.moveStepToProject && moveStepToProject(this.dataset.moveKind, this.dataset.moveId, this.dataset.moveLabel)">New project</button>
+            {% endif %}
+            {% elif o.status == "failed" %}
+            <button type="button" class="btn btn-sm btn-warning"
+                    onclick="retryRunOverlay('{{ o.id }}', '{{ run_id }}')">Retry</button>
+            {% endif %}
+            {% if o.status in ("created", "done", "failed") %}
+            <button type="button" class="btn btn-sm btn-danger"
+                    onclick="deleteRunOverlay('{{ o.id }}', '{{ run_id }}')">Delete</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+/* Overlay row actions — guarded against redefinition from HTMX re-renders,
+   same pattern as the tail-edit list's export helpers. */
+function refreshRunOverlays(runId) {
+  if (window.htmx) {
+    htmx.ajax('GET', '/v2/runs/' + encodeURIComponent(runId) + '/overlays-fragment', {
+      target: '#overlays-content', swap: 'innerHTML',
+    });
+  } else {
+    location.reload();
+  }
+}
+
+function retryRunOverlay(overlayId, runId) {
+  fetch('/api/v2/overlays/' + encodeURIComponent(overlayId) + '/retry', { method: 'POST' })
+    .then(function (r) {
+      if (r.ok) {
+        refreshRunOverlays(runId);
+      } else {
+        return r.json().then(function (b) { alert('Error: ' + (b.detail || r.status)); });
+      }
+    })
+    .catch(function (e) { alert('Network error: ' + e); });
+}
+
+function deleteRunOverlay(overlayId, runId) {
+  if (!confirm('Delete this overlay render? The rendered video + PNGs are removed from the server to free space; the Google Drive copy and any sheet rows stay.')) return;
+  fetch('/api/v2/overlays/' + encodeURIComponent(overlayId), { method: 'DELETE' })
+    .then(function (r) {
+      if (r.status === 204) {
+        refreshRunOverlays(runId);
+      } else {
+        return r.json().then(function (b) { alert('Could not delete: ' + (b.detail || r.status)); });
+      }
+    })
+    .catch(function (e) { alert('Network error: ' + e); });
+}
+
+window.overlayExportToSheet = window.overlayExportToSheet || function (btn) {
+  var overlayId = btn.dataset.overlayId;
+  if (!overlayId) return;
+  if (!confirm('Add this overlay to the Final Creatives sheet?')) return;
+  btn.disabled = true;
+  var origText = btn.textContent;
+  btn.textContent = 'Adding…';
+  fetch('/api/v2/overlays/' + encodeURIComponent(overlayId) + '/export-to-sheet', { method: 'POST' })
+    .then(function (resp) {
+      return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+    })
+    .then(function (r) {
+      if (r.ok) {
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-success');
+        btn.textContent = '✓ Creatives';
+        btn.title = 'Already logged to the Final Creatives sheet';
+      } else {
+        btn.disabled = false;
+        btn.textContent = origText;
+        alert('Error: ' + ((r.body && r.body.detail) || 'request failed'));
+      }
+    })
+    .catch(function (err) {
+      btn.disabled = false;
+      btn.textContent = origText;
+      alert('Network error: ' + err);
+    });
+};
+</script>
+{% endif %}

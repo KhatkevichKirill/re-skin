@@ -1,0 +1,726 @@
+#!/usr/bin/env python3
+"""
+fal_probe.py — answer the open questions for AICP-312 (Fal as a second provider)
+against a real Fal account.
+
+Standalone on purpose, no app imports: it runs on the host before any of the
+integration exists, and its job is to decide the SHAPE of that integration, the
+same way scripts/byteplus_probe.py did for BytePlus.
+
+Staging is by cost.
+
+* Stages 0-1 are FREE: an authentication check against a request id that cannot
+  exist, and read-only pricing/usage calls on the Platform API.
+* Stage 2 generates real video and bills real money. It is gated behind BOTH
+  --paid and --yes, and by a HARD cap on the estimated worst-case spend that is
+  kept in a file, so it holds across invocations and not only inside one run.
+
+    python3 scripts/fal_probe.py                   # stages 0-1 (free)
+    python3 scripts/fal_probe.py --paid            # plan only, sends nothing paid
+    python3 scripts/fal_probe.py --paid --yes      # everything
+
+Stage 2 runs four tests (AICP-312):
+
+    T1  minimax/h3-max/reframe-video                5 s, 16:9 -> 9:16, 768p
+    T2  minimax/h3-max/reframe-video                T1's output, 9:16 -> 16:9, 768p
+    T4  bytedance/seedance-2.5/reference-to-video   task "reference", 4 s, 9:16, 480p,
+                                                    a 3 s clip + 1 image
+    T3  minimax/h3-max/reframe-video                1 s, 480p, the SAME request twice
+
+T4 uses task "reference" with an explicit duration, NOT task "editing". In editing
+mode Fal coerces duration to "auto" ("the model decides based on the prompt", up to
+30 s), so the cost of the call would not be bounded and the 5 USD cap could not be
+honored. "reference" with duration 4 is the most it can cost.
+
+T3 runs last: it is the duplicate-submit check, and whether Fal billed it twice is
+only visible as a balance difference in the Fal dashboard (the key is API-scoped,
+the usage endpoint answers 403).
+
+Reads FAL_API_KEY (falls back to FAL_KEY) from the environment or ./.env. The key
+is never printed. Every paid POST is sent exactly once: this script has no retry
+logic for them. A submit that gets no usable answer stops the whole run, because
+the request may have been accepted and billed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+
+REPO = Path(__file__).resolve().parent.parent
+REPORT = Path(os.environ.get("PROBE_REPORT", "/tmp/fal-probe-report.json"))
+
+QUEUE_BASE = "https://queue.fal.run"
+PLATFORM_BASE = "https://api.fal.ai"
+REST_BASE = "https://rest.fal.ai"
+CDN_BASE = "https://v3.fal.media"
+
+# Queue paths are built from owner/app ONLY — including the endpoint's own sub-path
+# returns 405 (docs: model-apis/inference/queue). So "minimax/h3-max/reframe-video"
+# is submitted to /minimax/h3-max/reframe-video but polled under /minimax/h3-max/.
+QUEUE_APP = "minimax/h3-max"
+
+REFRAME = "minimax/h3-max/reframe-video"
+SEEDANCE_2_5_REF = "bytedance/seedance-2.5/reference-to-video"
+
+# Endpoints whose pricing we want: the reframe model AICP-251 needs, and the Seedance
+# reference-to-video endpoints (2.0, 2.0 fast, 2.5), the only Fal candidates for our
+# kie.ai video step: video references enter Fal's Seedance only through them.
+PRICING_ENDPOINTS = [
+    REFRAME,
+    "bytedance/seedance-2.0/reference-to-video",
+    "bytedance/seedance-2.0/fast/reference-to-video",
+    SEEDANCE_2_5_REF,
+]
+
+# ---------------------------------------------------------------------------
+# Spend control
+# ---------------------------------------------------------------------------
+
+# The owner approved 5 USD for the whole probe on 2026-10-27. --max-usd may lower
+# it, never raise it.
+HARD_CAP_USD = 5.0
+DEFAULT_SPEND_FILE = Path("/root/fal-probe-artifacts/spend.json")
+# The environment override exists for offline tests only; main() refuses it for stage 2.
+SPEND_FILE = Path(os.environ.get("FAL_PROBE_SPEND_FILE", str(DEFAULT_SPEND_FILE)))
+DEFAULT_WORKDIR_ROOT = Path("/root/fal-probe-artifacts")
+
+# Estimated cost per call: (expected, worst case). Worst case assumes the overlap
+# windows of the reframe model are billed too and, for T4, that the 0.6 video-input
+# multiplier in Fal's token formula does not apply: 480x854 pixels x (4 s output +
+# 3 s reference) x 24 / 1024 = 67,266 tokens x 0.0214 USD per 1000 = 1.44 USD.
+COSTS = {
+    "T1": (0.40, 0.80),
+    "T2": (0.40, 0.80),
+    "T4": (0.86, 1.50),
+    "T3": (0.05, 0.10),  # per call; two calls
+}
+ALL_TESTS = ("T1", "T2", "T4", "T3")
+
+# Reference-to-video prompt: the face swap v2 prompt of run 978b8dc9 (the case the
+# Kling 4.0 evaluation measured), with the media named the way Fal's schema wants them
+# ("Refer to them in the prompt as @Image1 / @Video1") instead of "the reference
+# video / image".
+RUN_978B8DC9_PROMPT = """Replace the main person in the reference video with the generated by seedream person shown in the reference image.
+
+Keep the new character’s identity, facial features, skin tone, hairstyle, and overall appearance consistent with the reference image throughout the entire video.
+
+Preserve the original performance and timing of the reference video: keep the same head movements, body movements, gestures, hand and arm movements, shoulder movements, poses, gaze direction, and interactions with objects.
+
+Adapt the facial expressions, mouth shapes, and lip movements naturally to the new character’s own facial features and anatomy. Do not copy or warp the original person’s facial features or exact mouth shapes onto the new character. The new character should perform the same expressions and speech with natural, identity-consistent facial motion.
+
+Keep the original audio exactly as it is: the original voice, background sounds, music, and ambient audio. Do not generate a new voice or new speech. The new character’s lip movements must match the original spoken words and their timing.
+
+Change only the character. Keep everything else exactly the same: the phone or tablet and its screen contents, all on-screen text and captions, the background, lighting, framing, camera movement, objects, and scene composition."""
+T4_PROMPT = RUN_978B8DC9_PROMPT.replace("the reference video", "@Video1").replace(
+    "the reference image", "@Image1"
+)
+
+# Inputs (all our own material): the landscape source of AICP-252, the portrait source
+# and persona image of run 978b8dc9.
+DEFAULT_HORIZONTAL = (
+    "/root/re-skin/data/projects/654e28af-9249-4433-bae1-ef531b665696/source.mp4"
+)
+DEFAULT_VERTICAL = (
+    "/root/re-skin/data/projects/41c8665d-f5f0-4523-8a3f-20aca4b5f2ed/source.mp4"
+)
+DEFAULT_PERSONA = "/root/fal-probe-artifacts/inputs/persona.png"
+
+results: dict = {}
+
+
+class BudgetStop(Exception):
+    """Reserving this call would pass the cap: nothing was sent."""
+
+
+class SubmitUnknown(Exception):
+    """A paid submit got no usable answer: it may have been accepted and billed."""
+
+
+def utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def scrub(text: str, key: str) -> str:
+    """Drop the key (and an echoed Authorization value) from provider text."""
+    return text.replace(key, "<redacted>").replace("Key <redacted>", "<redacted>")
+
+
+def reserve(cap: float, label: str, worst_usd: float) -> float:
+    """Record *worst_usd* against the persistent cap BEFORE the request leaves.
+
+    The file outlives the process, so re-running the script after a failure cannot
+    quietly spend another 5 USD; an exclusive lock makes the read-check-write atomic
+    when two invocations overlap.
+    """
+    SPEND_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with SPEND_FILE.with_suffix(".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = {"reserved_usd": 0.0, "entries": []}
+        if SPEND_FILE.exists():
+            state = json.loads(SPEND_FILE.read_text())
+        if state["reserved_usd"] + worst_usd > cap + 1e-9:
+            raise BudgetStop(
+                f"{label}: worst case {worst_usd:.2f} USD would bring the reserved total "
+                f"from {state['reserved_usd']:.2f} past the cap of {cap:.2f} USD"
+            )
+        state["reserved_usd"] = round(state["reserved_usd"] + worst_usd, 4)
+        state["entries"].append({"label": label, "worst_usd": worst_usd, "at": utcnow()})
+        SPEND_FILE.write_text(json.dumps(state, indent=2))
+        return state["reserved_usd"]
+
+
+def reserved_so_far() -> float:
+    if SPEND_FILE.exists():
+        return float(json.loads(SPEND_FILE.read_text())["reserved_usd"])
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Key handling
+# ---------------------------------------------------------------------------
+
+
+def load_key() -> str:
+    """Return the Fal key from the environment or ./.env, never printing it."""
+    names = ("FAL_API_KEY", "FAL_KEY")
+    for name in names:
+        if os.environ.get(name):
+            return os.environ[name]
+    env_path = REPO / ".env"
+    if env_path.exists():
+        found: dict[str, str] = {}
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            found[k.strip()] = v.strip().strip('"').strip("'")
+        for name in names:
+            if found.get(name):
+                return found[name]
+    sys.exit("FAL_API_KEY is not set (export it or put it in .env)")
+
+
+def auth_header(key: str) -> dict[str, str]:
+    return {"Authorization": f"Key {key}"}
+
+
+def record(stage: str, name: str, value) -> None:
+    results.setdefault(stage, {})[name] = value
+
+
+# ---------------------------------------------------------------------------
+# Stages 0-1 (free)
+# ---------------------------------------------------------------------------
+
+
+def stage0_auth(client: httpx.Client, key: str) -> bool:
+    """A status poll for a request id that cannot exist: free and side-effect free.
+
+    A valid key should answer 404 (unknown request); a rejected key 401/403. The
+    deliberately wrong key calibrates that reading, so a 404 is not mistaken for a
+    pass when Fal answers 404 to everyone.
+    """
+    print("== stage 0: authentication (free)")
+    fake = str(uuid.uuid4())
+    url = f"{QUEUE_BASE}/{QUEUE_APP}/requests/{fake}/status"
+    good = client.get(url, headers=auth_header(key))
+    bad = client.get(url, headers=auth_header("invalid:invalid"))
+    print(f"   real key       -> HTTP {good.status_code}")
+    print(f"   wrong key      -> HTTP {bad.status_code}")
+    record("stage0", "real_key_status", good.status_code)
+    record("stage0", "wrong_key_status", bad.status_code)
+    # 404 is the one expected answer. Anything else (a 5xx outage, a 400 from a changed
+    # id format) says nothing about the key, even when it differs from the bad-key reply.
+    ok = good.status_code == 404 and bad.status_code in (401, 403)
+    print("   verdict        ->", "key accepted" if ok else "CANNOT CONFIRM the key is accepted")
+    record("stage0", "key_accepted", ok)
+    return ok
+
+
+def stage1_platform(client: httpx.Client, key: str) -> None:
+    """Pricing per endpoint, and whether this key's scope reaches the usage API."""
+    print("== stage 1: Platform API pricing and key scope (free, read-only)")
+    for endpoint in PRICING_ENDPOINTS:
+        r = client.get(
+            f"{PLATFORM_BASE}/v1/models/pricing",
+            params={"endpoint_id": endpoint},
+            headers=auth_header(key),
+        )
+        body = None
+        try:
+            body = r.json()
+        except ValueError:
+            pass
+        if body is not None:
+            # What is printed AND what goes into the report is scrubbed of the key.
+            body = json.loads(scrub(json.dumps(body), key))
+        print(f"   pricing {endpoint:<50} HTTP {r.status_code}")
+        if r.status_code == 200 and body is not None:
+            print(f"      {json.dumps(body)[:300]}")
+        record("stage1", f"pricing:{endpoint}", {"status": r.status_code, "body": body})
+
+    # Usage is documented with an ADMIN-scope key. Only the status and the top-level
+    # key names are kept: the body describes our account, and it has no business in
+    # a report file.
+    r = client.get(
+        f"{PLATFORM_BASE}/v1/models/usage",
+        params={"limit": 1},
+        headers=auth_header(key),
+    )
+    keys = []
+    if r.status_code == 200:
+        try:
+            payload = r.json()
+            keys = sorted(payload) if isinstance(payload, dict) else [type(payload).__name__]
+        except ValueError:
+            pass
+    print(f"   usage                                                    HTTP {r.status_code}"
+          + (f"  top-level keys: {keys}" if keys else ""))
+    print("   (403 means this key is API-scoped; per-request cost reconciliation then")
+    print("    needs a separate ADMIN key that must NOT live in the app environment)")
+    record("stage1", "usage", {"status": r.status_code, "top_level_keys": keys})
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 (PAID): media helpers
+# ---------------------------------------------------------------------------
+
+
+def run_tool(argv: list[str]) -> subprocess.CompletedProcess:
+    """Run ffmpeg/ffprobe with an argv list (never a shell)."""
+    return subprocess.run(argv, capture_output=True, text=True, check=False)
+
+
+def cut_clip(src: Path, start: float, dur: float, dst: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+    if not src.exists():
+        sys.exit(f"input not found: {src}")
+    proc = run_tool([
+        ffmpeg, "-y", "-v", "error", "-ss", str(start), "-t", str(dur), "-i", str(src),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(dst),
+    ])
+    if proc.returncode != 0 or not dst.exists():
+        sys.exit(f"ffmpeg failed cutting {dst.name}: {proc.stderr[-300:]}")
+
+
+def probe_media(path: Path) -> dict:
+    ffprobe = shutil.which("ffprobe") or "/usr/bin/ffprobe"
+    proc = run_tool([
+        ffprobe, "-v", "error", "-show_entries",
+        "stream=codec_type,width,height,r_frame_rate:format=duration,size",
+        "-of", "json", str(path),
+    ])
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        return {"error": "ffprobe failed"}
+    video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), {})
+    return {
+        "width": video.get("width"),
+        "height": video.get("height"),
+        "fps": video.get("r_frame_rate"),
+        "duration_sec": float(data.get("format", {}).get("duration", 0) or 0),
+        "has_audio": any(s.get("codec_type") == "audio" for s in data.get("streams", [])),
+        "size_bytes": int(data.get("format", {}).get("size", 0) or 0),
+    }
+
+
+def sha256_of(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+LIFECYCLE = json.dumps({"expiration_duration_seconds": 3600})
+
+
+def upload(client: httpx.Client, key: str, path: Path, content_type: str) -> str:
+    """Upload one small file to the Fal CDN and return its URL.
+
+    The two calls are the ones fal-client 1.0.3 makes (its source was read; the docs do
+    not describe a REST upload): a short-lived CDN token, then one POST of the bytes.
+    The file expires after an hour. Neither call generates anything.
+    """
+    tok = client.post(
+        f"{REST_BASE}/storage/auth/token",
+        params={"storage_type": "fal-cdn-v3"},
+        headers={**auth_header(key), "Accept": "application/json",
+                 "Content-Type": "application/json"},
+        json={},
+    )
+    tok.raise_for_status()
+    t = tok.json()
+    resp = client.post(
+        f"{CDN_BASE}/files/upload",
+        headers={
+            "Authorization": f"{t['token_type']} {t['token']}",
+            "Content-Type": content_type,
+            "X-Fal-File-Name": path.name,
+            "X-Fal-Object-Lifecycle": LIFECYCLE,
+            "X-Fal-Object-Lifecycle-Preference": LIFECYCLE,
+        },
+        content=path.read_bytes(),
+        timeout=300.0,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_url"]
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 (PAID): queue calls
+# ---------------------------------------------------------------------------
+
+
+def submit(client: httpx.Client, key: str, endpoint: str, body: dict, label: str,
+           worst_usd: float, cap: float) -> dict:
+    """Send ONE paid submit. Reserves the worst case first; never retries.
+
+    Only a clear refusal (4xx) lets the run go on. No answer, an answer we cannot
+    read, or a server error all leave the request's fate unknown, so they stop it.
+    """
+    reserved = reserve(cap, label, worst_usd)
+    print(f"   {label}: POST {endpoint}  (worst case {worst_usd:.2f} USD, "
+          f"reserved total {reserved:.2f} of {cap:.2f})")
+    headers = {
+        **auth_header(key),
+        "Content-Type": "application/json",
+        "X-Fal-Store-IO": "0",           # do not keep the payloads for 30 days
+        "X-Fal-No-Retry": "1",           # Fal must not re-queue this request behind our back
+        "X-Fal-Object-Lifecycle-Preference": LIFECYCLE,
+    }
+    info: dict = {"label": label, "endpoint": endpoint, "worst_usd": worst_usd,
+                  "submitted_at": utcnow()}
+    try:
+        r = client.post(f"{QUEUE_BASE}/{endpoint}", headers=headers, json=body, timeout=60.0)
+    except httpx.HTTPError as exc:
+        raise SubmitUnknown(
+            f"{label}: no response to the submit ({type(exc).__name__}); the request may "
+            "have been accepted and billed, so the run stops here"
+        ) from None
+    info["http"] = r.status_code
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    if 200 <= r.status_code < 300 and isinstance(data, dict) and data.get("request_id"):
+        info.update(
+            request_id=data["request_id"],
+            status_url=data.get("status_url"),
+            response_url=data.get("response_url"),
+            cancel_url=data.get("cancel_url"),
+        )
+        print(f"      accepted, request_id {data['request_id']}")
+    elif 200 <= r.status_code < 300 or r.status_code >= 500:
+        raise SubmitUnknown(
+            f"{label}: HTTP {r.status_code} without a usable request_id; the request may "
+            "have been queued and billed, so the run stops here"
+        )
+    else:
+        info["error"] = scrub(r.text[:300], key)
+        print(f"      REFUSED, HTTP {r.status_code}: {info['error'][:200]}")
+    return info
+
+
+def request_cancel(client: httpx.Client, key: str, info: dict, endpoint: str) -> None:
+    """Ask Fal to cancel a request we have stopped waiting for (best effort, once)."""
+    owner_app = "/".join(endpoint.split("/")[:2])
+    cancel = info.get("cancel_url") or (
+        f"{QUEUE_BASE}/{owner_app}/requests/{info['request_id']}/cancel"
+    )
+    try:
+        c = client.put(cancel, headers=auth_header(key), timeout=30.0)
+        info["cancel_http"] = c.status_code
+    except httpx.HTTPError:
+        info["cancel_http"] = None
+
+
+def wait_for(client: httpx.Client, key: str, info: dict, endpoint: str,
+             timeout_sec: float = 900.0) -> dict:
+    """Poll a request to completion (GETs are idempotent, so they may be retried)."""
+    owner_app = "/".join(endpoint.split("/")[:2])
+    rid = info["request_id"]
+    status_url = info.get("status_url") or f"{QUEUE_BASE}/{owner_app}/requests/{rid}/status"
+    started = time.time()
+    last_print = 0.0
+    failures = 0
+    while time.time() - started < timeout_sec:
+        try:
+            r = client.get(status_url, headers=auth_header(key), timeout=30.0)
+            failures = 0
+        except httpx.HTTPError:
+            failures += 1
+            if failures >= 5:
+                request_cancel(client, key, info, endpoint)
+                info["wait_error"] = "status polling failed 5 times in a row, cancel requested"
+                return info
+            time.sleep(5)
+            continue
+        if r.status_code == 200:
+            status = (r.json() or {}).get("status")
+            if time.time() - last_print > 30:
+                print(f"      {info['label']}: {status} ({int(time.time() - started)} s)")
+                last_print = time.time()
+            if status == "COMPLETED":
+                info["wait_sec"] = round(time.time() - started, 1)
+                return info
+        elif 400 <= r.status_code < 500 and r.status_code != 429:
+            request_cancel(client, key, info, endpoint)
+            info["wait_error"] = f"status HTTP {r.status_code}, cancel requested"
+            return info
+        time.sleep(5)
+    request_cancel(client, key, info, endpoint)
+    info["wait_error"] = f"timed out after {int(timeout_sec)} s, cancel requested"
+    return info
+
+
+def fetch_result(client: httpx.Client, key: str, info: dict, endpoint: str, dst: Path) -> dict:
+    """Read the finished request, download its video at once, and measure it."""
+    owner_app = "/".join(endpoint.split("/")[:2])
+    url = info.get("response_url") or (
+        f"{QUEUE_BASE}/{owner_app}/requests/{info['request_id']}"
+    )
+    r = None
+    for _ in range(3):  # reading a finished result is idempotent
+        try:
+            r = client.get(url, headers=auth_header(key), timeout=60.0)
+        except httpx.HTTPError:
+            r = None
+        if r is not None and r.status_code < 500:
+            break
+        time.sleep(5)
+    if r is None:
+        info["result_error"] = "result fetch failed 3 times (transport)"
+        return info
+    info["result_http"] = r.status_code
+    if r.status_code != 200:
+        info["result_error"] = scrub(r.text[:300], key)
+        return info
+    body = r.json()
+    video = (body.get("video") or {}) if isinstance(body, dict) else {}
+    info["result_keys"] = sorted(body) if isinstance(body, dict) else []
+    if not video.get("url"):
+        info["result_error"] = "no video url in the result"
+        return info
+    try:
+        with client.stream("GET", video["url"], timeout=300.0) as resp:
+            resp.raise_for_status()
+            with dst.open("wb") as fh:
+                for chunk in resp.iter_bytes():
+                    fh.write(chunk)
+    except httpx.HTTPError as exc:
+        info["download_error"] = type(exc).__name__
+        return info
+    info["output"] = str(dst)
+    info["output_sha256"] = sha256_of(dst)
+    info["output_media"] = probe_media(dst)
+    for extra in ("seed", "frame_count", "frames_per_second", "placement"):
+        if extra in body:
+            info[extra] = body[extra]
+    print(f"      saved {dst.name}: {info['output_media']}")
+    return info
+
+
+def run_one(client, key, endpoint, body, label, worst_usd, cap, dst: Path) -> dict:
+    info = submit(client, key, endpoint, body, label, worst_usd, cap)
+    if "request_id" not in info:
+        return info
+    info = wait_for(client, key, info, endpoint)
+    if "wait_error" in info:
+        print(f"      {label}: {info['wait_error']}")
+        return info
+    return fetch_result(client, key, info, endpoint, dst)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 (PAID): the four tests
+# ---------------------------------------------------------------------------
+
+
+def plan_lines(cap: float, tests: list[str]) -> list[str]:
+    lines = {
+        "T1": "T1  reframe 5 s horizontal -> 9:16, 768p",
+        "T2": "T2  reframe T1's output   -> 16:9,  768p",
+        "T4": "T4  seedance-2.5 reference-to-video, task reference, 4 s, 9:16, 480p, "
+              "3 s clip + 1 image",
+        "T3": "T3  reframe 1 s, 480p, the same request sent TWICE",
+    }
+    out = []
+    exp = worst = 0.0
+    for t in tests:
+        e, w = COSTS[t]
+        n = 2 if t == "T3" else 1
+        exp, worst = exp + n * e, worst + n * w
+        out.append(f"{lines[t]}   expected {n * e:.2f}  worst {n * w:.2f}")
+    out.append(f"total expected {exp:.2f} USD, worst case {worst:.2f} USD; cap {cap:.2f} USD, "
+               f"already reserved in {SPEND_FILE}: {reserved_so_far():.2f}")
+    return out
+
+
+def stage2_paid(client: httpx.Client, key: str, args: argparse.Namespace,
+                tests: list[str]) -> None:
+    print("== stage 2: PAID generation")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    work = Path(args.workdir) if args.workdir else DEFAULT_WORKDIR_ROOT / f"run-{stamp}"
+    work.mkdir(parents=True, exist_ok=True)
+    cap = args.max_usd
+    print(f"   artifacts: {work}")
+    paid: dict = {"started_at": utcnow(), "cap_usd": cap, "tests": {}}
+    results["stage2"] = paid
+    horizontal, vertical, persona = (Path(args.horizontal), Path(args.vertical),
+                                     Path(args.persona))
+    if "T4" in tests and not persona.exists():
+        sys.exit(f"input not found: {persona}")
+
+    try:
+        out1 = work / "out_t1_reframe_9x16.mp4"
+        # --- T1: horizontal -> vertical ------------------------------------------
+        if "T1" in tests:
+            h5 = work / "in_h_5s.mp4"
+            cut_clip(horizontal, 14.0, 5.0, h5)
+            paid["inputs_t1"] = probe_media(h5)
+            url = upload(client, key, h5, "video/mp4")
+            paid["tests"]["T1"] = run_one(
+                client, key, REFRAME,
+                {"video_url": url, "aspect_ratio": "9:16", "resolution": "768p", "seed": 42},
+                "T1", COSTS["T1"][1], cap, out1)
+
+        # --- T2: vertical -> horizontal, on T1's output --------------------------
+        if "T2" in tests:
+            if out1.exists():
+                url = upload(client, key, out1, "video/mp4")
+                paid["tests"]["T2"] = run_one(
+                    client, key, REFRAME,
+                    {"video_url": url, "aspect_ratio": "16:9", "resolution": "768p",
+                     "seed": 42},
+                    "T2", COSTS["T2"][1], cap, work / "out_t2_reframe_16x9.mp4")
+            else:
+                paid["tests"]["T2"] = {"skipped": "T1 produced no output"}
+                print("   T2 skipped: T1 produced no output")
+
+        # --- T4: seedance 2.5 reference-to-video, bounded duration ---------------
+        if "T4" in tests:
+            v3 = work / "in_v_3s.mp4"
+            cut_clip(vertical, 6.0, 3.0, v3)
+            paid["inputs_t4"] = probe_media(v3)
+            video_url = upload(client, key, v3, "video/mp4")
+            image_url = upload(client, key, persona, "image/png")
+            paid["tests"]["T4"] = run_one(
+                client, key, SEEDANCE_2_5_REF,
+                {"prompt": T4_PROMPT, "task": "reference", "video_urls": [video_url],
+                 "image_urls": [image_url], "resolution": "480p", "duration": "4",
+                 "aspect_ratio": "9:16", "generate_audio": False, "seed": 42},
+                "T4", COSTS["T4"][1], cap, work / "out_t4_seedance25_reference.mp4")
+
+        # --- T3: the same request twice (duplicate submit) -----------------------
+        if "T3" in tests:
+            h1 = work / "in_h_1s.mp4"
+            cut_clip(horizontal, 14.0, 1.0, h1)
+            url = upload(client, key, h1, "video/mp4")
+            body = {"video_url": url, "aspect_ratio": "9:16", "resolution": "480p", "seed": 42}
+            a = submit(client, key, REFRAME, body, "T3a", COSTS["T3"][1], cap)
+            b = submit(client, key, REFRAME, body, "T3b", COSTS["T3"][1], cap)
+            same_id = bool(a.get("request_id")) and a.get("request_id") == b.get("request_id")
+            print(f"   T3: two submits, same request_id: {same_id}")
+            t3 = {"same_request_id": same_id, "a": a, "b": b}
+            paid["tests"]["T3"] = t3
+            for tag, info in (("a", a), ("b", b)):
+                if "request_id" not in info or (tag == "b" and same_id):
+                    continue
+                info = wait_for(client, key, info, REFRAME)
+                if "wait_error" not in info:
+                    info = fetch_result(client, key, info, REFRAME,
+                                        work / f"out_t3{tag}_reframe_480p.mp4")
+                t3[tag] = info
+            if same_id:
+                t3["outputs_identical"] = None  # one request: nothing to compare
+            else:
+                sha_a, sha_b = t3["a"].get("output_sha256"), t3["b"].get("output_sha256")
+                t3["outputs_identical"] = (sha_a == sha_b) if (sha_a and sha_b) else None
+    except BudgetStop as exc:
+        print(f"   STOPPED by the cap, nothing further sent: {exc}")
+        paid["stopped"] = str(exc)
+    except SubmitUnknown as exc:
+        print(f"   STOPPED: {exc}")
+        paid["stopped"] = str(exc)
+    except httpx.HTTPError as exc:
+        print(f"   STOPPED on a transport error outside a submit: {type(exc).__name__}")
+        paid["stopped"] = f"transport error {type(exc).__name__}"
+
+    paid["finished_at"] = utcnow()
+    paid["reserved_total_usd"] = reserved_so_far()
+    print(f"   worst-case reserved so far: {reserved_so_far():.2f} of {cap:.2f} USD")
+    print("   Fal balance (dashboard): compare before/after; the key cannot read usage")
+
+
+def max_usd(value: str) -> float:
+    cap = float(value)
+    if not 0 < cap <= HARD_CAP_USD:
+        raise argparse.ArgumentTypeError(f"--max-usd must be in (0, {HARD_CAP_USD}]")
+    return cap
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--paid", action="store_true", help="enable stage 2 (still needs --yes)")
+    ap.add_argument("--yes", action="store_true", help="confirm that stage 2 may spend money")
+    ap.add_argument("--max-usd", type=max_usd, default=HARD_CAP_USD,
+                    help="cap on the estimated worst-case spend (default and maximum 5.0)")
+    ap.add_argument("--tests", default=",".join(ALL_TESTS),
+                    help="comma list of paid tests to run, in this fixed order (default all)")
+    ap.add_argument("--workdir", help="directory for clips and outputs")
+    ap.add_argument("--horizontal", default=DEFAULT_HORIZONTAL)
+    ap.add_argument("--vertical", default=DEFAULT_VERTICAL)
+    ap.add_argument("--persona", default=DEFAULT_PERSONA)
+    args = ap.parse_args()
+
+    wanted = {t.strip().upper() for t in args.tests.split(",") if t.strip()}
+    if not wanted <= set(ALL_TESTS):
+        ap.error(f"--tests accepts only {','.join(ALL_TESTS)}")
+    tests = [t for t in ALL_TESTS if t in wanted]
+
+    key = load_key()
+    # The report path is printed and can end up in an exception message; a path built
+    # from the key would leak it, so refuse it up front.
+    if key in str(REPORT) or key in str(SPEND_FILE) or (args.workdir and key in args.workdir):
+        sys.exit("a path option must not contain the API key")
+    if args.paid and args.yes and SPEND_FILE != DEFAULT_SPEND_FILE:
+        sys.exit(f"the paid stage only runs against the default spend ledger "
+                 f"({DEFAULT_SPEND_FILE}); FAL_PROBE_SPEND_FILE is for offline tests")
+
+    with httpx.Client(timeout=30.0) as client:
+        ok = stage0_auth(client, key)
+        stage1_platform(client, key)
+        if args.paid:
+            if not ok:
+                sys.exit("refusing the paid stage: the key was not confirmed in stage 0")
+            print("== stage 2 plan")
+            for line in plan_lines(args.max_usd, tests):
+                print("   " + line)
+            if not args.yes:
+                print("   --yes not given: nothing paid was sent")
+            else:
+                stage2_paid(client, key, args, tests)
+    REPORT.write_text(json.dumps(results, indent=2, default=str))
+    print(f"\nreport: {REPORT}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

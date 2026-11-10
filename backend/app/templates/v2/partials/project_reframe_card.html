@@ -1,0 +1,297 @@
+{% from "error_detail.html" import error_detail %}
+{# Reframe project page body (AICP-251, docs/reframe-design.md §9).
+   Self-polls while anything is in flight, but never while the operator is
+   typing in one of its forms (the swap would wipe the inputs). #}
+<div
+  {% if reframe_active %}
+  hx-get="/v2/projects/{{ project.id }}/reframe-fragment"
+  hx-trigger="every 5s [!(document.activeElement && document.activeElement.closest('#reframe-content form'))]"
+  hx-target="#reframe-content"
+  hx-swap="innerHTML"
+  {% endif %}
+>
+
+<div class="card">
+  <div class="card-header"><h2>Source</h2></div>
+  <div class="card-body">
+    <video controls preload="metadata"
+           style="width:100%; max-width:480px; border-radius:6px; background:#000; display:block; margin:0 auto"
+           src="/api/v2/projects/{{ project.id }}/source"></video>
+    <p class="hint" style="text-align:center">
+      {{ project.width }}×{{ project.height }}, {{ "%.2f"|format(project.duration_sec or 0) }} s,
+      {{ "%.2f"|format(project.fps or 0) }} fps
+      {% if implied_aspect %}— the generation makes it <strong>{{ implied_aspect }}</strong>{% endif %}
+    </p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>New generation (paid, sent to Fal)</h2></div>
+  <div class="card-body">
+    {% if fal_gate %}
+    <p class="alert alert-warning" style="margin:0 0 10px">
+      Generation is unavailable: {{ fal_gate[1] }}
+    </p>
+    {% endif %}
+    <form id="reframe-new-job" onsubmit="return reframeCreateJob(event, '{{ project.id }}')">
+      <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end">
+        <div class="form-group">
+          <label>Window start, s</label>
+          <input type="number" name="window_start_sec" step="0.01" min="0" value="0"
+                 oninput="reframeEstimate()" style="width:110px" />
+        </div>
+        <div class="form-group">
+          <label>Window end, s</label>
+          <input type="number" name="window_end_sec" step="0.01" min="0"
+                 max="{{ project.duration_sec or 0 }}" value="{{ default_window_end }}"
+                 oninput="reframeEstimate()" style="width:110px" />
+        </div>
+        {% if not implied_aspect %}
+        <div class="form-group">
+          <label>Target aspect</label>
+          <select name="target_aspect">
+            <option value="9:16">9:16</option>
+            <option value="16:9">16:9</option>
+          </select>
+        </div>
+        {% endif %}
+        <div class="form-group">
+          <label>Resolution</label>
+          <select name="resolution" onchange="reframeEstimate()">
+            <option value="768p" selected>768p (0.08 USD/s)</option>
+            <option value="480p">480p (0.05 USD/s)</option>
+            <option value="1080p" disabled>1080p — no Fal price</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary" id="reframe-generate-btn"
+                {% if fal_gate %}disabled{% endif %}>Generate on Fal</button>
+      </div>
+      <p class="hint" id="reframe-estimate-text"></p>
+      <p class="hint">At most {{ "%g"|format(max_window_sec) }} s per generation and one generation
+        in flight per project. Estimate only: Fal does not report the debit to this key; the
+        account dashboard does.</p>
+    </form>
+  </div>
+</div>
+
+{% for row in rows %}
+{% set job = row.job %}{% set task = row.task %}
+<div class="card">
+  <div class="card-header">
+    <h2>Attempt {{ job.id[:8] }}</h2>
+    <span class="text-muted" style="margin-left:auto; font-size:12px">
+      {{ job.target_aspect }} · {{ job.resolution }} ·
+      {{ "%.2f"|format(job.window_start_sec) }}–{{ "%.2f"|format(job.window_end_sec) }} s ·
+      {{ job.created_at.strftime("%Y-%m-%d %H:%M") }}
+    </span>
+  </div>
+  <div class="card-body">
+    <div style="font-size:13px; margin-bottom:8px">
+      {% if job.status == "preparing" %}
+        <span class="badge badge-processing">preparing</span> Cutting the input locally (free)&hellip;
+      {% elif job.status == "prepare_failed" %}
+        <span class="badge badge-failed">prepare failed</span>
+        <code>{{ job.error_code }}</code> {{ error_detail(job.error_message or "", 160) }}
+        <span class="text-muted">— nothing was sent to Fal or reserved.</span>
+      {% elif task %}
+        <span class="badge badge-{{ 'done' if task.status == 'done' else ('failed' if task.status in ('failed', 'refused', 'abandoned', 'submit_unknown') else 'processing') }}">{{ task.status }}</span>
+        <strong>{{ row.task_label }}</strong>
+        {% if task.request_id %}<span class="text-muted">· request <code>{{ task.request_id }}</code></span>{% endif %}
+        {% if task.error_code %}<span class="text-muted">· <code>{{ task.error_code }}</code></span>{% endif %}
+        {% if task.error_message %}<div style="font-size:11px;color:#c00">{{ error_detail(task.error_message, 160) }}</div>{% endif %}
+      {% endif %}
+    </div>
+    <div style="font-size:12px" class="text-muted">
+      Cost: output {{ "%.2f"|format(job.input_duration_sec or (job.window_end_sec - job.window_start_sec)) }} s ×
+      {{ tariff[job.resolution] }} USD/s ≈ <strong>{{ "%.2f"|format(job.estimated_usd_base) }} USD</strong>
+      (up to {{ "%.2f"|format(job.estimated_usd_reserved) }} reserved for overlap windows)
+      {% if task and task.accepted_at %}· submitted {{ task.accepted_at.strftime("%H:%M:%S") }}{% endif %}
+      {% if task and task.status == "done" %}· finished {{ task.updated_at.strftime("%H:%M:%S") }}{% endif %}
+      — estimate only; the Fal dashboard shows the real debit.
+    </div>
+
+    {% if row.actions %}
+    <form class="reframe-actions" style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap; align-items:center"
+          onsubmit="return false">
+      <input type="text" name="note" placeholder="Note (required): what you checked in the Fal dashboard" style="flex:1; min-width:260px" />
+      {% if "adopt" in row.actions %}
+      <input type="text" name="request_id" placeholder="Fal request id (for Adopt)" style="width:220px" />
+      {% endif %}
+      {% for a in row.actions %}
+      <button type="button" class="btn btn-sm btn-warning"
+              onclick="reframeTaskAction(this, '{{ job.id }}', '{{ a }}', '{{ project.id }}')">{{ a|capitalize }}</button>
+      {% endfor %}
+    </form>
+    <p class="hint">Adopt: the request exists at Fal (records it and its charge). Abandon: you
+      confirmed nothing exists at Fal (releases the reservation). Close: you cannot tell
+      (keeps the charge). Resume: retry the cancel.</p>
+    {% endif %}
+
+    {% if task and task.status == "done" %}
+    <div style="margin-top:10px">
+      <span class="badge badge-{{ 'done' if job.qa_status == 'passed' else ('failed' if job.qa_status == 'failed' else 'processing') }}">QA {{ job.qa_status }}</span>
+      {% if job.job_qa %}
+      <span style="font-size:12px" class="text-muted">
+        {% set q = job.job_qa %}
+        {% if q.J1 %}J1 {{ q.J1.width }}×{{ q.J1.height }}{% if not q.J1.ok %} (expected {{ q.J1.expected[0] }}×{{ q.J1.expected[1] }}){% endif %} ·{% endif %}
+        {% if q.J2 %}J2 {{ q.J2.raw_frames }}/{{ q.J2.expected }} frames{% if not q.J2.ok %} <strong style="color:#c00">mismatch</strong>{% endif %} ·{% endif %}
+        {% if q.J3 %}J3 {% if q.J3.ssim %}SSIM {{ q.J3.ssim|join(", ") }}{% if not q.J3.ok %} <strong style="color:#c60">low</strong>{% endif %}{% else %}{{ q.J3.skipped }}{% endif %}{% endif %}
+        {% if q.error %}<strong style="color:#c00">{{ q.error }}</strong>{% endif %}
+      </span>
+      {% endif %}
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-top:8px">
+        <video controls preload="metadata" style="max-height:360px; border-radius:6px; background:#000"
+               src="/api/v2/reframe-jobs/{{ job.id }}/raw"></video>
+        {% if job.qa_status in ("passed", "failed") %}
+        <img src="/api/v2/reframe-jobs/{{ job.id }}/sheet" alt="contact sheet"
+             style="max-height:360px; border-radius:6px" />
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if row.defaults %}
+    {% set d = row.defaults %}
+    <form class="reframe-render-form" style="margin-top:14px"
+          onsubmit="return reframeCreateRender(event, '{{ job.id }}', '{{ project.id }}')">
+      <h3 style="font-size:14px; margin:0 0 6px">Ending → deliver to Drive (free)</h3>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end">
+        <div class="form-group"><label>Picture ends at, s</label>
+          <input type="number" name="picture_end_sec" step="0.001" value="{{ d.picture_end }}" style="width:110px" /></div>
+        <div class="form-group"><label>Fade, s</label>
+          <input type="number" name="fade_sec" step="0.01" min="0" max="2" value="{{ d.fade }}" style="width:80px" /></div>
+        {% if d.audio_end is not none %}
+        <div class="form-group"><label>Audio ends at, s</label>
+          <input type="number" name="audio_end_sec" step="0.001" value="{{ d.audio_end }}" style="width:110px" /></div>
+        {% endif %}
+        <div class="form-group"><label>Black tail, s</label>
+          <input type="number" name="black_tail_sec" step="0.01" min="0" max="5" value="{{ d.black_tail }}" style="width:80px" /></div>
+        <div class="form-group"><label>CTA clip</label>
+          <select name="library_clip_id">
+            <option value="">— none —</option>
+            {% for c in library_clips %}
+            {% if c.width and c.height and ((job.target_aspect == "9:16" and c.height > c.width) or (job.target_aspect == "16:9" and c.width > c.height)) %}
+            <option value="{{ c.id }}">{{ c.name }}{% if c.language %} ({{ c.language }}){% endif %}</option>
+            {% endif %}
+            {% endfor %}
+          </select></div>
+        <div class="form-group"><label>Language</label>
+          <select name="language">
+            {% for key, spec in languages.items() %}<option value="{{ key }}">{{ spec.label }}</option>{% endfor %}
+          </select></div>
+        <button type="submit" class="btn btn-primary">Render</button>
+      </div>
+      <p class="hint">Picture: generated frames up to “picture ends”, the last frame held and faded
+        to black. Sound: the source audio keeps playing to “audio ends” (it may run up to
+        {{ "%g"|format(3) }} s past the window), then silence; then the black tail, then the CTA.
+        {% if job.audio_path %}<a href="/api/v2/reframe-jobs/{{ job.id }}/audio" target="_blank">Listen to the pinned audio</a>
+        (starts at {{ "%.3f"|format(job.input_start_sec or 0) }} s of the source).{% endif %}</p>
+    </form>
+    {% endif %}
+
+    {% if row.renders %}
+    <table style="margin-top:12px">
+      <thead><tr><th>Render</th><th>Ending</th><th>CTA</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+      {% for r in row.renders %}
+      <tr>
+        <td><code>{{ r.id[:8] }}</code> <span class="text-muted">{{ r.language }}</span></td>
+        <td style="font-size:12px">P {{ "%.3f"|format(r.picture_end_sec) }} · fade {{ "%g"|format(r.fade_sec) }}
+          {% if r.audio_end_sec is not none %}· A {{ "%.3f"|format(r.audio_end_sec) }}{% endif %} · black {{ "%g"|format(r.black_tail_sec) }}</td>
+        <td style="font-size:12px">{% if r.library_clip_id %}yes{% else %}<span class="text-muted">none</span>{% endif %}</td>
+        <td>
+          <span class="badge badge-{{ r.status }}">{{ r.status }}</span>
+          {% if r.qa %}<div style="font-size:11px" class="text-muted">
+            {% if r.qa.failed %}QA failed: {{ r.qa.failed|join(", ") }}{% else %}R1–R4 passed{% endif %}
+            {% if r.qa.final %} · {{ "%.3f"|format(r.qa.final.duration) }} s, {{ r.qa.final.frames }} frames{% endif %}
+          </div>{% endif %}
+          {% if r.status == "failed" and r.error_message %}<div style="font-size:11px;color:#c00">{{ error_detail(r.error_message, 140) }}</div>{% endif %}
+        </td>
+        <td class="text-right" style="font-size:11px">
+          {% if r.status == "done" %}
+          <video controls preload="none" style="max-height:200px; border-radius:4px; background:#000; display:block; margin:0 0 4px auto"
+                 src="/api/v2/reframe-renders/{{ r.id }}/result"></video>
+          <a class="btn btn-sm btn-success" href="/api/v2/reframe-renders/{{ r.id }}/result" download>Download</a>
+          {% if r.gdrive_link or r.gdrive_file_id %}
+          <a class="btn btn-sm btn-secondary" target="_blank" rel="noopener"
+             href="{{ r.gdrive_link or ('https://drive.google.com/file/d/' ~ r.gdrive_file_id ~ '/view') }}">Drive</a>
+          {% endif %}
+          {% elif r.status == "failed" %}
+          <button type="button" class="btn btn-sm btn-warning"
+                  onclick="reframeCall('POST', '/api/v2/reframe-renders/{{ r.id }}/retry', null, '{{ project.id }}')">Retry</button>
+          {% endif %}
+          {% if r.status in ("done", "failed") %}
+          <button type="button" class="btn btn-sm btn-danger"
+                  onclick="if (confirm('Delete this render? The Drive copy stays.')) reframeCall('DELETE', '/api/v2/reframe-renders/{{ r.id }}', null, '{{ project.id }}')">Delete</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <div style="margin-top:10px; text-align:right">
+      <button type="button" class="btn btn-sm btn-danger"
+              onclick="if (confirm('Delete this attempt and its renders? Drive copies stay; the Fal task record is kept.')) reframeCall('DELETE', '/api/v2/reframe-jobs/{{ job.id }}', null, '{{ project.id }}')">Delete attempt</button>
+    </div>
+  </div>
+</div>
+{% endfor %}
+</div>
+
+<script>
+window.reframeRefresh = function (pid) {
+  if (window.htmx) {
+    htmx.ajax('GET', '/v2/projects/' + encodeURIComponent(pid) + '/reframe-fragment',
+              { target: '#reframe-content', swap: 'innerHTML' });
+  } else { location.reload(); }
+};
+window.reframeCall = function (method, url, body, pid) {
+  return fetch(url, { method: method, body: body })
+    .then(function (r) {
+      if (r.ok) { reframeRefresh(pid); return true; }
+      return r.json().then(function (b) { alert('Error: ' + (b.detail || r.status)); return false; },
+                           function () { alert('Error: ' + r.status); return false; });
+    })
+    .catch(function (e) { alert('Network error: ' + e); return false; });
+};
+window.reframeEstimate = function () {
+  var f = document.getElementById('reframe-new-job');
+  if (!f) return;
+  var s = parseFloat(f.window_start_sec.value || '0'), e = parseFloat(f.window_end_sec.value || '0');
+  var rate = f.resolution.value === '480p' ? 0.05 : 0.08;
+  var sec = Math.max(0, e - s);
+  var base = sec * rate, reserved = Math.max(1, Math.ceil(sec)) * rate * 2;
+  var btn = document.getElementById('reframe-generate-btn');
+  if (btn) btn.textContent = 'Generate on Fal — about ' + base.toFixed(2) + ' USD (up to ' + reserved.toFixed(2) + ' reserved)';
+  var t = document.getElementById('reframe-estimate-text');
+  if (t) t.textContent = sec.toFixed(2) + ' s of output × ' + rate + ' USD/s.';
+};
+window.reframeCreateJob = function (ev, pid) {
+  ev.preventDefault();
+  var f = ev.target;
+  var btn = document.getElementById('reframe-generate-btn');
+  if (!confirm((btn ? btn.textContent : 'Generate on Fal') + '\n\nThe selected window of this video is sent to Fal, a third-party provider. Continue?')) return false;
+  if (btn) btn.disabled = true;
+  reframeCall('POST', '/api/v2/projects/' + encodeURIComponent(pid) + '/reframe-jobs', new FormData(f), pid)
+    .then(function () { if (btn) btn.disabled = false; });
+  return false;
+};
+window.reframeCreateRender = function (ev, jid, pid) {
+  ev.preventDefault();
+  var fd = new FormData(ev.target);
+  if (!fd.get('library_clip_id')) fd.delete('library_clip_id');
+  reframeCall('POST', '/api/v2/reframe-jobs/' + encodeURIComponent(jid) + '/renders', fd, pid);
+  return false;
+};
+window.reframeTaskAction = function (btn, jid, action, pid) {
+  var form = btn.closest('form');
+  var fd = new FormData(form);
+  if (!(fd.get('note') || '').trim()) { alert('Write a note first: what you checked in the Fal dashboard.'); return; }
+  if (action === 'adopt' && !(fd.get('request_id') || '').trim()) { alert('Adopt needs the Fal request id.'); return; }
+  if (!confirm(action + ' this Fal task?')) return;
+  reframeCall('POST', '/api/v2/reframe-jobs/' + encodeURIComponent(jid) + '/task-actions/' + action, fd, pid);
+};
+reframeEstimate();
+</script>

@@ -1,0 +1,52 @@
+{# ── Filter dropdown ──────────────────────────────────────────────────────
+   A <details> whose <summary> is styled as a select-looking button and whose
+   panel floats over the page. The button CAPTIONS ITSELF: idle it reads the
+   filter's name ("Model"), active it reads what is picked ("Model: SD25, GO",
+   collapsing to "+N" past two). That is why the bar carries no row of
+   <label>s above the controls — and why every filter fits on one line.
+
+   Plain HTML on purpose: it submits with the surrounding <form> whether or
+   not JS ran. updateFilterMenuLabel() only keeps the caption in sync while
+   the panel is open, and recomputes exactly what this macro renders.
+
+     name      query param each option posts (e.g. "model")
+     label     the filter's name — idle caption and active prefix
+     options   web_v2._filter_options() entries: {value, label, short, title}
+     selected  values already active (echoed back by the server): a list for
+               mode="multi", a plain string for mode="single"
+     mode      "multi"  → checkboxes; the server ORs the ticked values
+               "single" → radios; the option with value="" is the "Any" reset
+     title     hover text for the closed button
+#}
+{% macro filter_menu(name, label, options, selected, mode="multi", title="") %}
+{#- A single-select echoes a scalar, a multi-select a list: normalise to a
+    list so one code path captions both. -#}
+{%- set sel = selected if selected is not string else ([selected] if selected else []) -%}
+{%- set picked = [] -%}
+{%- for opt in options if opt.value and opt.value in sel -%}
+  {%- set _ = picked.append(opt.short) -%}
+{%- endfor -%}
+<details class="filter-menu{% if picked %} is-active{% endif %}" data-filter-label="{{ label }}">
+  <summary{% if title %} title="{{ title }}"{% endif %}>
+    <span class="filter-menu-label">
+      {%- if picked -%}
+        {{ label }}: {{ picked[:2] | join(", ") }}{% if picked | length > 2 %} +{{ picked | length - 2 }}{% endif %}
+      {%- else -%}
+        {{ label }}
+      {%- endif -%}
+    </span>
+  </summary>
+  <div class="filter-menu-panel">
+    {% for opt in options %}
+    <label{% if opt.title %} title="{{ opt.title }}"{% endif %}>
+      <input type="{{ 'radio' if mode == 'single' else 'checkbox' }}"
+             name="{{ name }}" value="{{ opt.value }}"
+             data-short="{{ opt.short }}"
+             {% if opt.value in sel or (mode == "single" and not opt.value and not sel) %}checked{% endif %}
+             onchange="updateFilterMenuLabel(this)" />
+      <span>{{ opt.label }}</span>
+    </label>
+    {% endfor %}
+  </div>
+</details>
+{% endmacro %}

@@ -1,0 +1,9 @@
+# Test/dev dependencies — never installed into the runtime image.
+#   pip install --require-hashes -r requirements.lock -r requirements-dev.lock
+# (requirements-dev.lock is pip-compiled from this file with -c requirements.lock;
+# mixing the hashed runtime lock with this unhashed file is refused by pip.)
+pytest==9.1.1
+respx==0.21.1
+# AICP-338: Redis/RQ admission + poll tests (tests/test_localisation_prompt_job.py);
+# [lua] for redis-py's Lock, which runs Lua scripts.
+fakeredis[lua]==2.40.0

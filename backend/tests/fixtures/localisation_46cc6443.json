@@ -1,0 +1,1193 @@
+{
+ "_about": "AICP-335 acceptance fixture, project 46cc6443 (read-only copy of prod on 2026-10-29). transcript_v2 = the stored transcript (schema v2). v3_annotations = the v3 fields a transcribe/v3 call is expected to add (hand-written from the operator's listening QA in the AICP-332 flow journal; not a real model answer). translated = the localisation-prompt lines per language (refs/locprompt_*.json). expected = the segment prompts that worked on Seedance 2.5: pt/pl/fr verbatim from refs/*_run_inputs.json; es from the same reference builder (refs/build_v2_prompts.py) on locprompt_es.json, since the es runs were hand-edited round by round.",
+ "duration_sec": 78.854966,
+ "transcript_v2": {
+  "schema_version": 2,
+  "model": "gemini-3.1-pro",
+  "prompt_version": "transcribe/v2",
+  "created_at": "2026-10-28T18:53:18+00:00",
+  "source_language": "en",
+  "video_summary": "An off-camera interviewer stops a woman reading outside a bookstore to ask how she reads so much. She demonstrates the Listenify app on her phone, which scans book pages and reads them aloud. She shows how she can adjust the reading speed and switch to celebrity voices like Gwyneth Paltrow and Snoop Dogg, explaining how the app helps her read more and study for exams while on the go.",
+  "scene_context": "The video is an advertisement disguised as a spontaneous street interview. An older woman is sitting outdoors at a table with books. The interviewer approaches from behind the camera, holding a small lavalier microphone into the frame. The woman holds her smartphone, actively demonstrating the Listenify app interface as it reads a scanned page aloud.",
+  "lines": [
+   {
+    "id": 1,
+    "start": 0.0,
+    "end": 2.4,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "I think I read a lot more books because of that."
+   },
+   {
+    "id": 2,
+    "start": 2.4,
+    "end": 4.2,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Excuse me. How do you read so many books?"
+   },
+   {
+    "id": 3,
+    "start": 4.3,
+    "end": 6.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Well, I don't read actually, listen."
+   },
+   {
+    "id": 4,
+    "start": 6.3,
+    "end": 7.3,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "What do you mean you listen?"
+   },
+   {
+    "id": 5,
+    "start": 7.5,
+    "end": 13.0,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Well, I have this app. So I just took a photograph of this book, and it just reads everything out to me."
+   },
+   {
+    "id": 6,
+    "start": 13.0,
+    "end": 15.8,
+    "speaker": "female voice from the smartphone app",
+    "on_screen": false,
+    "text": "in other words, is a very predictable"
+   },
+   {
+    "id": 7,
+    "start": 15.9,
+    "end": 17.2,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Is that Gwyneth Paltrow?"
+   },
+   {
+    "id": 8,
+    "start": 17.2,
+    "end": 19.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Yeah, she's my favorite voice."
+   },
+   {
+    "id": 9,
+    "start": 19.3,
+    "end": 26.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "And it has other features, so if I wanna change the speed I can make it faster, or make it slower."
+   },
+   {
+    "id": 10,
+    "start": 20.5,
+    "end": 29.2,
+    "speaker": "female voice from the smartphone app",
+    "on_screen": false,
+    "text": "imperfect birth control with a failure or success rate than our more modern interventions, condoms, hormones, because it covers a certain number of days. But nonetheless recipes"
+   },
+   {
+    "id": 11,
+    "start": 26.2,
+    "end": 31.0,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "And I can also change the voice. So sometimes I listen to Snoop Dogg."
+   },
+   {
+    "id": 12,
+    "start": 31.0,
+    "end": 33.3,
+    "speaker": "male voice from the smartphone app",
+    "on_screen": false,
+    "text": "genetic mutations that allowed birth spacing were favored."
+   },
+   {
+    "id": 13,
+    "start": 33.3,
+    "end": 35.8,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "You like listening to Snoop Dogg read your books to you?"
+   },
+   {
+    "id": 14,
+    "start": 35.8,
+    "end": 41.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Yeah, I think he's so cute. And especially it's relaxing to listen to his voice at night when I'm tired."
+   },
+   {
+    "id": 15,
+    "start": 41.3,
+    "end": 43.1,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "I mean, it's probably really engaging."
+   },
+   {
+    "id": 16,
+    "start": 43.1,
+    "end": 50.1,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "It is, and I think I read a lot more books because of that. And I can listen on the go, so if I take a walk I can listen to the books."
+   },
+   {
+    "id": 17,
+    "start": 50.1,
+    "end": 58.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Uh, if I'm tired and I don't feel like reading with my eyes, I don't need my reading glasses anymore. And I don't have to sit tied to my desk."
+   },
+   {
+    "id": 18,
+    "start": 58.2,
+    "end": 63.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Uh, if I want to study, it helps my focus because I can read and I can listen at the same time, too."
+   },
+   {
+    "id": 19,
+    "start": 63.3,
+    "end": 64.6,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "What are you studying for?"
+   },
+   {
+    "id": 20,
+    "start": 64.6,
+    "end": 71.5,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Oh, well, like my real estate broker's exam. That way I could just go out on a walk and study while I was listening and not be tied to my desk."
+   },
+   {
+    "id": 21,
+    "start": 71.5,
+    "end": 74.3,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "That's pretty incredible. What is this app called again?"
+   },
+   {
+    "id": 22,
+    "start": 74.3,
+    "end": 77.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "It's called Listenify, and you can download it in the App Store."
+   },
+   {
+    "id": 23,
+    "start": 77.2,
+    "end": 78.5,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Thank you."
+   }
+  ],
+  "on_screen_text": []
+ },
+ "v3_annotations": {
+  "schema_version": 3,
+  "prompt_version": "transcribe/v3",
+  "speakers": [
+   {
+    "label": "older woman with glasses",
+    "tag": "WOMAN",
+    "kind": "person",
+    "gender": "female",
+    "voice": "mature, lower",
+    "description": "the older woman with glasses. She owns the phone"
+   },
+   {
+    "label": "off-screen interviewer holding a microphone",
+    "tag": "INTERVIEWER",
+    "kind": "person",
+    "gender": "female",
+    "voice": "higher-pitched",
+    "description": "a young WOMAN off screen — only her hand holding the microphone is visible"
+   },
+   {
+    "label": "female voice from the smartphone app",
+    "tag": "APP",
+    "kind": "device",
+    "gender": "female",
+    "voice": "",
+    "description": "a female voice coming from the phone speaker (the app reading a book aloud)"
+   },
+   {
+    "label": "male voice from the smartphone app",
+    "tag": "APP",
+    "kind": "device",
+    "gender": "male",
+    "voice": "",
+    "description": "a male voice coming from the phone speaker (the app reading a book aloud)"
+   }
+  ],
+  "lines": {
+   "9": {
+    "face_visible": false,
+    "frame": "the camera looks over her shoulder at the phone in HER hands"
+   }
+  },
+  "actions": [
+   {
+    "start": 53.6,
+    "end": 54.4,
+    "speaker": "older woman with glasses",
+    "action": "takes her glasses OFF",
+    "do_not": "put them back on"
+   }
+  ],
+  "brands": [
+   {
+    "name": "Listenify",
+    "pronunciation": "LISTEN-ih-fy"
+   }
+  ]
+ },
+ "segments": [
+  {
+   "id": "5376b0e8-1091-458f-9b66-732432d8c61a",
+   "index": 0,
+   "start_sec": 0,
+   "end_sec": 12.1333,
+   "pre_roll_sec": 0,
+   "post_roll_sec": 0
+  },
+  {
+   "id": "8c6816b7-864a-4467-9030-1a94d375394a",
+   "index": 1,
+   "start_sec": 12.1333,
+   "end_sec": 26.0333,
+   "pre_roll_sec": 0,
+   "post_roll_sec": 0
+  },
+  {
+   "id": "77797888-14c2-457e-9f8a-e9567a41978c",
+   "index": 2,
+   "start_sec": 26.0333,
+   "end_sec": 35.9,
+   "pre_roll_sec": 0,
+   "post_roll_sec": 0
+  },
+  {
+   "id": "05a2b992-5c65-4015-839d-9da033978b10",
+   "index": 3,
+   "start_sec": 35.9,
+   "end_sec": 49.45,
+   "pre_roll_sec": 0,
+   "post_roll_sec": 0
+  },
+  {
+   "id": "a95328cb-66f3-4317-acd8-a11431c3ec4c",
+   "index": 4,
+   "start_sec": 49.45,
+   "end_sec": 57.7,
+   "pre_roll_sec": 0,
+   "post_roll_sec": 0
+  },
+  {
+   "id": "1ba29224-8b46-4bfc-81b4-41039e75dee5",
+   "index": 5,
+   "start_sec": 57.7,
+   "end_sec": 65.95,
+   "pre_roll_sec": 0,
+   "post_roll_sec": 0
+  },
+  {
+   "id": "54d1d055-d853-4bea-9568-bc4bb7f0a1b1",
+   "index": 6,
+   "start_sec": 65.95,
+   "end_sec": 78.854966,
+   "pre_roll_sec": 0,
+   "post_roll_sec": 0
+  }
+ ],
+ "translated": {
+  "es": [
+   {
+    "id": 1,
+    "start": 0.0,
+    "end": 2.4,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Por eso leo muchísimos más libros.",
+    "source_text": "I think I read a lot more books because of that."
+   },
+   {
+    "id": 2,
+    "start": 2.4,
+    "end": 4.2,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Oye, ¿cómo lees tantos libros?",
+    "source_text": "Excuse me. How do you read so many books?"
+   },
+   {
+    "id": 3,
+    "start": 4.3,
+    "end": 6.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Pues no leo, los escucho.",
+    "source_text": "Well, I don't read actually, listen."
+   },
+   {
+    "id": 4,
+    "start": 6.3,
+    "end": 7.3,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "¿Los escuchas?",
+    "source_text": "What do you mean you listen?"
+   },
+   {
+    "id": 5,
+    "start": 7.5,
+    "end": 13.0,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Tengo esta app: le tomo foto al libro y me lo lee todo.",
+    "source_text": "Well, I have this app. So I just took a photograph of this book, and it just reads everything out to me."
+   },
+   {
+    "id": 6,
+    "start": 13.0,
+    "end": 15.8,
+    "speaker": "female voice from the smartphone app",
+    "on_screen": false,
+    "text": "En otras palabras, es muy predecible.",
+    "source_text": "in other words, is a very predictable"
+   },
+   {
+    "id": 7,
+    "start": 15.9,
+    "end": 17.2,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "¿Es Gwyneth Paltrow?",
+    "source_text": "Is that Gwyneth Paltrow?"
+   },
+   {
+    "id": 8,
+    "start": 17.2,
+    "end": 19.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Sí, es mi voz favorita.",
+    "source_text": "Yeah, she's my favorite voice."
+   },
+   {
+    "id": 9,
+    "start": 19.3,
+    "end": 26.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Y tiene otras funciones: puedo cambiar la velocidad, hacer que lea más rápido o más lento.",
+    "source_text": "And it has other features, so if I wanna change the speed I can make it faster, or make it slower."
+   },
+   {
+    "id": 10,
+    "start": 20.5,
+    "end": 29.2,
+    "speaker": "female voice from the smartphone app",
+    "on_screen": false,
+    "text": "Los anticonceptivos tienen una eficacia variable, porque cubren solo ciertos días.",
+    "source_text": "imperfect birth control with a failure or success rate than our more modern interventions, condoms, hormones, because it covers a certain number of days. But nonetheless recipes"
+   },
+   {
+    "id": 11,
+    "start": 26.2,
+    "end": 31.0,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "También puedo cambiar la voz. A veces escucho mis libros con la voz de Snoop Dogg.",
+    "source_text": "And I can also change the voice. So sometimes I listen to Snoop Dogg."
+   },
+   {
+    "id": 12,
+    "start": 31.0,
+    "end": 33.3,
+    "speaker": "male voice from the smartphone app",
+    "on_screen": false,
+    "text": "Mutaciones que espaciaban nacimientos.",
+    "source_text": "genetic mutations that allowed birth spacing were favored."
+   },
+   {
+    "id": 13,
+    "start": 33.3,
+    "end": 35.8,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "¿Te gusta que Snoop Dogg te lea?",
+    "source_text": "You like listening to Snoop Dogg read your books to you?"
+   },
+   {
+    "id": 14,
+    "start": 35.8,
+    "end": 41.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Sí, se me hace muy tierno. Sobre todo, su voz me relaja en la noche cuando estoy cansada.",
+    "source_text": "Yeah, I think he's so cute. And especially it's relaxing to listen to his voice at night when I'm tired."
+   },
+   {
+    "id": 15,
+    "start": 41.3,
+    "end": 43.1,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Ha de ser muy entretenido.",
+    "source_text": "I mean, it's probably really engaging."
+   },
+   {
+    "id": 16,
+    "start": 43.1,
+    "end": 50.1,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Sí, totalmente. Leo mucho más y puedo escuchar mis libros cuando salgo a caminar.",
+    "source_text": "It is, and I think I read a lot more books because of that. And I can listen on the go, so if I take a walk I can listen to the books."
+   },
+   {
+    "id": 17,
+    "start": 50.1,
+    "end": 58.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Si estoy cansada, no necesito mis lentes para leer y ya no tengo que estar pegada al escritorio.",
+    "source_text": "Uh, if I'm tired and I don't feel like reading with my eyes, I don't need my reading glasses anymore. And I don't have to sit tied to my desk."
+   },
+   {
+    "id": 18,
+    "start": 58.2,
+    "end": 63.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Si quiero estudiar, me ayuda a concentrarme: puedo leer y escuchar a la vez.",
+    "source_text": "Uh, if I want to study, it helps my focus because I can read and I can listen at the same time, too."
+   },
+   {
+    "id": 19,
+    "start": 63.3,
+    "end": 64.6,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "¿Qué estás estudiando?",
+    "source_text": "What are you studying for?"
+   },
+   {
+    "id": 20,
+    "start": 64.6,
+    "end": 71.5,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Mi examen de bienes raíces. Puedo caminar y estudiar mientras escucho, sin estar en el escritorio.",
+    "source_text": "Oh, well, like my real estate broker's exam. That way I could just go out on a walk and study while I was listening and not be tied to my desk."
+   },
+   {
+    "id": 21,
+    "start": 71.5,
+    "end": 74.3,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "¡Qué increíble! ¿Cómo se llama la app?",
+    "source_text": "That's pretty incredible. What is this app called again?"
+   },
+   {
+    "id": 22,
+    "start": 74.3,
+    "end": 77.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Se llama Listenify, descárgala en la App Store.",
+    "source_text": "It's called Listenify, and you can download it in the App Store."
+   },
+   {
+    "id": 23,
+    "start": 77.2,
+    "end": 78.5,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Gracias.",
+    "source_text": "Thank you."
+   }
+  ],
+  "pt": [
+   {
+    "id": 1,
+    "start": 0.0,
+    "end": 2.4,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Acho que leio bem mais livros por isso.",
+    "source_text": "I think I read a lot more books because of that."
+   },
+   {
+    "id": 2,
+    "start": 2.4,
+    "end": 4.2,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Com licença, como lê tanto?",
+    "source_text": "Excuse me. How do you read so many books?"
+   },
+   {
+    "id": 3,
+    "start": 4.3,
+    "end": 6.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Eu não leio, eu escuto.",
+    "source_text": "Well, I don't read actually, listen."
+   },
+   {
+    "id": 4,
+    "start": 6.3,
+    "end": 7.3,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Como assim?",
+    "source_text": "What do you mean you listen?"
+   },
+   {
+    "id": 5,
+    "start": 7.5,
+    "end": 13.0,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Eu tenho um app: tiro uma foto do livro e ele lê tudo pra mim.",
+    "source_text": "Well, I have this app. So I just took a photograph of this book, and it just reads everything out to me."
+   },
+   {
+    "id": 6,
+    "start": 13.0,
+    "end": 15.8,
+    "speaker": "female voice from the smartphone app",
+    "on_screen": false,
+    "text": "Em outras palavras, é bem previsível.",
+    "source_text": "in other words, is a very predictable"
+   },
+   {
+    "id": 7,
+    "start": 15.9,
+    "end": 17.2,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "É a Gwyneth Paltrow?",
+    "source_text": "Is that Gwyneth Paltrow?"
+   },
+   {
+    "id": 8,
+    "start": 17.2,
+    "end": 19.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Sim, é minha voz favorita.",
+    "source_text": "Yeah, she's my favorite voice."
+   },
+   {
+    "id": 9,
+    "start": 19.3,
+    "end": 26.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "E tem outras funções também: posso mudar a velocidade, acelerar ou deixar mais lento.",
+    "source_text": "And it has other features, so if I wanna change the speed I can make it faster, or make it slower."
+   },
+   {
+    "id": 10,
+    "start": 20.5,
+    "end": 29.2,
+    "speaker": "female voice from the smartphone app",
+    "on_screen": false,
+    "text": "Um método contraceptivo imperfeito, com uma taxa de falha maior que a dos métodos atuais.",
+    "source_text": "imperfect birth control with a failure or success rate than our more modern interventions, condoms, hormones, because it covers a certain number of days. But nonetheless recipes"
+   },
+   {
+    "id": 11,
+    "start": 26.2,
+    "end": 31.0,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "E também posso trocar a voz. Às vezes, escuto o Snoop Dogg.",
+    "source_text": "And I can also change the voice. So sometimes I listen to Snoop Dogg."
+   },
+   {
+    "id": 12,
+    "start": 31.0,
+    "end": 33.3,
+    "speaker": "male voice from the smartphone app",
+    "on_screen": false,
+    "text": "Mutações favoreciam espaçar filhos.",
+    "source_text": "genetic mutations that allowed birth spacing were favored."
+   },
+   {
+    "id": 13,
+    "start": 33.3,
+    "end": 35.8,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Você gosta do Snoop Dogg lendo seus livros?",
+    "source_text": "You like listening to Snoop Dogg read your books to you?"
+   },
+   {
+    "id": 14,
+    "start": 35.8,
+    "end": 41.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Sim, acho ele uma graça. E, à noite, quando estou cansada, a voz dele me relaxa.",
+    "source_text": "Yeah, I think he's so cute. And especially it's relaxing to listen to his voice at night when I'm tired."
+   },
+   {
+    "id": 15,
+    "start": 41.3,
+    "end": 43.1,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Deve prender bastante, né?",
+    "source_text": "I mean, it's probably really engaging."
+   },
+   {
+    "id": 16,
+    "start": 43.1,
+    "end": 50.1,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "É mesmo, acho que leio muito mais por causa disso. E posso ouvir os livros enquanto caminho.",
+    "source_text": "It is, and I think I read a lot more books because of that. And I can listen on the go, so if I take a walk I can listen to the books."
+   },
+   {
+    "id": 17,
+    "start": 50.1,
+    "end": 58.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Se estou cansada e não quero ler, não preciso mais dos óculos de leitura. E não fico presa à mesa.",
+    "source_text": "Uh, if I'm tired and I don't feel like reading with my eyes, I don't need my reading glasses anymore. And I don't have to sit tied to my desk."
+   },
+   {
+    "id": 18,
+    "start": 58.2,
+    "end": 63.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Pra estudar, me concentro melhor lendo e ouvindo ao mesmo tempo.",
+    "source_text": "Uh, if I want to study, it helps my focus because I can read and I can listen at the same time, too."
+   },
+   {
+    "id": 19,
+    "start": 63.3,
+    "end": 64.6,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Estudando pra quê?",
+    "source_text": "What are you studying for?"
+   },
+   {
+    "id": 20,
+    "start": 64.6,
+    "end": 71.5,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Ah, a prova do CRECI. Assim, posso estudar caminhando enquanto escuto, sem ficar presa à mesa.",
+    "source_text": "Oh, well, like my real estate broker's exam. That way I could just go out on a walk and study while I was listening and not be tied to my desk."
+   },
+   {
+    "id": 21,
+    "start": 71.5,
+    "end": 74.3,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Que incrível! Qual é o nome desse app mesmo?",
+    "source_text": "That's pretty incredible. What is this app called again?"
+   },
+   {
+    "id": 22,
+    "start": 74.3,
+    "end": 77.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Chama Listenify, e dá pra baixar na App Store.",
+    "source_text": "It's called Listenify, and you can download it in the App Store."
+   },
+   {
+    "id": 23,
+    "start": 77.2,
+    "end": 78.5,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Valeu, viu?",
+    "source_text": "Thank you."
+   }
+  ],
+  "pl": [
+   {
+    "id": 1,
+    "start": 0.0,
+    "end": 2.4,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Dzięki temu czytam o wiele więcej książek.",
+    "source_text": "I think I read a lot more books because of that."
+   },
+   {
+    "id": 2,
+    "start": 2.4,
+    "end": 4.2,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Jak pani czyta tyle książek?",
+    "source_text": "Excuse me. How do you read so many books?"
+   },
+   {
+    "id": 3,
+    "start": 4.3,
+    "end": 6.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Właściwie nie czytam, słucham.",
+    "source_text": "Well, I don't read actually, listen."
+   },
+   {
+    "id": 4,
+    "start": 6.3,
+    "end": 7.3,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Słucha pani?",
+    "source_text": "What do you mean you listen?"
+   },
+   {
+    "id": 5,
+    "start": 7.5,
+    "end": 13.0,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Mam aplikację. Robię zdjęcie strony, a ona od razu czyta ją na głos.",
+    "source_text": "Well, I have this app. So I just took a photograph of this book, and it just reads everything out to me."
+   },
+   {
+    "id": 6,
+    "start": 13.0,
+    "end": 15.8,
+    "speaker": "female voice from the smartphone app",
+    "on_screen": false,
+    "text": "Innymi słowy, jest bardzo przewidywalna.",
+    "source_text": "in other words, is a very predictable"
+   },
+   {
+    "id": 7,
+    "start": 15.9,
+    "end": 17.2,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "To Gwyneth Paltrow?",
+    "source_text": "Is that Gwyneth Paltrow?"
+   },
+   {
+    "id": 8,
+    "start": 17.2,
+    "end": 19.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Tak, to mój ulubiony głos.",
+    "source_text": "Yeah, she's my favorite voice."
+   },
+   {
+    "id": 9,
+    "start": 19.3,
+    "end": 26.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Ma też inne funkcje, więc mogę zmienić tempo — przyspieszyć albo zwolnić czytanie.",
+    "source_text": "And it has other features, so if I wanna change the speed I can make it faster, or make it slower."
+   },
+   {
+    "id": 10,
+    "start": 20.5,
+    "end": 29.2,
+    "speaker": "female voice from the smartphone app",
+    "on_screen": false,
+    "text": "To niedoskonała metoda antykoncepcji, mniej skuteczna niż prezerwatywy czy hormony.",
+    "source_text": "imperfect birth control with a failure or success rate than our more modern interventions, condoms, hormones, because it covers a certain number of days. But nonetheless recipes"
+   },
+   {
+    "id": 11,
+    "start": 26.2,
+    "end": 31.0,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Mogę też zmienić głos. Czasami słucham, jak książki czyta Snoop Dogg.",
+    "source_text": "And I can also change the voice. So sometimes I listen to Snoop Dogg."
+   },
+   {
+    "id": 12,
+    "start": 31.0,
+    "end": 33.3,
+    "speaker": "male voice from the smartphone app",
+    "on_screen": false,
+    "text": "Mutacje genetyczne sprzyjały odstępom.",
+    "source_text": "genetic mutations that allowed birth spacing were favored."
+   },
+   {
+    "id": 13,
+    "start": 33.3,
+    "end": 35.8,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Lubi pani, gdy Snoop Dogg czyta książki?",
+    "source_text": "You like listening to Snoop Dogg read your books to you?"
+   },
+   {
+    "id": 14,
+    "start": 35.8,
+    "end": 41.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Tak, jest uroczy. Wieczorem, gdy jestem zmęczona, jego głos naprawdę świetnie mnie odpręża.",
+    "source_text": "Yeah, I think he's so cute. And especially it's relaxing to listen to his voice at night when I'm tired."
+   },
+   {
+    "id": 15,
+    "start": 41.3,
+    "end": 43.1,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "To musi naprawdę wciągać.",
+    "source_text": "I mean, it's probably really engaging."
+   },
+   {
+    "id": 16,
+    "start": 43.1,
+    "end": 50.1,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Zdecydowanie. Dzięki temu czytam o wiele więcej, a książek mogę słuchać nawet na spacerze.",
+    "source_text": "It is, and I think I read a lot more books because of that. And I can listen on the go, so if I take a walk I can listen to the books."
+   },
+   {
+    "id": 17,
+    "start": 50.1,
+    "end": 58.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Kiedy jestem zmęczona i nie chce mi się czytać, nie potrzebuję okularów. Nie muszę też siedzieć przy biurku.",
+    "source_text": "Uh, if I'm tired and I don't feel like reading with my eyes, I don't need my reading glasses anymore. And I don't have to sit tied to my desk."
+   },
+   {
+    "id": 18,
+    "start": 58.2,
+    "end": 63.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Jak się uczę, łatwiej mi się skupić, bo mogę jednocześnie czytać i słuchać.",
+    "source_text": "Uh, if I want to study, it helps my focus because I can read and I can listen at the same time, too."
+   },
+   {
+    "id": 19,
+    "start": 63.3,
+    "end": 64.6,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Czego się pani uczy?",
+    "source_text": "What are you studying for?"
+   },
+   {
+    "id": 20,
+    "start": 64.6,
+    "end": 71.5,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Przygotowuję się do egzaminu na pośrednika nieruchomości, więc uczę się na spacerach.",
+    "source_text": "Oh, well, like my real estate broker's exam. That way I could just go out on a walk and study while I was listening and not be tied to my desk."
+   },
+   {
+    "id": 21,
+    "start": 71.5,
+    "end": 74.3,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Niesamowite! Jak nazywa się ta aplikacja?",
+    "source_text": "That's pretty incredible. What is this app called again?"
+   },
+   {
+    "id": 22,
+    "start": 74.3,
+    "end": 77.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "To Listenify, możesz ją pobrać z App Store.",
+    "source_text": "It's called Listenify, and you can download it in the App Store."
+   },
+   {
+    "id": 23,
+    "start": 77.2,
+    "end": 78.5,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Dziękuję.",
+    "source_text": "Thank you."
+   }
+  ],
+  "fr": [
+   {
+    "id": 1,
+    "start": 0.0,
+    "end": 2.4,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Je lis beaucoup plus de livres grâce à ça.",
+    "source_text": "I think I read a lot more books because of that."
+   },
+   {
+    "id": 2,
+    "start": 2.4,
+    "end": 4.2,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Comment vous lisez autant ?",
+    "source_text": "Excuse me. How do you read so many books?"
+   },
+   {
+    "id": 3,
+    "start": 4.3,
+    "end": 6.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Je ne lis pas, j'écoute.",
+    "source_text": "Well, I don't read actually, listen."
+   },
+   {
+    "id": 4,
+    "start": 6.3,
+    "end": 7.3,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Vous écoutez ?",
+    "source_text": "What do you mean you listen?"
+   },
+   {
+    "id": 5,
+    "start": 7.5,
+    "end": 13.0,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "J'ai cette appli : je prends la page en photo, et elle lit tout.",
+    "source_text": "Well, I have this app. So I just took a photograph of this book, and it just reads everything out to me."
+   },
+   {
+    "id": 6,
+    "start": 13.0,
+    "end": 15.8,
+    "speaker": "female voice from the smartphone app",
+    "on_screen": false,
+    "text": "Autrement dit, c'est très prévisible.",
+    "source_text": "in other words, is a very predictable"
+   },
+   {
+    "id": 7,
+    "start": 15.9,
+    "end": 17.2,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "C'est Gwyneth Paltrow ?",
+    "source_text": "Is that Gwyneth Paltrow?"
+   },
+   {
+    "id": 8,
+    "start": 17.2,
+    "end": 19.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Oui, c'est ma voix préférée.",
+    "source_text": "Yeah, she's my favorite voice."
+   },
+   {
+    "id": 9,
+    "start": 19.3,
+    "end": 26.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Et il y a d'autres options : je peux accélérer la lecture, ou la ralentir.",
+    "source_text": "And it has other features, so if I wanna change the speed I can make it faster, or make it slower."
+   },
+   {
+    "id": 10,
+    "start": 20.5,
+    "end": 29.2,
+    "speaker": "female voice from the smartphone app",
+    "on_screen": false,
+    "text": "Une contraception imparfaite, avec un taux d'échec supérieur aux méthodes modernes.",
+    "source_text": "imperfect birth control with a failure or success rate than our more modern interventions, condoms, hormones, because it covers a certain number of days. But nonetheless recipes"
+   },
+   {
+    "id": 11,
+    "start": 26.2,
+    "end": 31.0,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Et je peux aussi changer de voix. Parfois, j'écoute Snoop Dogg.",
+    "source_text": "And I can also change the voice. So sometimes I listen to Snoop Dogg."
+   },
+   {
+    "id": 12,
+    "start": 31.0,
+    "end": 33.3,
+    "speaker": "male voice from the smartphone app",
+    "on_screen": false,
+    "text": "Les mutations favorables se répandaient.",
+    "source_text": "genetic mutations that allowed birth spacing were favored."
+   },
+   {
+    "id": 13,
+    "start": 33.3,
+    "end": 35.8,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Vous aimez l'entendre lire vos livres ?",
+    "source_text": "You like listening to Snoop Dogg read your books to you?"
+   },
+   {
+    "id": 14,
+    "start": 35.8,
+    "end": 41.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Oui, je le trouve trop mignon. Sa voix me détend le soir, quand je suis fatiguée.",
+    "source_text": "Yeah, I think he's so cute. And especially it's relaxing to listen to his voice at night when I'm tired."
+   },
+   {
+    "id": 15,
+    "start": 41.3,
+    "end": 43.1,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Ça doit être super prenant.",
+    "source_text": "I mean, it's probably really engaging."
+   },
+   {
+    "id": 16,
+    "start": 43.1,
+    "end": 50.1,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Oui, je lis beaucoup plus grâce à ça. Et je peux écouter mes livres en marchant.",
+    "source_text": "It is, and I think I read a lot more books because of that. And I can listen on the go, so if I take a walk I can listen to the books."
+   },
+   {
+    "id": 17,
+    "start": 50.1,
+    "end": 58.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Quand je suis fatiguée, je peux écouter au lieu de lire. Plus besoin de lunettes, ni de rester assise à mon bureau.",
+    "source_text": "Uh, if I'm tired and I don't feel like reading with my eyes, I don't need my reading glasses anymore. And I don't have to sit tied to my desk."
+   },
+   {
+    "id": 18,
+    "start": 58.2,
+    "end": 63.3,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Pour étudier, ça m'aide à me concentrer : je peux lire et écouter en même temps.",
+    "source_text": "Uh, if I want to study, it helps my focus because I can read and I can listen at the same time, too."
+   },
+   {
+    "id": 19,
+    "start": 63.3,
+    "end": 64.6,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Vous étudiez quoi ?",
+    "source_text": "What are you studying for?"
+   },
+   {
+    "id": 20,
+    "start": 64.6,
+    "end": 71.5,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "Je prépare l'examen d'agent immobilier : je peux étudier en marchant, sans rester à mon bureau.",
+    "source_text": "Oh, well, like my real estate broker's exam. That way I could just go out on a walk and study while I was listening and not be tied to my desk."
+   },
+   {
+    "id": 21,
+    "start": 71.5,
+    "end": 74.3,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "C'est incroyable ! Comment s'appelle l'appli ?",
+    "source_text": "That's pretty incredible. What is this app called again?"
+   },
+   {
+    "id": 22,
+    "start": 74.3,
+    "end": 77.2,
+    "speaker": "older woman with glasses",
+    "on_screen": true,
+    "text": "C'est Listenify, à télécharger sur l'App Store.",
+    "source_text": "It's called Listenify, and you can download it in the App Store."
+   },
+   {
+    "id": 23,
+    "start": 77.2,
+    "end": 78.5,
+    "speaker": "off-screen interviewer holding a microphone",
+    "on_screen": false,
+    "text": "Merci !",
+    "source_text": "Thank you."
+   }
+  ]
+ },
+ "expected": {
+  "es": {
+   "5376b0e8-1091-458f-9b66-732432d8c61a": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in spanish (from english to spanish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–2.4] WOMAN: Por eso leo muchísimos más libros.\n[2.4–4.2] INTERVIEWER: Oye, ¿cómo lees tantos libros?\n[4.3–6.2] WOMAN: Pues no leo, los escucho.\n[6.3–7.3] INTERVIEWER: ¿Los escuchas?\n[7.5–12.1] WOMAN: Tengo esta app: le tomo foto al libro y me lo lee todo.",
+   "8c6816b7-864a-4467-9030-1a94d375394a": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in spanish (from english to spanish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n- APP: a female voice coming from the phone speaker (the app reading a book aloud).\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.9–3.7] APP: En otras palabras, es muy predecible.\n[3.8–5.1] INTERVIEWER: ¿Es Gwyneth Paltrow?\n[5.1–7.2] WOMAN: Sí, es mi voz favorita.\n[7.2–13.9] WOMAN (her face is no longer visible — the camera looks over her shoulder at the phone in HER hands; it is still HER voice, the older woman, NOT the interviewer): Y tiene otras funciones: puedo cambiar la velocidad, hacer que lea más rápido o más lento.\n\nEvery word the WOMAN says is in her own voice, also while her face is out of frame.",
+   "77797888-14c2-457e-9f8a-e9567a41978c": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in spanish (from english to spanish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n- APP: a male voice coming from the phone speaker (the app reading a book aloud).\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.2–5.0] WOMAN: También puedo cambiar la voz. A veces escucho mis libros con la voz de Snoop Dogg.\n[5.0–7.3] APP: Mutaciones que espaciaban nacimientos.\n[7.3–9.8] INTERVIEWER: ¿Te gusta que Snoop Dogg te lea?",
+   "05a2b992-5c65-4015-839d-9da033978b10": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in spanish (from english to spanish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–5.4] WOMAN: Sí, se me hace muy tierno. Sobre todo, su voz me relaja en la noche cuando estoy cansada.\n[5.4–7.2] INTERVIEWER: Ha de ser muy entretenido.\n[7.2–13.6] WOMAN: Sí, totalmente. Leo mucho más y puedo escuchar mis libros cuando salgo a caminar.",
+   "a95328cb-66f3-4317-acd8-a11431c3ec4c": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in spanish (from english to spanish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She does not speak in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.6–8.2] WOMAN: Si estoy cansada, no necesito mis lentes para leer y ya no tengo que estar pegada al escritorio.",
+   "1ba29224-8b46-4bfc-81b4-41039e75dee5": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in spanish (from english to spanish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.5–5.6] WOMAN: Si quiero estudiar, me ayuda a concentrarme: puedo leer y escuchar a la vez.\n[5.6–6.9] INTERVIEWER: ¿Qué estás estudiando?\n[6.9–8.2] Nobody speaks. Mouths stay closed.",
+   "54d1d055-d853-4bea-9568-bc4bb7f0a1b1": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in spanish (from english to spanish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–5.5] WOMAN: Mi examen de bienes raíces. Puedo caminar y estudiar mientras escucho, sin estar en el escritorio.\n[5.5–8.3] INTERVIEWER: ¡Qué increíble! ¿Cómo se llama la app?\n[8.3–11.2] WOMAN: Se llama Listenify, descárgala en la App Store.\n[11.2–12.5] INTERVIEWER: Gracias.\n\nPronunciation: \"Listenify\" is an English brand name — say it exactly as in English, \"LISTEN-ih-fy\", three syllables ending on \"fy\". Never add an ending such as \"-ed\"."
+  },
+  "pt": {
+   "5376b0e8-1091-458f-9b66-732432d8c61a": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in portuguese (from english to portuguese). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–2.4] WOMAN: Acho que leio bem mais livros por isso.\n[2.4–4.2] INTERVIEWER: Com licença, como lê tanto?\n[4.3–6.2] WOMAN: Eu não leio, eu escuto.\n[6.3–7.3] INTERVIEWER: Como assim?\n[7.5–12.1] WOMAN: Eu tenho um app: tiro uma foto do livro e ele lê tudo pra mim.",
+   "8c6816b7-864a-4467-9030-1a94d375394a": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in portuguese (from english to portuguese). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n- APP: a female voice coming from the phone speaker (the app reading a book aloud).\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.9–3.7] APP: Em outras palavras, é bem previsível.\n[3.8–5.1] INTERVIEWER: É a Gwyneth Paltrow?\n[5.1–7.2] WOMAN: Sim, é minha voz favorita.\n[7.2–13.9] WOMAN (her face is no longer visible — the camera looks over her shoulder at the phone in HER hands; it is still HER voice, the older woman, NOT the interviewer): E tem outras funções também: posso mudar a velocidade, acelerar ou deixar mais lento.\n\nEvery word the WOMAN says is in her own voice, also while her face is out of frame.",
+   "77797888-14c2-457e-9f8a-e9567a41978c": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in portuguese (from english to portuguese). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n- APP: a male voice coming from the phone speaker (the app reading a book aloud).\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.2–5.0] WOMAN: E também posso trocar a voz. Às vezes, escuto o Snoop Dogg.\n[5.0–7.3] APP: Mutações favoreciam espaçar filhos.\n[7.3–9.8] INTERVIEWER: Você gosta do Snoop Dogg lendo seus livros?",
+   "05a2b992-5c65-4015-839d-9da033978b10": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in portuguese (from english to portuguese). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–5.4] WOMAN: Sim, acho ele uma graça. E, à noite, quando estou cansada, a voz dele me relaxa.\n[5.4–7.2] INTERVIEWER: Deve prender bastante, né?\n[7.2–13.6] WOMAN: É mesmo, acho que leio muito mais por causa disso. E posso ouvir os livros enquanto caminho.",
+   "a95328cb-66f3-4317-acd8-a11431c3ec4c": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in portuguese (from english to portuguese). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She does not speak in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.6–8.2] WOMAN: Se estou cansada e não quero ler, não preciso mais dos óculos de leitura. E não fico presa à mesa.",
+   "1ba29224-8b46-4bfc-81b4-41039e75dee5": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in portuguese (from english to portuguese). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.5–5.6] WOMAN: Pra estudar, me concentro melhor lendo e ouvindo ao mesmo tempo.\n[5.6–6.9] INTERVIEWER: Estudando pra quê?\n[6.9–8.2] Nobody speaks. Mouths stay closed.",
+   "54d1d055-d853-4bea-9568-bc4bb7f0a1b1": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in portuguese (from english to portuguese). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–5.5] WOMAN: Ah, a prova do CRECI. Assim, posso estudar caminhando enquanto escuto, sem ficar presa à mesa.\n[5.5–8.3] INTERVIEWER: Que incrível! Qual é o nome desse app mesmo?\n[8.3–11.2] WOMAN: Chama Listenify, e dá pra baixar na App Store.\n[11.2–12.5] INTERVIEWER: Valeu, viu?\n\nPronunciation: \"Listenify\" is an English brand name — say it exactly as in English, \"LISTEN-ih-fy\", three syllables ending on \"fy\". Never add an ending such as \"-ed\"."
+  },
+  "pl": {
+   "5376b0e8-1091-458f-9b66-732432d8c61a": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in polish (from english to polish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–2.4] WOMAN: Dzięki temu czytam o wiele więcej książek.\n[2.4–4.2] INTERVIEWER: Jak pani czyta tyle książek?\n[4.3–6.2] WOMAN: Właściwie nie czytam, słucham.\n[6.3–7.3] INTERVIEWER: Słucha pani?\n[7.5–12.1] WOMAN: Mam aplikację. Robię zdjęcie strony, a ona od razu czyta ją na głos.",
+   "8c6816b7-864a-4467-9030-1a94d375394a": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in polish (from english to polish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n- APP: a female voice coming from the phone speaker (the app reading a book aloud).\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.9–3.7] APP: Innymi słowy, jest bardzo przewidywalna.\n[3.8–5.1] INTERVIEWER: To Gwyneth Paltrow?\n[5.1–7.2] WOMAN: Tak, to mój ulubiony głos.\n[7.2–13.9] WOMAN (her face is no longer visible — the camera looks over her shoulder at the phone in HER hands; it is still HER voice, the older woman, NOT the interviewer): Ma też inne funkcje, więc mogę zmienić tempo — przyspieszyć albo zwolnić czytanie.\n\nEvery word the WOMAN says is in her own voice, also while her face is out of frame.",
+   "77797888-14c2-457e-9f8a-e9567a41978c": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in polish (from english to polish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n- APP: a male voice coming from the phone speaker (the app reading a book aloud).\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.2–5.0] WOMAN: Mogę też zmienić głos. Czasami słucham, jak książki czyta Snoop Dogg.\n[5.0–7.3] APP: Mutacje genetyczne sprzyjały odstępom.\n[7.3–9.8] INTERVIEWER: Lubi pani, gdy Snoop Dogg czyta książki?",
+   "05a2b992-5c65-4015-839d-9da033978b10": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in polish (from english to polish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–5.4] WOMAN: Tak, jest uroczy. Wieczorem, gdy jestem zmęczona, jego głos naprawdę świetnie mnie odpręża.\n[5.4–7.2] INTERVIEWER: To musi naprawdę wciągać.\n[7.2–13.6] WOMAN: Zdecydowanie. Dzięki temu czytam o wiele więcej, a książek mogę słuchać nawet na spacerze.",
+   "a95328cb-66f3-4317-acd8-a11431c3ec4c": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in polish (from english to polish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She does not speak in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.6–8.2] WOMAN: Kiedy jestem zmęczona i nie chce mi się czytać, nie potrzebuję okularów. Nie muszę też siedzieć przy biurku.",
+   "1ba29224-8b46-4bfc-81b4-41039e75dee5": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in polish (from english to polish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.5–5.6] WOMAN: Jak się uczę, łatwiej mi się skupić, bo mogę jednocześnie czytać i słuchać.\n[5.6–6.9] INTERVIEWER: Czego się pani uczy?\n[6.9–8.2] Nobody speaks. Mouths stay closed.",
+   "54d1d055-d853-4bea-9568-bc4bb7f0a1b1": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in polish (from english to polish). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–5.5] WOMAN: Przygotowuję się do egzaminu na pośrednika nieruchomości, więc uczę się na spacerach.\n[5.5–8.3] INTERVIEWER: Niesamowite! Jak nazywa się ta aplikacja?\n[8.3–11.2] WOMAN: To Listenify, możesz ją pobrać z App Store.\n[11.2–12.5] INTERVIEWER: Dziękuję.\n\nPronunciation: \"Listenify\" is an English brand name — say it exactly as in English, \"LISTEN-ih-fy\", three syllables ending on \"fy\". Never add an ending such as \"-ed\"."
+  },
+  "fr": {
+   "5376b0e8-1091-458f-9b66-732432d8c61a": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in french (from english to french). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–2.4] WOMAN: Je lis beaucoup plus de livres grâce à ça.\n[2.4–4.2] INTERVIEWER: Comment vous lisez autant ?\n[4.3–6.2] WOMAN: Je ne lis pas, j'écoute.\n[6.3–7.3] INTERVIEWER: Vous écoutez ?\n[7.5–12.1] WOMAN: J'ai cette appli : je prends la page en photo, et elle lit tout.",
+   "8c6816b7-864a-4467-9030-1a94d375394a": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in french (from english to french). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n- APP: a female voice coming from the phone speaker (the app reading a book aloud).\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.9–3.7] APP: Autrement dit, c'est très prévisible.\n[3.8–5.1] INTERVIEWER: C'est Gwyneth Paltrow ?\n[5.1–7.2] WOMAN: Oui, c'est ma voix préférée.\n[7.2–13.9] WOMAN (her face is no longer visible — the camera looks over her shoulder at the phone in HER hands; it is still HER voice, the older woman, NOT the interviewer): Et il y a d'autres options : je peux accélérer la lecture, ou la ralentir.\n\nEvery word the WOMAN says is in her own voice, also while her face is out of frame.",
+   "77797888-14c2-457e-9f8a-e9567a41978c": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in french (from english to french). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n- APP: a male voice coming from the phone speaker (the app reading a book aloud).\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.2–5.0] WOMAN: Et je peux aussi changer de voix. Parfois, j'écoute Snoop Dogg.\n[5.0–7.3] APP: Les mutations favorables se répandaient.\n[7.3–9.8] INTERVIEWER: Vous aimez l'entendre lire vos livres ?",
+   "05a2b992-5c65-4015-839d-9da033978b10": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in french (from english to french). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–5.4] WOMAN: Oui, je le trouve trop mignon. Sa voix me détend le soir, quand je suis fatiguée.\n[5.4–7.2] INTERVIEWER: Ça doit être super prenant.\n[7.2–13.6] WOMAN: Oui, je lis beaucoup plus grâce à ça. Et je peux écouter mes livres en marchant.",
+   "a95328cb-66f3-4317-acd8-a11431c3ec4c": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in french (from english to french). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She does not speak in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.6–8.2] WOMAN: Quand je suis fatiguée, je peux écouter au lieu de lire. Plus besoin de lunettes, ni de rester assise à mon bureau.",
+   "1ba29224-8b46-4bfc-81b4-41039e75dee5": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in french (from english to french). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice. She says ONLY ONE line in this clip.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.5–5.6] WOMAN: Pour étudier, ça m'aide à me concentrer : je peux lire et écouter en même temps.\n[5.6–6.9] INTERVIEWER: Vous étudiez quoi ?\n[6.9–8.2] Nobody speaks. Mouths stay closed.",
+   "54d1d055-d853-4bea-9568-bc4bb7f0a1b1": "Keep the main person in the reference video exactly as they are. Do not replace the character: their face, identity, hair, clothing and appearance must stay the same person throughout, unchanged from the reference video. Re-speak the assigned dialogue in french (from english to french). Naturally adapt mouth shapes, lip movements and timing to lip-sync the translated speech; also adapt facial expressions, emotional reactions and speaker behavior where the translated delivery requires it. Preserve framing, camera movement, background, lighting, props, phone or tablet screens and their contents, captions and other on-screen text. Preserve overall action, choreography and body movement except for natural speech-related adjustments — do not freeze the original face or mouth motion. Each visually grounded speaker must say only the dialogue assigned to that speaker; do not swap lines between on-screen and off-screen speakers.\n\nSpeakers (the reference audio contains both human voices):\n- WOMAN: the older woman with glasses. She owns the phone. Mature, lower voice — the older woman's voice from the reference audio.\n- INTERVIEWER: a young WOMAN off screen — only her hand holding the microphone is visible. Female, higher-pitched voice. Never a male voice.\n\nDialogue — spoken strictly in this order, at these times (seconds from the start of this clip), nothing before or after:\n[0.0–5.5] WOMAN: Je prépare l'examen d'agent immobilier : je peux étudier en marchant, sans rester à mon bureau.\n[5.5–8.3] INTERVIEWER: C'est incroyable ! Comment s'appelle l'appli ?\n[8.3–11.2] WOMAN: C'est Listenify, à télécharger sur l'App Store.\n[11.2–12.5] INTERVIEWER: Merci !\n\nPronunciation: \"Listenify\" is an English brand name — say it exactly as in English, \"LISTEN-ih-fy\", three syllables ending on \"fy\". Never add an ending such as \"-ed\"."
+  }
+ }
+}

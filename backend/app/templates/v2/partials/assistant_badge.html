@@ -1,0 +1,3 @@
+{# Header badge (AICP-375): answerable questions only — the same rule the cards
+   answer by (links.answerable); system-paused attempts are a separate marker. #}
+<a href="/v2/assistant" style="white-space:nowrap{% if b.waiting %};color:#b42318;font-weight:600{% endif %}" title="Questions the assistant is waiting on that you can answer now">Waiting for you{% if b.waiting %} · {{ b.waiting }}{% endif %}</a>{% if b.paused %} <a href="/v2/assistant#paused" style="white-space:nowrap;color:var(--color-muted)" title="by-Assistant projects the system paused — not counted in the number before">· {{ b.paused }} paused</a>{% endif %}

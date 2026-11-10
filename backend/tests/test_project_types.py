@@ -9,8 +9,8 @@ The registry is a table of constants, so the tests here are about the
   demote a type to the blank-slate branch);
 * the localisation spec matches docs/localisation.md §2/§6 — those values are
   properties of the type, not operator preferences;
-* the two Seedance templates require adaptive target-language lip sync and
-  speech-related facial reactions (docs/localisation.md §4.3).
+* the two Seedance templates render exactly what run 1736426f was signed off
+  with (docs/localisation.md §4.3).
 """
 
 from __future__ import annotations
@@ -32,11 +32,14 @@ from app.project_types import (
     SEG_DETECT_FACES,
     SEG_HOOK_SPLIT,
     SEG_SCENE_DETECT,
+    SEG_SHOT_CHUNKS,
     SUBTITLE_REMOVAL,
     spec_for,
 )
 
-_SEGMENTATIONS = {SEG_DETECT_FACES, SEG_SCENE_DETECT, SEG_HOOK_SPLIT, SEG_BLANK}
+_SEGMENTATIONS = {
+    SEG_DETECT_FACES, SEG_SCENE_DETECT, SEG_HOOK_SPLIT, SEG_BLANK, SEG_SHOT_CHUNKS,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -62,9 +65,15 @@ def test_segmentation_replaced_the_two_booleans():
     assert not hasattr(spec, "scene_detect")
 
 
-def test_each_strategy_is_used_by_exactly_one_type():
+def test_every_strategy_is_used_and_only_blank_is_shared():
+    """Each strategy has a user; only the blank slate is shared, by
+    cover_change and reframe (whose placeholder segment is never shown)."""
     used = [spec.segmentation for spec in PROJECT_TYPES.values()]
-    assert sorted(used) == sorted(_SEGMENTATIONS)
+    assert set(used) == set(_SEGMENTATIONS)
+    shared = {s for s in used if used.count(s) > 1}
+    assert shared <= {SEG_BLANK}
+    assert sorted(k for k, sp in PROJECT_TYPES.items() if sp.segmentation == SEG_BLANK) == [
+        "cover_change", "reframe"]
 
 
 @pytest.mark.parametrize("key", sorted(PROJECT_TYPES))
@@ -314,3 +323,160 @@ class TestLocalisationPrompts:
             else:
                 assert "Do not replace the character" in out
                 assert "reference image" not in out.lower()
+
+
+class TestLocalisationPromptBuildPromptSemantics:
+    """End-to-end render checks through build_prompt (not monkeypatched templates)."""
+
+    def test_speaker_labelled_dialogue_formatting_intact(self):
+        from app.localisation import build_prompt
+
+        lines = [
+            {"id": 1, "start": 0.0, "end": 1.0, "speaker": "Woman", "text": "Hello"},
+            {"id": 2, "start": 1.0, "end": 2.0, "speaker": "Woman", "text": "again"},
+            {"id": 3, "start": 2.0, "end": 3.0, "speaker": "Man", "text": "Hi"},
+        ]
+        out = build_prompt(
+            lines=lines,
+            source_language="en",
+            target_language="es",
+            swap_character=False,
+        )
+        # Consecutive same-speaker lines merge; five spaces after the label.
+        assert "**Woman:**     Hello again" in out
+        assert "**Man:**     Hi" in out
+        assert "{dialogue}" not in out
+        assert "{source_language}" not in out
+        assert "{target_language}" not in out
+
+
+# ---------------------------------------------------------------------------
+# localisation_mode_of — reading the mode back off a run's prompt
+# ---------------------------------------------------------------------------
+
+
+class TestLocalisationModeOf:
+    """The mode is not stored (docs/localisation.md §3.3), so Copy run reads it
+    back off the prompt. Being wrong in the "keep" direction withdraws a
+    feature, so the classifier only says "keep" when it recognises the
+    speech-only template."""
+
+    def _rendered(self, swap: bool) -> str:
+        from app.localisation import build_prompt
+
+        return build_prompt(
+            lines=[{"id": 1, "start": 0.0, "end": 2.0, "speaker": "Woman", "text": "はい"}],
+            source_language="en",
+            target_language="ja",
+            swap_character=swap,
+        )
+
+    def test_keep_template_reads_as_keep(self):
+        assert (
+            project_types.localisation_mode_of(project_types._LOCALISATION_KEEP_PROMPT)
+            == project_types.LOCALISATION_MODE_KEEP
+        )
+
+    def test_swap_template_reads_as_swap(self):
+        assert (
+            project_types.localisation_mode_of(project_types._LOCALISATION_SWAP_PROMPT)
+            == project_types.LOCALISATION_MODE_SWAP
+        )
+
+    def test_translated_prompts_keep_their_mode(self):
+        """What a run actually stores is build_prompt's output — the template
+        with the languages filled in and a translated dialogue block appended.
+        The marker must survive that."""
+        assert (
+            project_types.localisation_mode_of(self._rendered(swap=False))
+            == project_types.LOCALISATION_MODE_KEEP
+        )
+        assert (
+            project_types.localisation_mode_of(self._rendered(swap=True))
+            == project_types.LOCALISATION_MODE_SWAP
+        )
+
+    def test_edited_keep_prompt_still_reads_as_keep(self):
+        """Operators edit the prompt before submitting; the marker sentence is
+        the instruction that defines the mode, so it survives ordinary edits."""
+        edited = (
+            "IMPORTANT: " + project_types._LOCALISATION_KEEP_PROMPT
+            + "\nKeep the background music."
+        )
+        assert (
+            project_types.localisation_mode_of(edited)
+            == project_types.LOCALISATION_MODE_KEEP
+        )
+
+    @pytest.mark.parametrize("prompt", [None, "", "make her speak japanese"])
+    def test_unrecognised_prompt_reads_as_swap(self, prompt):
+        """Fail open: a prompt this cannot classify keeps Copy run rather than
+        losing it on a guess."""
+        assert (
+            project_types.localisation_mode_of(prompt)
+            == project_types.LOCALISATION_MODE_SWAP
+        )
+
+    def test_marker_belongs_to_exactly_one_template(self):
+        """The whole classifier rests on this — if a future edit moves the
+        sentence into the swap template, every localisation run reads as
+        speech-only and Copy run disappears."""
+        marker = project_types._LOCALISATION_KEEP_MARKER
+        assert marker in project_types._LOCALISATION_KEEP_PROMPT.lower()
+        assert marker not in project_types._LOCALISATION_SWAP_PROMPT.lower()
+
+
+class TestRunCopiesAreUseful:
+    """The shared premise of Copy run and Automation: both re-run a run with a
+    fresh reference photo, so both are pointless on the one prompt that says to
+    keep the person on screen."""
+
+    def _prompt(self, swap: bool) -> str:
+        template = (
+            project_types._LOCALISATION_SWAP_PROMPT if swap
+            else project_types._LOCALISATION_KEEP_PROMPT
+        )
+        return template.format(
+            source_language="english", target_language="japanese",
+            dialogue="**Woman:**     はい",
+        )
+
+    def test_speech_only_localisation_is_the_only_false(self):
+        assert project_types.run_copies_are_useful(
+            project_types.LOCALISATION, self._prompt(swap=False)
+        ) is False
+        assert project_types.run_copies_are_useful(
+            project_types.LOCALISATION, self._prompt(swap=True)
+        ) is True
+
+    @pytest.mark.parametrize(
+        "ptype",
+        [project_types.FACE_SWAP, project_types.SUBTITLE_REMOVAL,
+         project_types.COVER_CHANGE, None, "not-a-type"],
+    )
+    def test_other_types_are_never_gated(self, ptype):
+        """Only localisation has modes. An unknown/NULL type resolves to the
+        face-swap fallback like everywhere else, so a legacy row cannot lose
+        its buttons."""
+        assert project_types.run_copies_are_useful(
+            ptype, self._prompt(swap=False)
+        ) is True
+
+
+# ---------------------------------------------------------------------------
+# derived_mute_source (AICP-339)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("parent", [False, True, None])
+def test_derived_mute_source_localisation_is_always_on(parent):
+    assert project_types.derived_mute_source(project_types.LOCALISATION, parent) is True
+
+
+@pytest.mark.parametrize(
+    "ptype",
+    [k for k, s in project_types.PROJECT_TYPES.items() if not s.default_mute_source],
+)
+@pytest.mark.parametrize("parent,expected", [(False, False), (True, True), (None, False)])
+def test_derived_mute_source_default_off_types_inherit(ptype, parent, expected):
+    assert project_types.derived_mute_source(ptype, parent) is expected

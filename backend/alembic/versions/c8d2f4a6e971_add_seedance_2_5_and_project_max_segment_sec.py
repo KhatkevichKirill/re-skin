@@ -28,14 +28,15 @@ being frozen into the schema.
 
 The cap is read at analyze time, so setting it only affects the next analysis;
 segments already cut are untouched. A cap above a given model's max_clip_sec is
-permitted, but it costs swap coverage on runs that use a shorter-limit model:
-the over-long segments are marked failed with RunSegment.source_fallback (added
-in the next migration, d3b8e5c710f4) and the stitch substitutes the original
-footage for them.
+permitted, but it effectively locks the project to models that can generate that
+length: a run on a shorter-limit model marks the over-long segments failed, and
+the completeness gate then refuses to stitch a partially-swapped timeline, so
+that run ends `incomplete` with no video. The original footage is NOT
+substituted.
 
 Revision ID: c8d2f4a6e971
-Revises: b4f6d8e0c357
-Create Date: 2026-08-10 12:00:00.000000
+Revises: c5e7a9b1d3f4
+Create Date: 2026-08-07 15:00:00.000000
 
 """
 from typing import Sequence, Union
@@ -46,7 +47,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'c8d2f4a6e971'
-down_revision: Union[str, None] = 'b4f6d8e0c357'
+down_revision: Union[str, None] = 'c5e7a9b1d3f4'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

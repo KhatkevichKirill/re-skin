@@ -1,0 +1,36 @@
+{% set sv = status_val %}
+{% if sv in ("queued", "processing", "delivering") %}
+  <div class="polling-section"
+       hx-get="/v2/overlays/{{ job.id }}/status-fragment"
+       hx-trigger="every 2s"
+       hx-target="#status-content"
+       hx-swap="innerHTML">
+    <span class="spinner"></span>
+    <span>Rendering&hellip; status: <strong>{{ sv }}</strong></span>
+  </div>
+{% elif sv == "done" %}
+  <p><strong>Done ✓</strong></p>
+  {% if result_available %}
+  <video src="/api/v2/overlays/{{ job.id }}/download" controls preload="metadata"
+         style="display:block;max-width:100%;height:auto;margin:8px 0"></video>
+  <a class="btn btn-primary btn-sm" href="/api/v2/overlays/{{ job.id }}/download">Download</a>
+  {% endif %}
+  {% if job.gdrive_file_id %}
+  <a class="btn btn-secondary btn-sm"
+     href="https://drive.google.com/file/d/{{ job.gdrive_file_id }}/view" target="_blank">
+     Open in Drive</a>
+  {% endif %}
+  <div style="margin-top:8px">
+    {% if exported %}
+    <button type="button" class="btn btn-success btn-sm" disabled title="Already logged to the Final Creatives sheet">✓ In Final Creatives</button>
+    {% else %}
+    <button type="button" class="btn btn-secondary btn-sm" data-job-id="{{ job.id }}" onclick="exportToSheet(this)">Add to Final Creatives</button>
+    {% endif %}
+    <span class="sheet-export-status hint"></span>
+  </div>
+{% elif sv == "failed" %}
+  <p class="error"><strong>Failed.</strong> {{ job.error or "" }}</p>
+  <p class="hint">Fix the placement and click Render again to retry.</p>
+{% else %}
+  <p class="hint">Not rendered yet. Position your overlays, then click Render.</p>
+{% endif %}

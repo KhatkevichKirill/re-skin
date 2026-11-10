@@ -31,12 +31,18 @@ a2c4e6f8b135 and a4c8e2b6d139).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 # Enum values as stored in video_projects.project_type.
 FACE_SWAP = "face_swap"
 SUBTITLE_REMOVAL = "subtitle_removal"
 COVER_CHANGE = "cover_change"
 LOCALISATION = "localisation"
+REFRAME = "reframe"
+# Rebuild from reference (docs/rebuild-from-reference-design.md): the video is
+# re-generated shot by shot from clean keyframes (images-only runs), keeping the
+# source soundtrack. Behind settings.REBUILD_ENABLED.
+REBUILD = "rebuild"
 
 # Segmentation strategies (ProjectTypeSpec.segmentation) — the branch
 # pipeline_v2.analyze_project dispatches on. ONE field rather than a boolean per
@@ -47,6 +53,59 @@ SEG_DETECT_FACES = "detect_faces"   # InsightFace swap/keep partition.
 SEG_SCENE_DETECT = "scene_detect"   # PySceneDetect content cuts, all "swap".
 SEG_HOOK_SPLIT = "hook_split"       # swap[0, hook] + keep[hook, end].
 SEG_BLANK = "blank"                 # one full-length "keep" segment.
+# Rebuild: fine shot detection -> short shots folded into effective shots ->
+# chunks of whole shots (<= 14.72s / <= 8 shots), all "swap"; the shots are
+# persisted in rebuild_shots (app/rebuild.py, design §5.1).
+SEG_SHOT_CHUNKS = "shot_chunks"
+
+# How a type's runs generate video (ProjectTypeSpec.generation_mode, mirrored
+# by runs.generation_mode). "v2v" = a source clip is edited by the model (every
+# type before rebuild); "images_only" = the model generates each chunk from
+# still keyframes, no source clip (rebuild).
+GENERATION_V2V = "v2v"
+GENERATION_IMAGES_ONLY = "images_only"
+# A subtitle-removal run whose swap segments are VOID fills from the source
+# (docs/segment-fill-batch-design.md §7): no model submit except the segments
+# the operator sent to the model as a fallback (run_segments.model_fallback).
+GENERATION_VOID_SOURCE = "void_source"
+GENERATION_MODES = (GENERATION_V2V, GENERATION_IMAGES_ONLY, GENERATION_VOID_SOURCE)
+CAPTION_REMOVAL_VOID_SOURCE = "void_source"
+CAPTION_REMOVAL_OMNI = "omni"
+CAPTION_REMOVAL_METHODS = (CAPTION_REMOVAL_VOID_SOURCE, CAPTION_REMOVAL_OMNI)
+
+
+def caption_removal_method(project) -> str:
+    """The project's caption removal method; NULL (a project from before the
+    mode existed, or another type) reads as "omni"."""
+    v = getattr(project, "caption_removal_method", None)
+    return v if v in CAPTION_REMOVAL_METHODS else CAPTION_REMOVAL_OMNI
+
+
+def default_caption_removal_method(project_type: str) -> Optional[str]:
+    """What a NEW project of *project_type* starts with: VOID from the source
+    for subtitle removal (operator decision 2026-11-03), nothing otherwise."""
+    return CAPTION_REMOVAL_VOID_SOURCE if project_type == SUBTITLE_REMOVAL else None
+
+
+def is_void_source_run(run) -> bool:
+    return getattr(run, "generation_mode", GENERATION_V2V) == GENERATION_VOID_SOURCE
+
+# How much of a ``localisation`` project is re-generated
+# (VideoProject.localisation_scope, AICP-340). Like hook_sec and
+# max_segment_sec it is consumed at ANALYZE time, and it only ever changes
+# together with a re-analysis (POST /projects/{pid}/analyze?localisation_scope=
+# records the request; analyze_project applies it in the same commit as the
+# new segments),
+# so the stored value always describes the segmentation on the page:
+#   hook  — SEG_HOOK_SPLIT exactly as before: swap[0, hook] + keep[hook, end],
+#           the keep tail replaced at stitch time by a library clip.
+#   whole — the whole video is re-spoken: analysis cuts ALL-swap segments at
+#           scene changes, each within the localisation clip target
+#           (pipeline_v2.whole_video_target_sec), and no hook clamp applies.
+# Meaningless for every other project type, which never reads it.
+LOCALISATION_SCOPE_HOOK = "hook"
+LOCALISATION_SCOPE_WHOLE = "whole"
+LOCALISATION_SCOPES = (LOCALISATION_SCOPE_HOOK, LOCALISATION_SCOPE_WHOLE)
 
 
 @dataclass(frozen=True)
@@ -81,18 +140,58 @@ class ProjectTypeSpec:
     uses_references: bool
     # One-line explanation shown next to the type in the UI.
     hint: str
+    # False for a type whose page has no runs at all (``reframe``): the New
+    # Run form is hidden and ``create_run`` answers 409 for it.
+    supports_runs: bool = True
+    # How runs on this type generate video (GENERATION_* above). The New Run
+    # form and create_run read it; a run stores its own copy
+    # (runs.generation_mode), set at creation and never changed.
+    generation_mode: str = GENERATION_V2V
 
-
-_FACE_SWAP_PROMPT = (
-    "Replace the main person in the reference video with the person shown in the "
-    "reference image. Keep their face and identity consistent with the reference image "
-    "throughout. Change only the character — keep everything else exactly the same: "
-    "the phone or tablet screen and its contents, all on-screen text and captions, "
-    "the background, lighting, framing, and the original motion and lip movements."
-)
 
 # Operator-supplied defaults — kept verbatim (including wording quirks) so the
 # text that reaches the model is exactly what was signed off on.
+#
+# Face swap: the original one-paragraph version ended on "the original motion
+# and lip movements", which pinned the SOURCE person's mouth shapes onto the new
+# face. This version splits performance from face — head, body, gesture and gaze
+# timing are preserved, while expressions and lips are re-derived from the new
+# character's own anatomy, the same distinction the localisation templates below
+# had to make for translated speech.
+#
+# The audio paragraph asserts the ORIGINAL track rather than describing a
+# generated voice, because on this type's defaults no generated voice reaches
+# the viewer. audio_mode="original" is what does it: the stitch overlays the
+# source soundtrack and throws the generated one away. The default model
+# (Seedance 2.0) has no audio switch and writes a track regardless — it is
+# simply discarded; on 2.5 the same condition sets generate_audio=False in
+# _build_submit_state, so it is never produced at all. mute_source is a
+# separate lever and not part of that derivation: it decides what the model
+# HEARS, not what it writes.
+#
+# An audio instruction that fights what the model is fed does not fail quietly
+# — it confuses the model about the video too (wiki/models/ai-models.md, "Input
+# audio"). And because the source soundtrack is what the viewer hears, the new
+# mouth has to match the ORIGINAL words and timing, which is the one thing the
+# operator text did not say.
+#
+# The exception is a run that does NOT stitch (stitch_plan == []): the
+# per-segment clips are then the deliverable and generate_audio is True
+# whatever audio_mode says, so the generated voice does ship. An operator doing
+# that on 2.5 should edit this paragraph out — which is why it lives in an
+# editable default and not in code.
+_FACE_SWAP_PROMPT = """Replace the main person in the reference video with the generated by seedream person shown in the reference image.
+
+Keep the new character’s identity, facial features, skin tone, hairstyle, and overall appearance consistent with the reference image throughout the entire video.
+
+Preserve the original performance and timing of the reference video: keep the same head movements, body movements, gestures, hand and arm movements, shoulder movements, poses, gaze direction, and interactions with objects.
+
+Adapt the facial expressions, mouth shapes, and lip movements naturally to the new character’s own facial features and anatomy. Do not copy or warp the original person’s facial features or exact mouth shapes onto the new character. The new character should perform the same expressions and speech with natural, identity-consistent facial motion.
+
+Keep the original audio exactly as it is: the original voice, background sounds, music, and ambient audio. Do not generate a new voice or new speech. The new character’s lip movements must match the original spoken words and their timing.
+
+Change only the character. Keep everything else exactly the same: the phone or tablet and its screen contents, all on-screen text and captions, the background, lighting, framing, camera movement, objects, and scene composition."""
+
 _SUBTITLE_REMOVAL_PROMPT = (
     "Remove all subtitles, captions and overlay text from video. Do not touch "
     "character, do not change anything on phone screen. keep everything else exactly "
@@ -123,7 +222,8 @@ The identity of the replacement book must remain perfectly consistent before, du
 #
 # Slots filled by localisation.build_prompt with lowercase English language
 # NAMES ("english", "japanese") and a dialogue block from
-# localisation.format_dialogue ("**Speaker:**" + five spaces). Consumed with
+# localisation.format_timed_dialogue (AICP-335; the untimed format_dialogue
+# "**Speaker:**" block when no clip window is given). Consumed with
 # str.format() — the only braces allowed are the three slots below.
 _LOCALISATION_SWAP_PROMPT = (
     "Replace the main person in the reference video with the person shown in the "
@@ -159,6 +259,19 @@ _LOCALISATION_KEEP_PROMPT = (
     "speaker; do not swap lines between on-screen and off-screen speakers.\n"
     "{dialogue}"
 )
+
+# The two values of the New Run form's localisation radio (docs/localisation.md
+# §7). The choice is not stored on the run (§3.3) — the prompt it produced is
+# the record, which is what `localisation_mode_of` below reads back.
+LOCALISATION_MODE_KEEP = "keep"   # speech only
+LOCALISATION_MODE_SWAP = "swap"   # speech + character
+
+# The sentence that tells the two templates above apart. It is
+# _LOCALISATION_KEEP_PROMPT's second clause and appears in no other prompt in
+# this registry, and the templates stay English through translation (only the
+# appended dialogue block changes language), so it survives every prompt
+# localisation.build_prompt produces. Lowercased for a case-insensitive match.
+_LOCALISATION_KEEP_MARKER = "do not replace the character"
 
 
 PROJECT_TYPES: dict[str, ProjectTypeSpec] = {
@@ -232,7 +345,47 @@ PROJECT_TYPES: dict[str, ProjectTypeSpec] = {
             "another language. Add a reference image only to change the character too."
         ),
     ),
+    REFRAME: ProjectTypeSpec(
+        key=REFRAME,
+        label="Reframe (9:16 / 16:9)",
+        segmentation=SEG_BLANK,
+        default_model="seedance",
+        default_prompt="",
+        default_audio_mode="original",
+        default_mute_source=False,
+        requires_audio_model=False,
+        uses_references=False,
+        supports_runs=False,
+        hint=(
+            "AI outpainting to the other orientation (MiniMax H3 Max Reframe). "
+            "The chosen window of this video is SENT TO FAL, a third-party "
+            "provider, and each generation is paid. No runs and no segments: "
+            "generate, then pick the ending and deliver."
+        ),
+    ),
+    REBUILD: ProjectTypeSpec(
+        key=REBUILD,
+        label="Rebuild from reference",
+        segmentation=SEG_SHOT_CHUNKS,
+        # Kling 4.0 at 720p is the decided default (design §15, Q1); Seedance
+        # 2.5 images-only is the alternative. Prompts are generated per chunk
+        # from the storyboard, so there is no default prompt.
+        default_model="kling-4-0",
+        default_prompt="",
+        default_audio_mode="original",
+        default_mute_source=False,
+        requires_audio_model=False,
+        uses_references=False,
+        generation_mode=GENERATION_IMAGES_ONLY,
+        hint=(
+            "Recreate the video shot by shot from clean keyframes; original "
+            "soundtrack kept."
+        ),
+    ),
 }
+
+# Default run resolution of an images-only (rebuild) run (design §15, Q1).
+REBUILD_DEFAULT_RESOLUTION = "720p"
 
 DEFAULT_PROJECT_TYPE = FACE_SWAP
 VALID_PROJECT_TYPES = frozenset(PROJECT_TYPES)
@@ -247,6 +400,81 @@ def spec_for(project_type: str | None) -> ProjectTypeSpec:
     return PROJECT_TYPES.get(project_type or "", PROJECT_TYPES[DEFAULT_PROJECT_TYPE])
 
 
+def derived_mute_source(project_type: str | None, parent_mute_source: bool | None) -> bool:
+    """``mute_source`` for a project DERIVED from another one (a run moved into
+    a new project, AICP-339).
+
+    The type's ``default_mute_source`` wins when it is on; otherwise the
+    lineage's choice is carried over. A derived project has no Create Project
+    form to pre-check the box, so without this a localisation project made
+    from a face-swap run inherited ``False`` and Seedance heard (and mixed in)
+    the original language. Types whose default is off keep inheriting exactly
+    as before, so a muted lineage is never silently un-muted. The operator can
+    still switch it off afterwards (PATCH /projects/{pid}).
+    """
+    return spec_for(project_type).default_mute_source or bool(parent_mute_source)
+
+
+def is_rebuild(project_type: str | None) -> bool:
+    """True for a ``rebuild`` project (exact match: no face-swap fallback)."""
+    return project_type == REBUILD
+
+
+def selectable_project_types(*, rebuild_enabled: bool) -> list[ProjectTypeSpec]:
+    """The types a Create Project / Move-to-project form may offer.
+
+    ``rebuild`` is listed only while ``settings.REBUILD_ENABLED`` is on (the
+    caller passes it: this module stays free of app imports)."""
+    return [
+        spec for key, spec in PROJECT_TYPES.items()
+        if key != REBUILD or rebuild_enabled
+    ]
+
+
 def label_for(project_type: str | None) -> str:
     """Human-readable label for a project type (used by templates)."""
     return spec_for(project_type).label
+
+
+def localisation_mode_of(prompt: str | None) -> str:
+    """Which localisation mode a run's *prompt* was built from.
+
+    ``LOCALISATION_MODE_KEEP`` only for a prompt carrying the speech-only
+    template's marker sentence; everything else — the swap template, and any
+    prompt an operator rewrote past recognition — reads as
+    ``LOCALISATION_MODE_SWAP``. The asymmetry is deliberate: the caller uses
+    this to *withdraw* Copy run (copying a speech-only run re-submits an
+    identical generation, and the reference photo a copy adds is inert against
+    a prompt that says to keep the person on screen), and an unrecognised
+    prompt should keep the feature rather than lose it on a guess.
+
+    Reference images are deliberately not consulted: a photo attached to a
+    speech-only prompt does nothing, while a swap prompt submitted *without*
+    one is exactly the case where copying with a photo is the fix.
+
+    Only meaningful for runs on a ``localisation`` project — callers gate on
+    the project type first (the other types' prompts are not modes of this
+    one).
+    """
+    return (
+        LOCALISATION_MODE_KEEP
+        if _LOCALISATION_KEEP_MARKER in (prompt or "").lower()
+        else LOCALISATION_MODE_SWAP
+    )
+
+
+def run_copies_are_useful(project_type: str | None, prompt: str | None) -> bool:
+    """Whether re-running this run with a fresh reference photo can produce
+    anything new — the shared premise of **Copy run** and **Automation**.
+
+    False for exactly one case: a speech-only localisation run. Its prompt
+    instructs the model to keep the person on screen, so the photo either
+    feature attaches is inert and the copy is the same generation again — once
+    by hand, or every day on a quota.
+
+    Both features gate on this, in the UI and server-side, so they can never
+    disagree about which runs are worth copying.
+    """
+    if spec_for(project_type).key != LOCALISATION:
+        return True
+    return localisation_mode_of(prompt) != LOCALISATION_MODE_KEEP

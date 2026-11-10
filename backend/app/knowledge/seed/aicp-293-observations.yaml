@@ -1,0 +1,256 @@
+# Seed guidance for AICP-297 / AICP-293. Loader format: see README.md.
+# Every rule is shareable: false. No `evidence:` links anywhere: the repo records
+# only 8-character run ids, and a link needs a kb_cases row for a full run id.
+rules:
+  # ---- the three operator observations (design docs/knowledge-feedback-design.md §2.3, §13) ----
+  - slug: o1-gemini-omni-text-replacement
+    kind: operator_constraint
+    statement: "Avoid Gemini Omni for text replacement (subtitle removal / cover change) in the scenarios tested."
+    rationale: "Operator constraint stated by Operator on 2026-10-26 and confirmed 2026-10-27 (design §13 item 3): the advisor WARNS, it does not forbid and it does not change the subtitle_removal default model in project_types.py. 'Text replacement' maps to subtitle_removal and cover_change projects (design §2.3). This is a constraint on what the operator wants, not a measured model fact."
+    applicability: {operation: [subtitle_removal, cover_change]}
+    recommendation: {action: warn, target: {model_key: gemini-omni}}
+    confidence: operator_asserted
+    shareable: false
+    effective_from: "2026-10-26T00:00:00Z"
+    author_label: "Operator (AICP-293)"
+    provenance: {source: "Operator observation O1, 2026-10-26; decision 2026-10-27", linear: "AICP-293", doc: "docs/knowledge-feedback-design.md §2.3, §13"}
+    evidence_gaps:
+      - "Which runs were the failing tests and which succeeded is unrecorded; 12 subtitle_removal and 5 cover_change gemini-omni runs are 'done' (design §2.3) but none is labeled."
+      - "Where Gemini Omni DOES work for text replacement is not identified; the observation asked for that to be found."
+      - "subtitle_removal still defaults to gemini-omni in project_types.py; this rule warns, the default was deliberately not changed."
+
+  - slug: o2-seedance-2-0-over-2-5-without-long-shot
+    kind: empirical_guidance
+    statement: "When a long continuous shot is not needed (segments of at most 15 s), base Seedance 2.0 is preferable to Seedance 2.5."
+    rationale: "Operator-reported preference (Operator, 2026-10-26): 2.0 is better and cheaper than 2.5 when 2.5's 30 s clip ceiling is unnecessary. 'Seedance 2' was confirmed on 2026-10-27 to mean the base key `seedance` (2.0), not Fast or Mini (design §13 item 1). REPORTED, not measured: no comparable-quality labels exist, and the only quantitative cost data in the repo is the wiki's community estimate (2.5 about 0.23 USD/s at 720p) plus 2.5's measured 38 credits per second of input plus output (wiki/models/kling-4-0.md). A matched seedance vs seedance-2-5 cost comparison from settled kie_spend_draws (available only since 2026-10-17) has not been done. Do not present this as a vendor fact."
+    applicability: {operation: [face_swap], model_family: [seedance], segment_sec_band: ["[0,10)", "[10,15)"]}
+    recommendation: {action: prefer, target: {model_key: seedance}}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-26T00:00:00Z"
+    author_label: "Operator (AICP-293)"
+    provenance: {source: "Operator observation O2, 2026-10-26; variant confirmed 2026-10-27", linear: "AICP-293", doc: "docs/knowledge-feedback-design.md §2.3, §13", wiki: "wiki/models/ai-models.md#cost"}
+    evidence_gaps:
+      - "Quality claim is operator-reported only; no accepted/rejected labels compare seedance and seedance-2-5 on the same sources."
+      - "Cost claim not measured: settled spend draws for matched seedance vs seedance-2-5 segments have not been compared."
+      - "The face_swap operation scope is an assumption; the observation did not name an operation."
+      - "Base seedance max_clip_sec is 15 s; 1080p and generate_audio differences between the two were not factored in."
+
+  - slug: o3-source-faces-retained-under-seedance
+    kind: machine_hypothesis
+    statement: "Two or three source characters appear to keep their original face under Seedance video-to-video, despite different target personas and ChatGPT frame-derived reference images."
+    rationale: "Operator observation O3 (2026-10-26) about specific sources, not about the model in general. Subject advice is OFF: Operator has not yet named the subjects (design §13 item 2, §9.3), so no subject_id scoping exists and nothing here may be applied; machine_hypothesis versions are listed as hypotheses only and are never effective (design §4.6). The §9.3 trigger (at least 2 operator source_face_retained defects for one subject, with distinct reference sets) cannot fire until labels exist."
+    applicability: {model_family: [seedance]}
+    recommendation: {action: warn, target: {model_family: seedance}}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-26T00:00:00Z"
+    author_label: "Operator (AICP-293)"
+    provenance: {source: "Operator observation O3, 2026-10-26", linear: "AICP-293", doc: "docs/knowledge-feedback-design.md §2.3, §9.3, §13"}
+    evidence_gaps:
+      - "The assets are not identified; no label records face retention for any run."
+      - "Unconfirmed candidate projects, chosen only by override intensity (NOT confirmed by the operator): project A (29 overridden segments over 11 runs), project B (10/11), project C (8/11), projects D and E."
+      - "First operator task in AICP-297/299 is to name the 2-3 subjects; only then can kb_subject_links and source_face_retained defects be recorded."
+      - "Not known whether the effect is specific to Seedance or to the source footage."
+
+  # ---- well-evidenced empirical guidance from the wiki / design inventory ----
+  - slug: seedance-2-5-short-result-accept-and-badge
+    kind: empirical_guidance
+    statement: "Seedance 2.5 intermittently returns a result cut to exactly 14.72 s while reporting success; expect it on long segments, accept and flag it (the 'short result' badge), and do not lower max_clip_sec to avoid it."
+    rationale: "Measured: 4 of 11 generations from clips of 19-29.3 s came back at 14.720 s (roughly 2 in 3 succeed), independent of clip length, resolution and reference size; the identical 27.5 s segment gave 27.392 s on one run and 14.720 s on another. Lowering max_clip_sec to 14.5 threw away the successful majority and delivered un-swapped original footage (run f267bede) and was reverted. The truncated tail is never generated, and the speech is crammed into the remaining time, so lip sync is off. Retained behavior is the operator's call: stitch every result and show the shortfall."
+    applicability: {model_key: [seedance-2-5], segment_sec_band: ["[15,30]"]}
+    recommendation: {action: warn, target: {model_key: seedance-2-5}}
+    confidence: medium
+    shareable: false
+    effective_from: "2026-10-27T00:00:00Z"
+    author_label: "importer (AICP-297)"
+    provenance: {source: "wiki/models/ai-models.md#intermittent-truncation-1472s", linear: "AICP-297", doc: "docs/knowledge-feedback-design.md §2.2", runs_short_ids: "8169b9b5, b6265eec, 4e631e56, be4343ef truncated; f267bede un-swapped fallback"}
+    evidence_gaps:
+      - "Sample is 11 generations, all 720p; 1080p and later runs are not in the table (wiki/models/kling-4-0.md later gives about one in three)."
+      - "Cause is unknown; no prompt or parameter that prevents it has been found."
+      - "Whether a clip of 15 s or less is affected was not measured (only clips over 14.72 s can show it)."
+      - "Evidence links omitted: the repo holds only 8-character run ids."
+
+  - slug: seedance-2-5-resubmit-after-short-result-rebills
+    kind: empirical_guidance
+    statement: "Do not blindly resubmit a Seedance 2.5 segment that came back short; the retry has mostly returned the same 14.72 s result and bills again."
+    rationale: "Auto-retry was tried and removed: three resubmits of run 4e631e56 with the clip length spelled out in the prompt all returned 14.72 s. Billing for 2.5 is 38 credits per second of input plus output (wiki/models/kling-4-0.md), so each retry is a full re-bill. Knowledge has no execution authority: this is advice, retries stay allowed."
+    applicability: {model_key: [seedance-2-5], segment_sec_band: ["[15,30]"]}
+    recommendation: {action: avoid, target: "blind resubmission of a short-result segment on seedance-2-5"}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-27T00:00:00Z"
+    author_label: "importer (AICP-297)"
+    provenance: {source: "wiki/models/ai-models.md#intermittent-truncation-1472s", linear: "AICP-297", doc: "docs/knowledge-feedback-design.md §2.2", runs_short_ids: "4e631e56"}
+    evidence_gaps:
+      - "One run, three retries; a retry after a different change (different references or split segment) was not measured."
+      - "Whether a split of the segment avoids the cut has not been tested."
+
+  - slug: gemini-omni-10s-cap-original-footage
+    kind: empirical_guidance
+    statement: "Gemini Omni cannot generate swap segments longer than 10 s; a longer segment is skipped and the run delivers that part as original, un-swapped footage."
+    rationale: "Registry fact in ai_models.py (max_clip_sec 10, outputs of 4/6/8/10 s) and documented behavior: over-long swap segments are marked failed with source_fallback and the run still reaches done, partly swapped. This is a deterministic constraint, not an outcome study. The band [10,15) is used because bands are half-open; a segment of exactly 10.0 s fits."
+    applicability: {model_key: [gemini-omni], segment_sec_band: ["[10,15)", "[15,30]", ">30"]}
+    recommendation: {action: warn, target: {model_key: gemini-omni}}
+    confidence: medium
+    shareable: false
+    effective_from: "2026-10-27T00:00:00Z"
+    author_label: "importer (AICP-297)"
+    provenance: {source: "wiki/models/ai-models.md#gemini-omni-google", linear: "AICP-297", doc: "backend/app/ai_models.py (gemini-omni spec)"}
+    evidence_gaps:
+      - "Not measured as a quality outcome; no run is cited."
+      - "Overlaps with rule o1 for subtitle_removal / cover_change; the advisor shows both."
+
+  - slug: kling-4-0-avoid-for-face-swap-and-localisation
+    kind: empirical_guidance
+    statement: "Do not use Kling 4.0 video-to-video for face swap or localisation; Seedance 2.5 was better in the 2026-10-22/23 evaluation."
+    rationale: "Eval on kie.ai: Kling rewrote burned-in captions (contradicting the kept original audio), edited a cutaway, and drifted from the source performance (SSIM 0.63-0.65 vs Seedance 0.83); in localisation it invented or paraphrased about half the script even with a strict timestamped prompt. Kling is not in the model registry; this guards manual use only."
+    applicability: {operation: [face_swap, localisation]}
+    recommendation: {action: avoid, target: "kling-4.0 reference-to-video for video-to-video face swap or localisation"}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-27T00:00:00Z"
+    author_label: "importer (AICP-297)"
+    provenance: {source: "wiki/models/kling-4-0.md (T1, T2)", linear: "AICP-297", doc: "docs/knowledge-feedback-design.md §2.2"}
+    evidence_gaps:
+      - "One face-swap segment (3 repeats at 720p, 1 at 1080p) and one localisation clip; small samples."
+      - "No operator quality labels; comparison used SSIM and transcript checks."
+      - "Kling 4.0 may gain a video-editing mode later, which this does not cover."
+
+  - slug: kling-4-0-images-only-rebuild-cost
+    kind: empirical_guidance
+    statement: "For a manual images-only 1080p rebuild (no reference video), Kling 4.0 reference mode gave comparable quality and the script almost verbatim at 1275 credits versus 4740 for Seedance 2.5 over 30 s."
+    rationale: "Measured on one 30 s rebuild with the same 8 GPT Image 2.5 2K frames and script (run 0abca08e, AICP-256): per-task creditsConsumed matched the price page. Keyframe mode has no voice input and Kling audio peaks at 0 dBFS (normalise before delivery). The images-only rebuild is manual, not available in the app (AICP-258), and is never auto-selected."
+    applicability: {operation: [images_only_rebuild_manual]}
+    recommendation: {action: prefer, target: "kling-4.0 reference-to-video for manual images-only rebuilds"}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-27T00:00:00Z"
+    author_label: "importer (AICP-297)"
+    provenance: {source: "wiki/models/kling-4-0.md (T3, pricing)", linear: "AICP-256", doc: "docs/knowledge-feedback-design.md §2.2", runs_short_ids: "0abca08e"}
+    evidence_gaps:
+      - "One comparison; quality judged by PSNR and inspection, no blinded operator label."
+      - "Reference mode zoomed in mid-clip; frequency not measured."
+      - "Cost is measured credits only; success rate over repeats not measured."
+
+  - slug: celebrity-moderation-move-boundary
+    kind: empirical_guidance
+    statement: "kie.ai refuses to generate a segment that shows a real named celebrity; retrying the same segment does not help, so move the segment boundary past those frames."
+    rationale: "Recorded in the design's representative cases as a provider refusal where retries never help. The repo holds no run id or refusal measurement for it; the wiki separately notes (BytePlus research) that a trusted Seedream face can still trip a separate celebrity/copyright filter. Confidence is low because the repo cites no case."
+    applicability: {model_family: [seedance]}
+    recommendation: {action: avoid, target: "retrying a segment refused for a real named celebrity"}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-27T00:00:00Z"
+    author_label: "importer (AICP-297)"
+    provenance: {source: "docs/knowledge-feedback-design.md §2.2 (Celebrity moderation row)", linear: "AICP-297", wiki: "wiki/decisions/byteplus-second-provider.md (celebrity/copyright filter note)"}
+    evidence_gaps:
+      - "No run id, refusal text or count in the repo; the operator experience is recorded only as a one-line case."
+      - "Whether Gemini Omni applies the same refusal was not measured."
+      - "Whether the boundary move always succeeds was not measured."
+
+  - slug: end-swap-at-the-scene-cut
+    kind: empirical_guidance
+    statement: "End a face swap at the source scene cut; ending before it lets the original person flash, and ending on a no-person shot makes Seedance paste the reference photo."
+    rationale: "Two manual-repair cases in the design inventory: runs d740af67-es and 98146271-es ended the swap before the scene cut and the original person flashed (fixed by blacking out the frames in place); run 2d8011bc showed the reference photo pasted on a no-person shot at the swap end (fixed by ending the swap at the cut, not by changing the prompt)."
+    applicability: {operation: [face_swap], model_family: [seedance]}
+    recommendation: {action: prefer, target: "segment boundary placed on the source scene cut"}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-27T00:00:00Z"
+    author_label: "importer (AICP-297)"
+    provenance: {source: "docs/knowledge-feedback-design.md §2.2 (runs 2d8011bc, d740af67-es, 98146271-es)", linear: "AICP-297", runs_short_ids: "2d8011bc, d740af67-es, 98146271-es"}
+    evidence_gaps:
+      - "Three runs, short ids only; failure frequency on runs without this problem is unknown."
+      - "Which model keys produced the three runs is not recorded in the repo."
+      - "Prompt-only mitigations were not measured."
+
+  - slug: v2v-keeps-source-hands-on-gender-mismatch
+    kind: empirical_guidance
+    statement: "Video-to-video swaps keep the source's hands and manicure; a swap to a different-gendered persona can show the wrong hands, and prompting did not fix it."
+    rationale: "Run 3b1ea5c7-es (AICP-243): Seedance 2.5 video-to-video with 9 reference images and Gemini Omni video-to-video both kept the source's female hands on a male persona; an images-only Seedance 2.5 rebuild with a spliced brand word and CTA was delivered in place instead. The images-only path is manual and not available in the app (AICP-258)."
+    applicability: {operation: [face_swap], model_key: [seedance-2-5, gemini-omni]}
+    recommendation: {action: warn, target: "video-to-video swap onto a persona of a different gender when hands are visible"}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-27T00:00:00Z"
+    author_label: "importer (AICP-297)"
+    provenance: {source: "docs/knowledge-feedback-design.md §2.2 (run 3b1ea5c7-es)", linear: "AICP-243", runs_short_ids: "3b1ea5c7-es"}
+    evidence_gaps:
+      - "One run; base seedance, fast and mini were not tested."
+      - "Which prompt attempts were made is not recorded in the repo."
+      - "Frequency over other gender-mismatched swaps is unknown."
+
+  # ---- brand-name repair in localisation speech (added 2026-10-28) ----
+  - slug: localisation-brand-mispronunciation-word-splice
+    kind: empirical_guidance
+    statement: "When Seedance mispronounces 'Listenify' in a delivered localisation run, re-voice only that word in place. Splice it from a sibling run that says it correctly; if there is none, generate a short Seedance 2.5 window with the run's own voice as reference audio and splice only the word. Do not regenerate the whole run."
+    rationale: "Seedance writes localisation speech itself and mispronounces the brand at random ('ListenFood', 'listenfarks'), so a full re-run costs 38 credits per second of input plus output and can come back wrong again. Repair order used in production: (1) a sibling of the same project that says it right -> the app's 'Fix audio from another run' (RunAudioPatch, media.splice_audio_window), which is free and keeps the Job ID and Drive link (runs 3eb88752-es, cdb8fe52-pt); (2) no usable sibling -> one-shot Seedance 2.5 takes on a ~5 s window that starts in the pause before the phrase, fed the run's own swap clip, reference_audio_urls set to ~20 s of this run's final without the bad word (keeps the timbre), aspect_ratio adaptive, duration -1, generate_audio true, and a prompt holding only that window's line plus 'Listenify is a brand name and is pronounced in English'. Then splice only the word's window (here [4.28, 5.00]) into the final: video stream-copied, nothing outside the window moves, Drive content replaced under the same file id (run 9f253b98-pt, 2026-10-28: two takes for 380 + 342 credits, and the operator chose the take with the plain brand line over a phonetic respelling 'Spichifai'); (3) a second, garbled brand word on camera is muted, not cut, because cutting it desyncs the rest (cdb8fe52-pt). A prompt line alone is not a fix: the 3b1ea5c7-es rebuild had the line and still needed a splice. Whisper cannot judge brand pronunciation (it wrote 'Speechfied' for a correct English take), so the operator picks by ear from previews of the final around the word."
+    applicability: {operation: [localisation], model_family: [seedance]}
+    recommendation: {action: prefer, target: "re-voicing only the mispronounced brand word in place (sibling donor first, else a short voice-referenced Seedance 2.5 window) over regenerating the run"}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-28T00:00:00Z"
+    author_label: "importer (AICP-293)"
+    provenance: {source: "Manual repairs 2026-09-07 (3eb88752-es), 2026-10-16 (cdb8fe52-pt), 2026-10-17 (3b1ea5c7-es), 2026-10-28 (9f253b98-pt)", linear: "AICP-293", doc: "docs/run-audio-patch.md", runs_short_ids: "9f253b98-pt, 3eb88752-es, cdb8fe52-pt, 3b1ea5c7-es", runs_full_ids: "9f253b98-23c2-4a65-ae7a-d69214c81348, 3eb88752-2a70-4264-8556-e70d8fcfc426, cdb8fe52-50fd-4ad6-8368-9e02ae0074e4, 3b1ea5c7-7c18-4d2a-ba79-deabe9f2c715"}
+    evidence_gaps:
+      - "Path (2) is a manual script (kie createTask with retries disabled, then media.splice_audio_window); the app has no 'regenerate a word' action, so an assistant can propose it but an operator or engineer runs it."
+      - "Four repaired runs, all with the brand early in the clip (3-6 s); sibling alignment drifts to ~1 s by 30 s, so a late-clip word needs its own donor offset."
+      - "Success rate of the brand line or a phonetic respelling per take is unmeasured; the 2026-10-28 choice between the two takes was one operator's ear, not a measurement."
+      - "Only Listenify was observed; other brand names are assumed to behave the same."
+      - "No evidence links: these runs have no kb_cases rows yet (all are in development-split groups, none in holdout)."
+
+  - slug: regenerated-word-donor-level-eq-match
+    kind: empirical_guidance
+    statement: "Before splicing a word from a separately generated take, match its loudness and EQ to the run's own voice; otherwise the word sounds distant even when the take sounds fine on its own."
+    rationale: "Run 9f253b98-pt, 2026-10-28: the regenerated take was 2.6 dB quieter and about 3 dB thinner at 80-200 Hz and 400-1600 Hz than the run's voice on the same words. Spliced as-is, the operator heard the brand 'as if he stepped away'; the operator had judged the takes by themselves and only noticed it in context. Fix: compare 8-band spectra of the SAME words in the base and the take, apply the per-band difference to the take with ffmpeg firequalizer (gain_entry per band), splice again, and send the operator previews of the final around the word (about 2.5 s either side), not the raw takes. The matched word measured -19.6 dB RMS against -20.0 dB of the neighbouring speech, and the operator accepted it. A sibling donor from the same run family did not need this on 3eb88752-es."
+    applicability: {operation: [localisation], model_family: [seedance]}
+    recommendation: {action: require, target: "level and EQ match of a separately generated donor take before an audio splice"}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-28T00:00:00Z"
+    author_label: "importer (AICP-293)"
+    provenance: {source: "Manual repair 2026-10-28, run 9f253b98-pt (backups in data/scratch/listenify-9f253b98-20261028)", linear: "AICP-293", runs_short_ids: "9f253b98-pt", runs_full_ids: "9f253b98-23c2-4a65-ae7a-d69214c81348"}
+    evidence_gaps:
+      - "One case; reverberation differences, which EQ cannot fix, were not measured."
+      - "Whether sibling-run donors need the same matching is not measured (one sibling splice, 3eb88752-es, sounded fine without it)."
+      - "No evidence links: the run has no kb_cases row yet."
+
+  # ---- gender-mismatched hands: full record of run 3b1ea5c7-es (added 2026-10-28) ----
+  - slug: v2v-keeps-source-hands-on-gender-mismatch
+    kind: empirical_guidance
+    statement: "Video-to-video Seedance 2.5 and Gemini Omni keep the source's hands and manicure. When a female source gets a male persona, the hands stay female, and no prompt, hand reference image or hands-only crop has changed that. Do not spend more generations trying to fix the hands inside a video-to-video run."
+    rationale: "Run 3b1ea5c7-es (project 77e0e370 DidYouKnowYouCanTurnReadToListen, localisation, Seedance 2.5, AICP-243, 2026-10-17): face and lip-sync on the male persona were good, but his hands kept the source's long almond nails, clearly visible at 6-9 s and 17-21 s. The operator had already tried hard prompting on earlier runs and it never worked. All tests below used one 4 s full-frame window (16.5-20.5 s of the final), cut out with extract-insert: (1) Gemini Omni v2v with a 'change only the hands' prompt (~170 cr): nails unchanged, and the gestures drifted ~0.5 s from the original. Omni regenerates the clip rather than editing it, so it also breaks lip sync with the kept audio. (2) Seedance 2.5 v2v with 9 refs, the persona photo plus 8 frames of this window that GPT Image 2.5 had redrawn with convincing male hands and short nails, and a long hands-only prompt (~50 cr GPT Image + ~300 cr Seedance). Motion matched almost frame for frame, but the nails stayed long. (3) The same with a 1:1 1080x1080 hands-only crop (no face), a male-hands photo at ref 0, 8 GPT Image 1:1 male-hand frames, and the operator's prompt 'Change woman's hands to man's hands in the reference image. Do not change movements and everything else' (~350 cr). The nails stayed long again. Conclusion: Seedance treats the hands in the input video as content to preserve. Framing, reference count and prompt wording are not the lever. Free fallback: a hard-cut ~2x punch-in on the face (crop 528x940 -> 1080x1920, lanczos + unsharp) hides hands held at chest height. It cannot hide a hand at the chin, and more than 3-4 zooms in 30 s look intrusive. What was finally delivered is the images-only rebuild in rule images-only-rebuild-fixes-gender-mismatched-hands."
+    applicability: {operation: [face_swap, localisation], model_key: [seedance-2-5, gemini-omni]}
+    recommendation: {action: warn, target: "video-to-video swap onto a persona of a different gender when hands are visible; hand fixes inside v2v (prompt, hand refs, hands-only crop)"}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-28T00:00:00Z"
+    author_label: "importer (AICP-293)"
+    provenance: {source: "Manual tests 2026-10-17 on run 3b1ea5c7-es (Claude session d6f70576), Linear AICP-243", linear: "AICP-243", runs_short_ids: "3b1ea5c7-es; test runs 98c9b8e5 (Omni), a33f0602 (Seedance + hand refs), 8876ba1f (1:1 crop), deleted 2026-10-17", runs_full_ids: "3b1ea5c7-7c18-4d2a-ba79-deabe9f2c715", project_ids: "77e0e370-8b8b-43dd-a428-3f2831555106"}
+    evidence_gaps:
+      - "One source and one persona; base seedance, fast and mini were not tested."
+      - "How often hands show the source gender on other gender-mismatched swaps is unknown; the source here had near-constant hand gestures close to the camera."
+      - "Credit figures are session estimates; the operator checked the real spend in the kie.ai account, and it is not recorded."
+      - "Test runs and projects (fca109e6, 51511124, bb9e67b6) were deleted on 2026-10-17, so no case rows can be made for them."
+      - "No evidence links: run 3b1ea5c7-es has no kb_cases row yet (development split, not holdout)."
+
+  - slug: images-only-rebuild-fixes-gender-mismatched-hands
+    kind: empirical_guidance
+    statement: "When a delivered swap has the source's opposite-gender hands, rebuild the whole creative images-only with Seedance 2.5: GPT Image edits of frames from the run's own final with only the hands changed, plus the persona photo, as references, and the full script as the prompt, with no reference video. Then, if needed, raise the resolution with a Seedance 2.5 video-to-video pass over that rebuild. The hands stay correct because the input video now has the right hands."
+    rationale: "Delivered for run 3b1ea5c7-es on 2026-10-17 (AICP-243), after every v2v hand fix failed (rule v2v-keeps-source-hands-on-gender-mismatch). Steps: (1) References: 8 frames taken from the run's final, so they already show the male persona in the source's room and in the woman's original poses. GPT Image 2.5 edited them with one per-image prompt: keep everything in the frame exactly the same (face, pose, t-shirt, background, framing, finger positions) and change ONLY the hands to an adult man's hands (broader palms, thicker fingers, knuckles, some hair, SHORT plain unpolished nails; no almond or salon nails, no polish). All 8 came out convincing. The pipeline caps refs at MAX_REFERENCE_IMAGES=5, so a second, never-approved preprocess run made 4 more images. They were appended by SQL to the main run's ref lists at preprocess_review, giving 9 refs, the Seedance maximum. (2) A 5 s, 480p images-only probe (~200 cr) confirmed male hands with short nails, the same person, shirt, desk, laptop and painting, but its own gestures and its own voice. Gemini Omni images-only failed 6 of 6 with task-level 'Internal Error' (gemini-omni-video and google/gemini-omni-flash-1-1, 1-7 images, PNG and JPEG, with and without the brand line), and that track was dropped. (3) The whole 29.7 s creative was generated as ONE 30 s take, at the operator's request, instead of chunks with seams. Seedance 2.5 images-only: persona photo + 8 frames, 480p, aspect 9:16, duration 30, generate_audio true. The prompt describes the scene and person and asks for natural hand gestures in front of the chest, explicitly with a man's hands and short nails. It carries the operator's mandatory line 'The person tells about \"Listenify App\" that is a brand and pronounce in english.' and the full Spanish script. It came back the full 30.04 s, not truncated, with every line spoken (one stray inserted word, 'pedículos'), at about 1200 cr. (4) 'Listenify' was still mispronounced, so that word was spliced from the original run's audio (3.74-4.52 s, trimmed to end at 4.415 s to drop an audible '-ed'), see rule localisation-brand-mispronunciation-word-splice. (5) A Seedance 2.5 v2v pass at 720p raised the resolution: the 480p rebuild (trimmed to 29.9 s, the 2.5 input cap) with the patched audio in the input, the same 9 refs, aspect adaptive, duration -1. It came out sharper (visible veins and t-shirt folds), the hands stayed male, and the motion repeated the rebuild frame for frame. It ran ~0.65 % fast (713 of 718 frames), fixed with setpts=PTS*29.9/29.708,fps=24 (residual 1 frame or less). Its own audio re-voiced the input with the same mispronunciation, so the patched track was kept. (6) Finishing: upscaled to 1080x1920@30, CTA_Spanish_Book appended (54.5 s total, 35.7 MB), and the Drive content was replaced under the same file id, so the Job ID and link are unchanged. runs.result_local_path and result_duration_sec were repointed by SQL, and the old final.mp4 was kept as a backup. Captions came from the known script, not from transcription: a run_captions row with lines_source=manual, status=failed and 14 script lines timed from whisper word stamps (the stray word left out), then POST /captions/{id}/retry, and the worker goes straight to burning. Trade-off the operator accepted: the result is a new performance (new gestures and voice) of the same person, scene and text, not an edit of the original."
+    applicability: {operation: [images_only_rebuild_manual, localisation, face_swap], model_key: [seedance-2-5]}
+    recommendation: {action: prefer, target: "manual images-only Seedance 2.5 rebuild from hand-edited GPT Image frames of the run's own final (one 30 s take), then a v2v resolution pass, over further v2v hand fixes"}
+    confidence: low
+    shareable: false
+    effective_from: "2026-10-28T00:00:00Z"
+    author_label: "importer (AICP-293)"
+    provenance: {source: "Manual rebuild and in-place delivery 2026-10-17, run 3b1ea5c7-es (Claude session d6f70576); kie tasks 379a5662... (30 s 480p images-only)", linear: "AICP-243", related_linear: "AICP-230, AICP-256, AICP-258", runs_short_ids: "3b1ea5c7-es; preprocess runs a33f0602 + 219eb2d2 (deleted)", runs_full_ids: "3b1ea5c7-7c18-4d2a-ba79-deabe9f2c715", project_ids: "77e0e370-8b8b-43dd-a428-3f2831555106", caption_id: "e07a0cd8"}
+    evidence_gaps:
+      - "Manual only: the app has no images-only generation mode (AICP-258), and the registry forces duration=-1 for seedance-2-5 (validate_duration), so the call bypasses create_task and the daily spend cap. An assistant can propose it, but an engineer runs it."
+      - "One case. The rebuild loses the original performance; whether operators accept that in general, rather than for this one creative, is unknown."
+      - "Kling 4.0 reference mode later did a comparable images-only 1080p rebuild at ~27 % of the Seedance cost (rule kling-4-0-images-only-rebuild-cost, AICP-256), but it was not tried for hands or with a male-hands brief."
+      - "A single 30 s images-only take came back full length once; the 14.72 s truncation risk of 2.5 (rule seedance-2-5-short-result-accept-and-badge) was not measured for images-only takes."
+      - "Credits for steps 3 and 5 are session estimates (the 720p v2v pass is ~2400-4800 cr, not verified); the operator checked the real spend in the kie.ai account, and it is not recorded."
+      - "The handfix-20261017 backup dir with the intermediate files and scripts no longer exists on the box; the delivered final, the old final.mp4 backup and caption e07a0cd8 are what remain."
+      - "No evidence links: run 3b1ea5c7-es has no kb_cases row yet (project 77e0e370 is in a development-split group, not holdout)."

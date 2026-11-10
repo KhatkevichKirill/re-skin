@@ -1,0 +1,97 @@
+{# The "Waiting for you" inbox body (AICP-375, docs/autopilot-operator-ux.md §3).
+   Refreshes itself every 30 s; holds links only, nothing to type into. #}
+<div id="assistant-inbox" hx-get="/v2/assistant/inbox-fragment" hx-trigger="every 30s" hx-swap="outerHTML">
+
+<div class="card">
+  <div class="card-header"><h2>To answer ({{ v.to_answer|length }})</h2></div>
+  <div class="card-body">
+  {% if v.to_answer %}
+  <div style="overflow-x:auto"><table>
+    <thead><tr><th>Waited</th><th>Project</th><th>Where</th><th>Question</th><th class="text-right">Cost</th><th></th></tr></thead>
+    <tbody>
+    {% for q in v.to_answer %}
+      <tr class="ap-inbox-question" data-approval-id="{{ q.id }}">
+        <td style="white-space:nowrap" title="{{ q.created_at.isoformat()[:19] }} UTC">{{ q.waited }}</td>
+        <td><a href="/v2/projects/{{ q.project_id }}">{{ q.project }}</a></td>
+        <td>{{ q.where }}</td>
+        <td><span class="badge">{{ q.kind }}</span> {{ q.title }}
+          {% if q.paused %}<div class="text-muted" style="font-size:12px">The assistant is paused — answer, then Resume.</div>{% endif %}</td>
+        <td class="text-right" style="white-space:nowrap">{% if q.cost %}{% if q.cost.upto %}up to {% endif %}{{ "%.0f"|format(q.cost.credits) }} cr (${{ "%.2f"|format(q.cost.usd) }}){% endif %}</td>
+        <td><a class="btn btn-sm btn-primary" href="{{ q.path }}">Answer</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="text-muted">Nothing is waiting for you.</p>{% endif %}
+  </div>
+</div>
+
+<div class="card" id="paused">
+  <div class="card-header"><h2>Paused ({{ v.paused|length }})</h2></div>
+  <div class="card-body">
+  {% if v.paused %}
+  <div style="overflow-x:auto"><table>
+    <thead><tr><th>Project</th><th>Why</th><th>Since</th><th></th></tr></thead>
+    <tbody>
+    {% for p in v.paused %}
+      <tr{% if p.by_operator %} style="color:var(--color-muted)"{% endif %}>
+        <td><a href="{{ p.path }}">{{ p.project }}</a></td>
+        <td>{% if p.by_operator %}You paused it{% if p.reason %} ({{ p.reason }}){% endif %}{% else %}{{ p.reason }}{% endif %}</td>
+        <td style="white-space:nowrap">{{ p.ago }}</td>
+        <td><a class="btn btn-sm" href="{{ p.path }}">Open</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="text-muted">No paused assistant.</p>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>Ended in the last 7 days ({{ v.ended|length }})</h2></div>
+  <div class="card-body">
+  {% if v.ended %}
+  <div style="overflow-x:auto"><table>
+    <thead><tr><th>Project</th><th>Status</th><th>Why</th><th>When</th><th></th></tr></thead>
+    <tbody>
+    {% for e in v.ended %}
+      <tr>
+        <td><a href="{{ e.path }}">{{ e.project }}</a></td>
+        <td><span class="badge badge-{{ e.status }}">{{ e.status }}</span></td>
+        <td>{{ e.reason }}</td>
+        <td style="white-space:nowrap">{{ e.ago }} ago</td>
+        <td><a class="btn btn-sm" href="{{ e.path }}">Open</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="text-muted">No assistant failed or was stopped by the system this week.</p>{% endif %}
+  </div>
+</div>
+
+{% if v.failing or v.notifications != "on" %}
+<div class="card">
+  <div class="card-header"><h2>Notifications</h2></div>
+  <div class="card-body">
+  {% if v.notifications != "on" %}<p class="text-muted">Telegram notifications are {{ v.notifications }}.</p>{% endif %}
+  {% if v.failing %}
+  <p><strong>Notification failing ({{ v.failing|length }})</strong> — the Telegram sender keeps failing on these messages; the questions are still answerable here.</p>
+  <div style="overflow-x:auto"><table>
+    <thead><tr><th>Message</th><th>Project</th><th class="text-right">Attempts</th><th>Last error</th></tr></thead>
+    <tbody>
+    {% for f in v.failing %}
+      <tr>
+        <td><code>{{ f.key }}</code></td>
+        <td>{% if f.path %}<a href="{{ f.path }}">{{ f.project or f.project_id[:8] }}</a>{% endif %}</td>
+        <td class="text-right">{{ f.attempts }}</td>
+        <td style="font-size:12px">{{ f.error }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+  </div>
+</div>
+{% endif %}
+
+</div>

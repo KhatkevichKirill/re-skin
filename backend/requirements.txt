@@ -1,23 +1,46 @@
-fastapi==0.104.1
-python-multipart==0.0.9
-uvicorn[standard]==0.24.0
+# Runtime dependencies (direct) for the api + worker image.
+#
+# This file is the human-edited list. The image installs from the hashed lock
+# `requirements.lock`, which pins every transitive dependency. After editing
+# this file, regenerate the lock (Python must match the Dockerfile base):
+#
+#   docker run --rm -v "$PWD/backend:/w" -w /w python:3.12-slim-trixie sh -c \
+#     'pip install -q pip-tools && pip-compile --generate-hashes --allow-unsafe \
+#        --strip-extras --no-emit-index-url -o requirements.lock requirements.txt'
+#
+# Test-only packages live in requirements-dev.txt and are NOT in the image.
+
+# --- web (AICP-153: patched for the starlette/multipart/jinja2/h11 CVEs) ---
+fastapi==0.143.2
+starlette==1.8.0
+python-multipart==0.0.32
+uvicorn[standard]==0.54.0
+h11==0.16.0
+jinja2==3.1.6
+httpx==0.27.2
+
+# --- jobs / db ---
 rq==1.15.1
 redis==5.0.1
-jinja2==3.1.2
-python-dotenv==1.0.0
-sqlalchemy==2.0.23
+sqlalchemy==2.0.54
 alembic==1.13.1
-httpx==0.27.2
+psycopg2-binary==2.9.9
+python-dotenv==1.2.4
 tenacity==9.0.0
-pytest==7.4.3
-respx==0.21.1
+
+# --- media / vision ---
 insightface==1.0.1
 onnxruntime==1.23.2
 opencv-python-headless==4.13.0.92
-# PySceneDetect — subtitle-removal projects cut on scene changes (app/scene.py).
 scenedetect==0.6.7
 numpy==2.2.6
+# Font metrics for app/captions.py (measured, not character-counted, caption
+# wrapping). Already present as an insightface transitive; pinned explicitly
+# because a caption burn now depends on it directly — without it the wrapper
+# silently falls back to an em estimate.
+pillow==12.3.0
+
+# --- Google Drive / Sheets ---
 google-api-python-client==2.140.0
 google-auth==2.36.0
 google-auth-httplib2==0.2.0
-psycopg2-binary==2.9.9

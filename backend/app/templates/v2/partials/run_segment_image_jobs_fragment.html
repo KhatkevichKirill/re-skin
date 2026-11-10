@@ -1,0 +1,28 @@
+{# Response body of GET /v2/runs/{rid}/segment-image-jobs-fragment.
+
+   The ONLY place hx-swap-oob is added for this feature — see
+   partials/segment_image_block.html's header comment. Two things ride in one
+   response:
+     1. The polling trigger itself (#segimg-jobs-trigger), self-terminating
+        exactly like _tail_edits_still_active: once nothing is active any
+        more this div renders with no hx-* attributes, so the NEXT poll never
+        fires.
+     2. One hx-swap-oob div per segment currently showing the block on the
+        page — same visibility predicate (run.preprocess_enabled + status)
+        the main page uses, so this always targets ids that actually exist. #}
+<div id="segimg-jobs-trigger"
+     {% if segment_image_jobs_active %}
+     hx-get="/v2/runs/{{ run.id }}/segment-image-jobs-fragment"
+     hx-trigger="every 3s"
+     hx-target="this"
+     hx-swap="outerHTML"
+     {% endif %}
+></div>
+{% for rs in run_segments %}
+{% set rs_status = rs.status.value if rs.status and rs.status.__class__.__name__ != 'str' else rs.status|string %}
+{% if run.preprocess_enabled and rs_status in ("completed", "failed") %}
+<div id="segimg-{{ rs.id }}" hx-swap-oob="true">
+  {% include "partials/segment_image_block.html" %}
+</div>
+{% endif %}
+{% endfor %}

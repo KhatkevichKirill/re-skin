@@ -1,0 +1,80 @@
+{% from "error_detail.html" import error_detail %}
+{% if audio_patches %}
+<div
+  class="card"
+  id="audio-patches-card"
+  {% if audio_patches_active %}
+  hx-get="/v2/runs/{{ run_id }}/audio-patches-fragment"
+  hx-trigger="every 3s"
+  hx-target="#audio-patches-content"
+  hx-swap="innerHTML"
+  {% endif %}
+>
+  <div class="card-header"><h2>Audio-fix history</h2></div>
+  <div class="card-body">
+    <table>
+      <thead>
+        <tr>
+          <th>Window</th>
+          <th>Donor</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in audio_patches %}
+        {% set psv = p.status.value if p.status.value is defined else p.status|string %}
+        <tr>
+          <td style="font-size:11px">
+            <code>{{ "%.2f"|format(p.target_start_sec) }}s → {{ "%.2f"|format(p.target_end_sec) }}s</code>
+            <div class="text-muted">
+              {{ "%.2f"|format(p.target_end_sec - p.target_start_sec) }}s window,
+              {{ "%.0f"|format(p.crossfade_sec * 1000) }}ms seam
+            </div>
+          </td>
+          <td style="font-size:11px">
+            {% if p.donor_run_id %}
+            {{ audio_patch_donor_labels.get(p.donor_run_id, p.donor_run_id[:8] ~ " (deleted)") }}
+            <div class="text-muted">from {{ "%.2f"|format(p.donor_start_sec) }}s</div>
+            {% else %}
+            this run
+            <div class="text-muted">brand fix: low-pass {{ (p.filter_params or {}).get("lowpass_hz", "") }} Hz</div>
+            {% endif %}
+          </td>
+          <td>
+            <span class="badge badge-{{ psv }}">{{ psv }}</span>
+            {% if psv == "done" %}
+            {# The result card above is rendered from whatever the page loaded
+               with, and only this list re-renders as the job progresses — so
+               say plainly that the player up there is still the old file. #}
+            <div class="text-muted" style="font-size:11px;margin-top:2px">
+              applied to this run &mdash;
+              <a href="" onclick="location.reload();return false">reload</a>
+              to play it
+            </div>
+            {% elif psv == "failed" and p.error_message %}
+            <div style="font-size:11px;color:#c00;margin-top:2px">
+              {{ error_detail(p.error_message, 160) }}
+            </div>
+            {% endif %}
+          </td>
+          <td class="text-right" style="font-size:11px">
+            {% if p.output_path %}
+            <a class="btn btn-sm btn-secondary"
+               href="/api/v2/audio-patches/{{ p.id }}/result" download>Download this version</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="hint" style="margin:8px 0 0">
+      Each patch rewrites this run's own result and the content behind its
+      existing Drive link — the Job ID, the Drive URL and any Final Creatives
+      row already pointing at it are unchanged. Nothing is deleted: every
+      version above stays downloadable, and a further correction patches
+      whichever one is current.
+    </p>
+  </div>
+</div>
+{% endif %}

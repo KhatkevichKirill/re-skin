@@ -1,0 +1,74 @@
+{% if runs %}
+<table style="width:100%; font-size:13px; margin:0">
+  <thead>
+    <tr><th>Run</th><th>Size</th><th>Duration</th><th>Created</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for r in runs %}
+    <tr>
+      <td>
+        <strong>{{ r.run_name }}</strong>
+        {% if r.derived %}
+        <span class="badge" style="margin-left:6px">{{ r.derived|length }} derived</span>
+        {% endif %}
+      </td>
+      <td>{% if r.width %}{{ r.width }}×{{ r.height }}{% else %}—{% endif %}</td>
+      <td>{% if r.duration_sec %}{{ "%.1f"|format(r.duration_sec) }}s{% else %}—{% endif %}</td>
+      <td class="text-muted" style="white-space:nowrap">{{ r.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td class="text-right">
+        <button type="button" class="btn btn-sm btn-primary"
+                data-source-type="run" data-source-id="{{ r.run_id }}"
+                onclick="createJob(this)">Use this →</button>
+      </td>
+    </tr>
+    {# A run's derived creatives — tail edits and caption jobs — nest under it;
+       `kind` IS the source_type the create call takes, so one row template
+       serves both. #}
+    {% for d in r.derived %}
+    <tr style="background:var(--color-surface,#f8f9fa)">
+      <td colspan="3" style="padding-left:28px">
+        <span class="text-muted">↳</span> {{ d.label }}
+        <code style="font-size:11px;color:var(--color-muted)">{{ d.source_id[:8] }}</code>
+      </td>
+      <td class="text-muted" style="white-space:nowrap">{{ d.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td class="text-right">
+        <button type="button" class="btn btn-sm btn-primary"
+                data-source-type="{{ d.kind }}" data-source-id="{{ d.source_id }}"
+                onclick="createJob(this)">Use this →</button>
+      </td>
+    </tr>
+    {% endfor %}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="text-muted" style="padding:8px 2px">No finished runs for this project.</div>
+{% endif %}
+
+{% if orphan_derived %}
+{# Derived creatives whose parent run isn't in the table above (not done, or
+   its result file is missing) — see overlay_dashboard()'s comment on why such
+   projects are still listed. Still selectable, just grouped separately so the
+   operator isn't misled into thinking they belong to a run shown above, while
+   the parent run's name/id stays visible for context. #}
+<div class="text-muted" style="font-size:12px; margin:10px 0 2px">From runs not shown above (run incomplete or its video missing):</div>
+<table style="width:100%; font-size:13px; margin:0">
+  <thead>
+    <tr><th>Video</th><th>From run</th><th>Created</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for d in orphan_derived %}
+    <tr>
+      <td><strong>{{ d.label }}</strong> <code style="font-size:11px;color:var(--color-muted)">{{ d.source_id[:8] }}</code></td>
+      <td class="text-muted">{{ d.run_name }}</td>
+      <td class="text-muted" style="white-space:nowrap">{{ d.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td class="text-right">
+        <button type="button" class="btn btn-sm btn-primary"
+                data-source-type="{{ d.kind }}" data-source-id="{{ d.source_id }}"
+                onclick="createJob(this)">Use this →</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
