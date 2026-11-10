@@ -1,0 +1,85 @@
+# Standalone opt-in stack. No production app service or network is modified.
+# Backend integration mounts ONLY ASSISTANT_SOCKET_DIR read-only at
+# /run/reskin-assistant and uses /run/reskin-assistant/broker.sock.
+name: reskin-assistant
+services:
+  assistant-egress:
+    profiles: [assistant]
+    build:
+      context: ../..
+      dockerfile: deploy/assistant/Dockerfile.egress
+    image: reskin-assistant-egress:aicp261
+    user: '10002:10002'
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    cpus: '0.25'
+    pids_limit: 32
+    networks: [assistant-egress]
+    volumes:
+      - type: bind
+        source: ${ASSISTANT_EGRESS_SOCKET_DIR:?dedicated egress socket directory required}
+        target: /egress
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options: {max-size: 1m, max-file: '2'}
+    restart: unless-stopped
+
+  assistant-broker:
+    profiles: [assistant]
+    build:
+      context: ../..
+      dockerfile: deploy/assistant/Dockerfile.runner
+      additional_contexts:
+        assistant_native: /opt/reskin-assistant/bin
+    image: reskin-assistant-runner:aicp261
+    user: '999:998'
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    cpus: '1'
+    pids_limit: 128
+    network_mode: none
+    command: ['--qualification-reference', '${ASSISTANT_QUALIFICATION_REFERENCE:?reviewed qualification reference required}']
+    tmpfs:
+      - /work:rw,noexec,nosuid,nodev,uid=999,gid=998,mode=0700,size=16m
+      - /home/reskin-assistant:rw,noexec,nosuid,nodev,uid=999,gid=998,mode=0700,size=16m
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777,size=64m
+    volumes:
+      - type: bind
+        source: ${ASSISTANT_CONFIG_DIR:?separate app-only native config directory required}
+        target: /config
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ASSISTANT_STATE_DIR:?private broker ledger directory required}
+        target: /state
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ASSISTANT_SOCKET_DIR:?dedicated broker socket directory required}
+        target: /socket
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ASSISTANT_EGRESS_SOCKET_DIR:?dedicated egress socket directory required}
+        target: /egress
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on: [assistant-egress]
+    stop_grace_period: 130s
+    logging:
+      driver: json-file
+      options: {max-size: 1m, max-file: '2'}
+    restart: unless-stopped
+
+networks:
+  assistant-egress:
+    driver: bridge

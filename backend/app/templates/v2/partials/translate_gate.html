@@ -21,6 +21,7 @@
 <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px">
   <button type="button" class="btn btn-secondary" id="translate-btn"
           data-transcript-status="{{ transcript_status or "" }}"
+          data-ref-audio-header="{{ localisation_ref_audio_header or "" }}"
           onclick="translateHook('{{ project.id }}')"
           {% if transcript_status != "ready" %}disabled{% endif %}>Translate</button>
 </div>

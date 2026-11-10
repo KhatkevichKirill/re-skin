@@ -1,162 +1,137 @@
 # re-skin
 
-A video re-skinning tool that uses AI (Seedance or Gemini Omni, via kie.ai) to
-swap faces/segments in video clips, with a web UI for reviewing and approving
-segments before processing. The generation model is selectable per run.
+A video re-skinning service. An operator uploads a source video; the system
+detects faces (InsightFace), proposes swap/keep segments, lets the operator
+review them, sends the swap segments to a video model (Seedance 2.0 / 2.5,
+Gemini Omni, or a Fal-hosted model), stitches the results back into the
+source and delivers the final to Google Drive.
+
+The web UI is at `/v2` (Project → Runs). On top of plain face swaps it covers:
+
+- **Localisation** projects: the hook is transcribed, translated by an LLM and
+  re-spoken by the video model in the target language (`docs/localisation.md`).
+- **Subtitle removal**, **reframe** (16:9 → 9:16) and **rebuild from a
+  reference** project types (`docs/segment-caption-fill-design.md`,
+  `docs/reframe-design.md`, `docs/rebuild-from-reference-design.md`).
+- Post-processing on a delivered run: tail edits, burned captions
+  (`docs/burned-captions.md`), overlays and PIP inserts (`docs/pip-insert.md`),
+  in-place audio patches (`docs/run-audio-patch.md`), per-segment regeneration.
+- GPT Image reference preprocessing before generation
+  (`docs/gpt-image-2-preprocess.md`).
+- An optional "by Assistant" autopilot that drives a project through its flow
+  and asks the operator only for decisions (`docs/autopilot-design.md`).
+- Optional exports of delivered creatives to a Google Sheet, and sheet-driven
+  run automation with a completion webhook.
+
+Optional subsystems (assistant, autopilot, knowledge base, Fal provider) are
+off unless enabled in `.env`.
 
 ## Architecture
 
 ```
-nginx:8847 (basic auth)
-    └─► api:8000  (FastAPI — uvicorn)
-            ├─ SQLite /app/data/app.db  ──┐  (bind-mounted ./data)
-            └─ RQ enqueue via Redis        │
-    worker        (RQ worker)            │
-        ├─ SQLite /app/data/app.db  ◄──┘
-        ├─ /app/data/jobs/<id>/clips/
-        └─ /app/data/jobs/<id>/results/
-redis:6379    (job queue)
+nginx :443 / :8847 (basic auth; TLS on 443)
+  └─► api :8000            FastAPI + Jinja2/HTMX
+        ├─ db              PostgreSQL 16
+        └─ redis           RQ queues
+  worker (x2)              analysis, generation submit/poll, stitch, delivery
+  localise-worker          translate jobs (queue `localise`)
+  brand-asr-worker         brand-word ASR check (queue `brand_asr`)
+  knowledge-worker         knowledge-base capture (queue `knowledge`)
+  autopilot-worker         "by Assistant" ticker
+  fal-worker               Fal provider (compose profile `fal`, optional)
 ```
 
-Both `api` and `worker` containers share the `./data` bind mount, which holds
-the SQLite database and all per-job media files.
+`api` and every worker share the `./data` bind mount (per-run media) and the
+same image (`backend/Dockerfile`). Schema is managed with Alembic
+(`backend/alembic`).
 
-## Deploy & Run
+## Deploy
 
-### 1. Fill in `.env`
+### 1. `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set at minimum:
+Set at least `KIE_API_KEY`, `GDRIVE_DEFAULT_FOLDER_ID`, `BASIC_AUTH_USER`,
+`BASIC_AUTH_PASS`, `REDIS_PASSWORD`, `POSTGRES_PASSWORD`, `DATABASE_URL`
+(the PostgreSQL line) and `PUBLIC_LINK_SECRET`. Every other variable is
+documented in `.env.example` and `backend/app/config.py`; the optional
+features stay off while their variables are empty.
 
-| Variable | Description |
-|---|---|
-| `KIE_API_KEY` | kie.ai API key for Seedance video generation |
-| `GDRIVE_DEFAULT_FOLDER_ID` | Google Drive folder ID for output delivery |
-| `BASIC_AUTH_USER` | Username for the nginx basic-auth gate |
-| `BASIC_AUTH_PASS` | Password for the nginx basic-auth gate |
-| `APP_EXTERNAL_PORT` | Host port for nginx (default `8847`) |
+### 2. Google service account
 
-The remaining variables have working defaults and usually do not need changing.
+Put the service-account JSON at `./secrets/gdrive-sa.json` and share the
+target Drive folder (and any export spreadsheet) with its `client_email` as
+Editor. `./data` and `./secrets` must be owned by uid/gid 10001, the
+container user (`deploy/container-hardening.md`).
 
-### 2. Place the Google Drive service account
+### 3. TLS name
 
-```bash
-# Obtain the service account JSON from GCP and place it here:
-./secrets/gdrive-sa.json
-```
+`deploy/nginx/nginx.conf` and `deploy/tls/renew-cert.sh` carry the TLS host
+name literally (the example `203-0-113-10.sslip.io`). Replace it with your
+own name and issue the certificate as described in `deploy/tls/README.md`.
 
-Share the target Google Drive folder with the service account email address
-(`client_email` field inside the JSON) as an **Editor**.
+### 4. ASR model
 
-### 3. Start the stack
+`brand-asr-worker` mounts the faster-whisper small model read-only from
+`BRAND_ASR_MODEL_HOST_DIR` (default `/var/lib/reskin-assistant-runtime/asr-small`)
+and does not start without it. Download it with
+`scripts/download_assistant_asr.py` (`deploy/assistant/ASR-README.md`).
 
-```bash
-docker compose up -d --build
-```
-
-This builds a single image (used by both `api` and `worker`) that includes
-ffmpeg and all Python dependencies.
-
-> **Note — InsightFace model download:** On the first job the worker downloads
-> the `buffalo_l` face-detection model (~300 MB) from the internet into
-> `~/.insightface/models/` inside the worker container.  This is a one-time
-> download per container lifetime.  Subsequent jobs reuse the cached model.
-> If the container is replaced the download repeats unless you add a named
-> volume for `~/.insightface`.
-
-### 4. Verify services are up
+### 5. Migrate and start
 
 ```bash
-docker compose ps
-# All four services (redis, api, worker, nginx) should show "Up".
+docker compose up -d --build --scale worker=2
+# The image does not contain the migrations; copy them in and apply them:
+docker cp backend/alembic re-skin-api:/app/alembic
+docker cp backend/alembic.ini re-skin-api:/app/alembic.ini
+docker exec -w /app re-skin-api python3 -m alembic upgrade head
+# nginx caches the upstream address, so restart it after every `up -d`:
+docker compose restart nginx
 ```
 
-### 5. Browse
+`scripts/deploy.sh` is the gated production deploy (pauses new admissions,
+waits for in-flight work to drain, backs up, migrates, restarts).
 
-Open `http://<SERVER_IP>:8847` and authenticate with your `BASIC_AUTH_USER`
-/ `BASIC_AUTH_PASS`.
+### Upgrading from the old public `main`
 
-## Stopping
-
-```bash
-docker compose down
-```
-
-Data in `./data/` persists on the host.
+This release replaces the old v1 Job pipeline and SQLite setup. The old
+public-only migration `b1f3d5a7c920` is not part of the new chain (the same
+schema now arrives through several migrations), so an existing database
+created from the old public `main` cannot be upgraded in place: start from a
+fresh database, or export the data you need first.
 
 ## Development
 
-### Run tests
+Run the tests inside the app image (host Python packages may not match the
+pinned versions):
 
 ```bash
 cd backend
-pip install -r requirements.txt
-pytest tests/
+docker run --rm -u 0 -v "$PWD":/src:ro --entrypoint bash re-skin-api:latest -c \
+  'pip install -q --require-hashes -r /src/requirements-dev.lock; cp -r /src /t; cd /t && python -m pytest tests -q'
 ```
 
-### Run locally without Docker
+Tests whose names end in `_pg` need a PostgreSQL server and skip without one.
+A few `brand_check` tests need real-audio fixtures that are not published and
+skip as well.
 
-```bash
-# Start Redis
-redis-server
+Logs: `docker compose logs -f api worker nginx`.
 
-# Start API (from backend/)
-uvicorn app.main:app --reload
-
-# Start worker (from repo root — PYTHONPATH must include backend/)
-PYTHONPATH=backend python -m worker.worker
-```
-
-### View logs
-
-```bash
-docker compose logs -f api
-docker compose logs -f worker
-docker compose logs -f nginx
-```
-
-## Project layout
+## Layout
 
 ```
-.
-├── backend/
-│   ├── app/
-│   │   ├── api.py          # REST API router (/api/*)
-│   │   ├── config.py       # Settings from env vars
-│   │   ├── db.py           # SQLAlchemy engine + session
-│   │   ├── face.py         # InsightFace detection helpers
-│   │   ├── gdrive_client.py
-│   │   ├── kie_client.py   # Seedance API client
-│   │   ├── main.py         # FastAPI app wiring
-│   │   ├── media.py        # ffmpeg probing and cutting
-│   │   ├── models.py       # SQLAlchemy ORM models
-│   │   ├── pipeline.py     # analyze_job / process_job
-│   │   ├── schemas.py      # Pydantic schemas
-│   │   ├── state_machine.py
-│   │   ├── storage.py      # Per-job path helpers
-│   │   ├── tasks.py        # RQ task wrappers
-│   │   ├── web.py          # HTMX/Jinja2 web UI
-│   │   ├── static/
-│   │   └── templates/
-│   ├── Dockerfile
-│   └── requirements.txt
-├── worker/
-│   └── worker.py           # RQ worker bootstrap
-├── deploy/
-│   └── nginx/
-│       ├── Dockerfile
-│       ├── entrypoint.sh
-│       └── nginx.conf
-├── data/                   # Runtime data (gitignored)
-├── secrets/                # Service account (gitignored)
-├── docker-compose.yml
-├── .env                    # Local secrets (gitignored)
-└── .env.example            # Template (safe to commit)
+backend/app/            FastAPI app, pipelines, provider clients, templates
+backend/app/autopilot/  "by Assistant" flows
+backend/app/knowledge/  knowledge-base storage and importer
+backend/alembic/        migrations
+backend/tests/          pytest suite
+worker/                 worker entry points
+deploy/                 nginx, TLS, ops gate, drain check, assistant stack
+docs/                   design documents for each feature
+scripts/                deploy, backup and probe scripts
 ```
 
-## Environment variables
-
-See `.env.example` for the full list with comments.
+Design documents mention internal ticket ids (`AICP-…`) and dates from the
+original production deployment; they are kept as history.

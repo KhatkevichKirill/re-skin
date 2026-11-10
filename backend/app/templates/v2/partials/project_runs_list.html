@@ -1,3 +1,5 @@
+{# The dashboard's runs pivot. Rows are plain dicts built by
+   web_v2._run_pivot_rows — never ORM objects, so nothing lazy-loads here. #}
 {% if runs %}
 <table style="width:100%; font-size:13px; margin:0">
   <thead>
@@ -6,6 +8,8 @@
       <th>Status</th>
       <th>Model</th>
       <th>Resolution</th>
+      <th>Lang</th>
+      <th>Sheet</th>
       <th>Created</th>
       <th></th>
     </tr>
@@ -13,10 +17,39 @@
   <tbody>
     {% for run in runs %}
     <tr data-run-id="{{ run.id }}">
-      <td>{% if run.name %}{{ run.name }}{% else %}<em class="text-muted">unnamed</em>{% endif %}</td>
-      <td><span class="badge badge-{{ run.status }}">{{ run.status }}</span></td>
+      <td>
+        {% if run.name %}{{ run.name }}{% else %}<em class="text-muted">unnamed</em>{% endif %}
+        {# Short id = what the sheet gets as Job ID, language suffix included. #}
+        <div><code style="font-size:11px;color:var(--color-muted)">{{ run.short_id }}</code></div>
+      </td>
+      <td>
+        <span class="badge badge-{{ run.status }}">{{ run.status }}</span>
+        {# A `done` run can still have delivered original footage for segments
+           its model couldn't generate. Reads the denormalised count on the Run
+           (written once at finalize) so this stays one query for the whole
+           table — do NOT walk run.run_segments here. #}
+        {% if run.source_fallback_segments %}
+        <span class="badge badge-warning" style="margin-left:4px"
+              title="{{ run.source_fallback_segments }} segment(s) were too long for {{ run.model | model_label }}, so the original footage was delivered for them — that part of the video is un-swapped">
+          {{ run.source_fallback_segments }} un-swapped
+        </span>
+        {% endif %}
+      </td>
       <td>{{ run.model | model_label }}</td>
       <td>{{ run.resolution }}</td>
+      {# NULL language means English — the same thing it means to the sheet's
+         Job ID (app/languages.py), and to the Languages filter. #}
+      <td title="{{ run.language | language_label }}">{{ (run.language or "en") | upper }}</td>
+      {# Matches the "Sent to sheet" filter exactly: anything from this run
+         (result, tail edit, captioned copy, overlay) that reached Final
+         Creatives or the retired Caption Demo tab. #}
+      <td>
+        {% if run.sent_to_sheet %}
+        <span class="badge badge-sent-original" title="Something from this run has been logged to a tracking spreadsheet">sent</span>
+        {% else %}
+        <span class="text-muted">—</span>
+        {% endif %}
+      </td>
       <td class="text-muted" style="white-space:nowrap">{{ run.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
       <td class="text-right" style="white-space:nowrap">
         <a class="btn btn-sm btn-secondary" href="/v2/runs/{{ run.id }}">Open</a>

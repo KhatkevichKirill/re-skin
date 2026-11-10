@@ -1,0 +1,2356 @@
+{
+ "note": "514067f2 / d8105ab5 (2026-11-02). qa_effect_b012d010: the stored subtitle_qa result of the live autopilot (prod autopilot_effects, read-only). qa_delivered / qa_restitched: app.subtitle_loop.post_run_qa (this branch) run on the incident's final (the same six clips stitched as prod stitched them, without the conform: the QA reproduces the stored leftovers of segments 3 and 4 frame for frame) and on the same clips re-stitched with the slot conform (streamed, in a capped container); sheet paths rewritten. clips: ffprobe of each segment's result at 30 fps vs its slot. identities: os.stat of the files in the api container (st_dev, st_ino, st_size, st_mtime_ns). qa_current / qa_current_restitched: the same QA on the live final as of 19:30 (segment 4 rebuilt by the operator by hand with VOID fill 3beedbec at 18:45-18:59) and on its clips re-stitched with the conform; segments_input_current marks segment 4 as that composite.",
+ "qa_effect_b012d010": {
+  "run_version": "d2ccb449f2aec9e498fc26a80a1e176c4efbe9fe51df7c34639441d0174caf6d",
+  "detector_sha": "62b36e1e99662bd9757e74e74d4cd605cf4f9ca8efaf8a6b385374594c85c490",
+  "actionable": true,
+  "refused": null,
+  "segments_input": [
+   {
+    "index": 0,
+    "start_sec": 0.0,
+    "end_sec": 4.4,
+    "action": "swap",
+    "pre_roll_sec": 0.0,
+    "post_roll_sec": 0.0,
+    "run_segment_id": "8fb7b5c7-028e-4917-8519-412d5eec8c2f",
+    "prompt_override": null,
+    "status": "completed",
+    "result_kind": "model"
+   },
+   {
+    "index": 1,
+    "start_sec": 4.4,
+    "end_sec": 13.233333333333333,
+    "action": "swap",
+    "pre_roll_sec": 0.0,
+    "post_roll_sec": 0.0,
+    "run_segment_id": "c2549d3e-0b13-4238-850b-cfd2388480fe",
+    "prompt_override": null,
+    "status": "completed",
+    "result_kind": "void_fill",
+    "fill": {
+     "job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+     "mask_box": [
+      0.3126,
+      0.7446,
+      0.6893,
+      0.8148
+     ],
+     "frames_masked": 102,
+     "basis": "source",
+     "source_as_is": false,
+     "applied_at": "2026-11-02T17:05:13.176121",
+     "replaced_take_id": null,
+     "delivery": "delivered"
+    }
+   },
+   {
+    "index": 2,
+    "start_sec": 13.233333333333333,
+    "end_sec": 19.133333333333333,
+    "action": "swap",
+    "pre_roll_sec": 0.0,
+    "post_roll_sec": 0.0,
+    "run_segment_id": "ce20781c-c728-4e31-9b1b-e0e6c18505dd",
+    "prompt_override": null,
+    "status": "completed",
+    "result_kind": "model"
+   },
+   {
+    "index": 3,
+    "start_sec": 19.133333333333333,
+    "end_sec": 26.9,
+    "action": "swap",
+    "pre_roll_sec": 0.0,
+    "post_roll_sec": 0.0,
+    "run_segment_id": "bdcee5a8-da4d-4e22-9563-4ebee8e3a217",
+    "prompt_override": null,
+    "status": "completed",
+    "result_kind": "model"
+   },
+   {
+    "index": 4,
+    "start_sec": 26.9,
+    "end_sec": 34.666666666666664,
+    "action": "swap",
+    "pre_roll_sec": 0.0,
+    "post_roll_sec": 0.0,
+    "run_segment_id": "d3301680-bfa7-4dfc-a96f-b6394a7a871d",
+    "prompt_override": null,
+    "status": "completed",
+    "result_kind": "model"
+   },
+   {
+    "index": 5,
+    "start_sec": 34.666666666666664,
+    "end_sec": 38.833333333333336,
+    "action": "swap",
+    "pre_roll_sec": 0.0,
+    "post_roll_sec": 0.0,
+    "run_segment_id": "153e68e9-65d6-4d17-9779-bb6e59663c05",
+    "prompt_override": null,
+    "status": "completed",
+    "result_kind": "model"
+   }
+  ],
+  "results": {
+   "8fb7b5c7-028e-4917-8519-412d5eec8c2f": {
+    "seedance_task_id": "e676199471faf7c9002591940ec2adcc",
+    "result_path": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/results/result_0000.mp4"
+   },
+   "c2549d3e-0b13-4238-850b-cfd2388480fe": {
+    "seedance_task_id": null,
+    "result_path": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/segment_fills/a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b/comp-0aeebc06b7514605856f8a2f1f1101c9/composite.mp4"
+   },
+   "ce20781c-c728-4e31-9b1b-e0e6c18505dd": {
+    "seedance_task_id": "49cb3f9bbccce71c0a82070869450c9d",
+    "result_path": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/results/result_0002.mp4"
+   },
+   "bdcee5a8-da4d-4e22-9563-4ebee8e3a217": {
+    "seedance_task_id": "2fae9200af7ce87f00ddccffb18a9ca1",
+    "result_path": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/results/result_0003.mp4"
+   },
+   "d3301680-bfa7-4dfc-a96f-b6394a7a871d": {
+    "seedance_task_id": "c65e83e82f1a9b3a235dbe781829d743",
+    "result_path": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/results/result_0004.mp4"
+   },
+   "153e68e9-65d6-4d17-9779-bb6e59663c05": {
+    "seedance_task_id": "c588dda33a829cbb9a67ce48988290f5",
+    "result_path": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/results/result_0005.mp4"
+   }
+  },
+  "sheets": {
+   "fill_clip:1": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/b012d010-2228-485f-a93a-309cdd2dc469/7f504ca1fdc1453c84836a6d68ae91d5/qa_seg1_fill.mp4"
+  },
+  "source_identity": [
+   64513,
+   2084281,
+   48179214,
+   1793583197091931805
+  ],
+  "qa": {
+   "source": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/source.mp4",
+   "final": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/results/final.mp4",
+   "calibration": {
+    "frames": 388,
+    "hits": 286,
+    "caption_like_hits": 286,
+    "hit_ratio": 0.7371,
+    "calibrated": true
+   },
+   "duration_drift_sec": 0.0,
+   "alignment": {
+    "in_sync": false,
+    "points": 76,
+    "max_abs_window_median": 9.0,
+    "frame_count_delta": 0,
+    "length_ok": true
+   },
+   "timeline_verified": false,
+   "segments": [
+    {
+     "index": 0,
+     "run_segment_id": "8fb7b5c7-028e-4917-8519-412d5eec8c2f",
+     "start_sec": 0.0,
+     "end_sec": 4.4,
+     "action": "swap",
+     "source_hits": 34,
+     "result_hits": 0,
+     "needs_visual_check": false,
+     "verdict": "clean",
+     "leftovers": [],
+     "false_positives": [],
+     "result_kind": "model",
+     "mask_box": [
+      0.3348,
+      0.7373,
+      0.6652,
+      0.82
+     ]
+    },
+    {
+     "index": 1,
+     "run_segment_id": "c2549d3e-0b13-4238-850b-cfd2388480fe",
+     "start_sec": 4.4,
+     "end_sec": 13.233,
+     "action": "swap",
+     "source_hits": 31,
+     "result_hits": 0,
+     "needs_visual_check": true,
+     "verdict": "clean",
+     "leftovers": [],
+     "false_positives": [],
+     "result_kind": "void_fill",
+     "mask_box": [
+      0.3126,
+      0.7446,
+      0.6893,
+      0.8148
+     ],
+     "fill": {
+      "job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+      "mask_box": [
+       0.3126,
+       0.7446,
+       0.6893,
+       0.8148
+      ],
+      "frames_masked": 102,
+      "basis": "source",
+      "source_as_is": false,
+      "applied_at": "2026-11-02T17:05:13.176121",
+      "replaced_take_id": null,
+      "delivery": "delivered",
+      "confirmed": false
+     },
+     "fill_needs_visual_check": true,
+     "fill_note": "VOID composite: the detector result above is necessary, not sufficient (it misses grey ghosts and smears). Look at the fill sheet: a few visibly patched frames pass; many, or a smear on a face / the phone screen, go to the operator; then confirm with --confirm-fill a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+     "fill_sheet_box": [
+      0.3126,
+      0.7446,
+      0.6893,
+      0.8148
+     ],
+     "fill_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/b012d010-2228-485f-a93a-309cdd2dc469/7f504ca1fdc1453c84836a6d68ae91d5/qa_seg1_fill.jpg",
+     "fill_sheet_times": [
+      4.4,
+      4.5,
+      4.8,
+      6.4,
+      6.7,
+      6.9,
+      7.1,
+      7.5,
+      10.1,
+      10.3
+     ]
+    },
+    {
+     "index": 2,
+     "run_segment_id": "ce20781c-c728-4e31-9b1b-e0e6c18505dd",
+     "start_sec": 13.233,
+     "end_sec": 19.133,
+     "action": "swap",
+     "source_hits": 43,
+     "result_hits": 0,
+     "needs_visual_check": false,
+     "verdict": "clean",
+     "leftovers": [],
+     "false_positives": [],
+     "result_kind": "model",
+     "mask_box": [
+      0.2941,
+      0.7415,
+      0.7059,
+      0.8148
+     ]
+    },
+    {
+     "index": 3,
+     "run_segment_id": "bdcee5a8-da4d-4e22-9563-4ebee8e3a217",
+     "start_sec": 19.133,
+     "end_sec": 26.9,
+     "action": "swap",
+     "source_hits": 73,
+     "result_hits": 26,
+     "needs_visual_check": false,
+     "verdict": "leftover",
+     "leftovers": [
+      {
+       "start_sec": 21.4,
+       "end_sec": 22.3,
+       "frames": 10,
+       "max_score": 381,
+       "box": [
+        0.411,
+        0.763,
+        0.589,
+        0.796
+       ]
+      },
+      {
+       "start_sec": 22.9,
+       "end_sec": 24.4,
+       "frames": 16,
+       "max_score": 450,
+       "box": [
+        0.385,
+        0.765,
+        0.619,
+        0.795
+       ]
+      }
+     ],
+     "false_positives": [],
+     "result_kind": "model",
+     "mask_box": [
+      0.3107,
+      0.7394,
+      0.6874,
+      0.819
+     ],
+     "crop_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/b012d010-2228-485f-a93a-309cdd2dc469/7f504ca1fdc1453c84836a6d68ae91d5/qa_seg3.jpg",
+     "crop_times": [
+      21.5,
+      21.8,
+      22.1,
+      22.9,
+      23.3,
+      24.0
+     ],
+     "words": null
+    },
+    {
+     "index": 4,
+     "run_segment_id": "d3301680-bfa7-4dfc-a96f-b6394a7a871d",
+     "start_sec": 26.9,
+     "end_sec": 34.667,
+     "action": "swap",
+     "source_hits": 77,
+     "result_hits": 24,
+     "needs_visual_check": false,
+     "verdict": "leftover",
+     "leftovers": [
+      {
+       "start_sec": 30.2,
+       "end_sec": 30.7,
+       "frames": 6,
+       "max_score": 364,
+       "box": [
+        0.409,
+        0.763,
+        0.593,
+        0.796
+       ]
+      },
+      {
+       "start_sec": 32.4,
+       "end_sec": 34.1,
+       "frames": 18,
+       "max_score": 479,
+       "box": [
+        0.382,
+        0.763,
+        0.62,
+        0.796
+       ]
+      }
+     ],
+     "false_positives": [],
+     "result_kind": "model",
+     "mask_box": [
+      0.3181,
+      0.7394,
+      0.6819,
+      0.82
+     ],
+     "crop_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/b012d010-2228-485f-a93a-309cdd2dc469/7f504ca1fdc1453c84836a6d68ae91d5/qa_seg4.jpg",
+     "crop_times": [
+      30.4,
+      32.5,
+      33.0,
+      33.4,
+      33.6,
+      33.7,
+      33.8,
+      34.0
+     ],
+     "words": null
+    },
+    {
+     "index": 5,
+     "run_segment_id": "153e68e9-65d6-4d17-9779-bb6e59663c05",
+     "start_sec": 34.667,
+     "end_sec": 38.833,
+     "action": "swap",
+     "source_hits": 28,
+     "result_hits": 0,
+     "needs_visual_check": false,
+     "verdict": "clean",
+     "leftovers": [],
+     "false_positives": [],
+     "result_kind": "model",
+     "mask_box": [
+      0.2681,
+      0.7394,
+      0.7263,
+      0.82
+     ]
+    }
+   ],
+   "dirty_segments": [
+    3,
+    4
+   ],
+   "unconfirmed_false_positives": [],
+   "unconfirmed_fills": [
+    {
+     "index": 1,
+     "fill_job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b"
+    }
+   ],
+   "keep_with_captions": [],
+   "comparison_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/b012d010-2228-485f-a93a-309cdd2dc469/7f504ca1fdc1453c84836a6d68ae91d5/qa_compare.jpg",
+   "warnings": [
+    "picture is up to 9 frame(s) off the source in places (the flow doc wants +-1 at final QA): look at the comparison sheet / lip sync"
+   ],
+   "clean": false
+  },
+  "fill": {
+   "model": "void",
+   "endpoint": "fal-ai/void-video-inpainting",
+   "actionable": false,
+   "not_actionable_reason": "the final is not verified on the source timeline (alignment): leftovers may sit in another segment",
+   "segments": [
+    {
+     "index": 3,
+     "run_segment_id": "bdcee5a8-da4d-4e22-9563-4ebee8e3a217",
+     "start_sec": 19.133,
+     "end_sec": 26.9,
+     "leftovers": [
+      {
+       "start_sec": 21.4,
+       "end_sec": 22.3,
+       "frames": 10,
+       "max_score": 381,
+       "box": [
+        0.411,
+        0.763,
+        0.589,
+        0.796
+       ]
+      },
+      {
+       "start_sec": 22.9,
+       "end_sec": 24.4,
+       "frames": 16,
+       "max_score": 450,
+       "box": [
+        0.385,
+        0.765,
+        0.619,
+        0.795
+       ]
+      }
+     ],
+     "expected_mask_box": [
+      0.3107,
+      0.7394,
+      0.6874,
+      0.819
+     ],
+     "result_kind": "model",
+     "request": {
+      "method": "POST",
+      "path": "/api/v2/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/segments/bdcee5a8-da4d-4e22-9563-4ebee8e3a217/fill/preview",
+      "body": {},
+      "paid": false
+     },
+     "blockers": [],
+     "prechecked": true,
+     "fill_history": [],
+     "state": "propose_preview",
+     "then": {
+      "step": "start",
+      "executable": false,
+      "paid": true,
+      "method": "POST",
+      "path": "/api/v2/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/segments/fill/{fill_id}/start",
+      "body": {
+       "approved_usd": 0.1,
+       "discard_audio_patch": false
+      },
+      "fill_id_from": "the preview response's id",
+      "requires": [
+       "poll GET /api/v2/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/segments/fill until this job is 'ready' (or 'failed')",
+       "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+       "estimated_usd <= the approved reservation (else ask again)",
+       "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+      ]
+     },
+     "cost": {
+      "currency": "USD",
+      "reserve_usd": 0.1,
+      "expected_usd": 0.05,
+      "kie_credits": 0
+     }
+    },
+    {
+     "index": 4,
+     "run_segment_id": "d3301680-bfa7-4dfc-a96f-b6394a7a871d",
+     "start_sec": 26.9,
+     "end_sec": 34.667,
+     "leftovers": [
+      {
+       "start_sec": 30.2,
+       "end_sec": 30.7,
+       "frames": 6,
+       "max_score": 364,
+       "box": [
+        0.409,
+        0.763,
+        0.593,
+        0.796
+       ]
+      },
+      {
+       "start_sec": 32.4,
+       "end_sec": 34.1,
+       "frames": 18,
+       "max_score": 479,
+       "box": [
+        0.382,
+        0.763,
+        0.62,
+        0.796
+       ]
+      }
+     ],
+     "expected_mask_box": [
+      0.3181,
+      0.7394,
+      0.6819,
+      0.82
+     ],
+     "result_kind": "model",
+     "request": {
+      "method": "POST",
+      "path": "/api/v2/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/segments/d3301680-bfa7-4dfc-a96f-b6394a7a871d/fill/preview",
+      "body": {},
+      "paid": false
+     },
+     "blockers": [],
+     "prechecked": true,
+     "fill_history": [],
+     "state": "propose_preview",
+     "then": {
+      "step": "start",
+      "executable": false,
+      "paid": true,
+      "method": "POST",
+      "path": "/api/v2/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/segments/fill/{fill_id}/start",
+      "body": {
+       "approved_usd": 0.1,
+       "discard_audio_patch": false
+      },
+      "fill_id_from": "the preview response's id",
+      "requires": [
+       "poll GET /api/v2/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/segments/fill until this job is 'ready' (or 'failed')",
+       "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+       "estimated_usd <= the approved reservation (else ask again)",
+       "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+      ]
+     },
+     "cost": {
+      "currency": "USD",
+      "reserve_usd": 0.1,
+      "expected_usd": 0.05,
+      "kie_credits": 0
+     }
+    }
+   ],
+   "order": [
+    3,
+    4
+   ],
+   "sequential": true,
+   "next": null,
+   "after_next": "one fill at a time: after this request, poll GET /api/v2/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/segments/fill and run qa again; after a fill is delivered, run qa again rather than continuing this proposal",
+   "run_blockers": [],
+   "active_fill": null,
+   "stop": [],
+   "on_visual_reject": [
+    {
+     "index": 1,
+     "run_segment_id": "c2549d3e-0b13-4238-850b-cfd2388480fe",
+     "fill_job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+     "options": [
+      {
+       "option": "ltx_inpaint",
+       "available": false,
+       "endpoint": "fal-ai/ltx-2.3-quality/inpaint",
+       "usd_estimate": [
+        0.41,
+        0.54
+       ],
+       "note": "same mask, judged slightly cleaner by eye (AICP-354); not a platform endpoint yet: by hand"
+      },
+      {
+       "option": "accept",
+       "executable": false,
+       "paid": false
+      },
+      {
+       "option": "omni_rerun",
+       "executable": false,
+       "see": "operator_options.omni_rerun"
+      }
+     ]
+    }
+   ],
+   "cost": {
+    "currency": "USD",
+    "segments": 2,
+    "reserve_usd_per_segment": 0.1,
+    "expected_usd_per_segment": 0.05,
+    "reserve_usd_total": 0.2,
+    "expected_usd_total": 0.1,
+    "kie_credits": 0,
+    "note": "reserve = what the spend cap holds and approved_usd must cover; expected = the observed Fal charge; the same call, not a sum"
+   },
+   "approval_required": true
+  },
+  "operator_options": {
+   "omni_rerun": {
+    "request": {
+     "method": "POST",
+     "path": "/api/v2/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/segments/rerun",
+     "body": {
+      "segments": [
+       {
+        "run_segment_id": "bdcee5a8-da4d-4e22-9563-4ebee8e3a217",
+        "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.34\u20130.67, y 0.72\u20130.84 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio."
+       },
+       {
+        "run_segment_id": "d3301680-bfa7-4dfc-a96f-b6394a7a871d",
+        "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.33\u20130.67, y 0.72\u20130.84 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio."
+       }
+      ],
+      "discard_audio_patch": false
+     }
+    },
+    "segments": [
+     {
+      "run_segment_id": "bdcee5a8-da4d-4e22-9563-4ebee8e3a217",
+      "index": 3,
+      "outputs_so_far": 1,
+      "variant": "coordinate",
+      "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.34\u20130.67, y 0.72\u20130.84 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+      "current_prompt_override": null,
+      "replaces_override": false
+     },
+     {
+      "run_segment_id": "d3301680-bfa7-4dfc-a96f-b6394a7a871d",
+      "index": 4,
+      "outputs_so_far": 1,
+      "variant": "coordinate",
+      "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.33\u20130.67, y 0.72\u20130.84 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+      "current_prompt_override": null,
+      "replaces_override": false
+     }
+    ],
+    "stop": [],
+    "cost": {
+     "model": "gemini-omni",
+     "credits_per_segment": 168.0,
+     "segments_billed": 2,
+     "other_unfinished": 0,
+     "credits": 336.0
+    },
+    "note": "re-stitches the run and replaces the file behind its Drive link; previous outputs are kept as takes (free restore)",
+    "approval_required": true,
+    "operator_option": true,
+    "executable": false,
+    "why_not_proposed": "flow doc rule 1 / stop rule: a dirty segment gets a VOID fill, not another Omni take; send only on the operator's explicit request"
+   }
+  },
+  "handoff": {
+   "request": null,
+   "reason": "the final is not clean yet",
+   "dirty_segments": [
+    3,
+    4
+   ]
+  },
+  "source_fps": 30.0,
+  "out_dir": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/b012d010-2228-485f-a93a-309cdd2dc469/7f504ca1fdc1453c84836a6d68ae91d5"
+ },
+ "qa_delivered": {
+  "source": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/source.mp4",
+  "final": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/results/final.mp4",
+  "calibration": {
+   "frames": 388,
+   "hits": 286,
+   "caption_like_hits": 286,
+   "hit_ratio": 0.7371,
+   "calibrated": true
+  },
+  "duration_drift_sec": 0.0,
+  "alignment": {
+   "in_sync": false,
+   "points": 76,
+   "max_abs_window_median": 9.0,
+   "frame_count_delta": 0,
+   "length_ok": true
+  },
+  "timeline_verified": false,
+  "timing": {
+   "fps": 30.0,
+   "search_frames": 15,
+   "tolerance_frames": 1,
+   "length_ok": true,
+   "segments": [
+    {
+     "index": 0,
+     "points": 8,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 1,
+     "points": 16,
+     "offset_frames": -3.0,
+     "beyond_search": false,
+     "status": "off"
+    },
+    {
+     "index": 2,
+     "points": 10,
+     "offset_frames": -2.0,
+     "beyond_search": false,
+     "status": "off"
+    },
+    {
+     "index": 3,
+     "points": 14,
+     "offset_frames": -5.5,
+     "beyond_search": false,
+     "status": "off"
+    },
+    {
+     "index": 4,
+     "points": 14,
+     "offset_frames": -8.5,
+     "beyond_search": false,
+     "status": "off"
+    },
+    {
+     "index": 5,
+     "points": 6,
+     "offset_frames": -10.0,
+     "beyond_search": false,
+     "status": "off"
+    }
+   ],
+   "verified": false
+  },
+  "sync_off_segments": [
+   1,
+   2,
+   3,
+   4,
+   5
+  ],
+  "segments": [
+   {
+    "index": 0,
+    "run_segment_id": "8fb7b5c7-028e-4917-8519-412d5eec8c2f",
+    "start_sec": 0.0,
+    "end_sec": 4.4,
+    "action": "swap",
+    "source_hits": 34,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.3348,
+     0.7373,
+     0.6652,
+     0.82
+    ],
+    "timing": {
+     "index": 0,
+     "points": 8,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 1,
+    "run_segment_id": "c2549d3e-0b13-4238-850b-cfd2388480fe",
+    "start_sec": 4.4,
+    "end_sec": 13.233,
+    "action": "swap",
+    "source_hits": 31,
+    "result_hits": 0,
+    "needs_visual_check": true,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "void_fill",
+    "mask_box": [
+     0.3126,
+     0.7446,
+     0.6893,
+     0.8148
+    ],
+    "fill": {
+     "job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+     "mask_box": [
+      0.3126,
+      0.7446,
+      0.6893,
+      0.8148
+     ],
+     "frames_masked": 102,
+     "basis": "source",
+     "source_as_is": false,
+     "applied_at": "2026-11-02T17:05:13.176121",
+     "replaced_take_id": null,
+     "delivery": "delivered",
+     "confirmed": false
+    },
+    "fill_needs_visual_check": true,
+    "fill_note": "VOID composite: the detector result above is necessary, not sufficient (it misses grey ghosts and smears). Look at the fill sheet: a few visibly patched frames pass; many, or a smear on a face / the phone screen, go to the operator; then confirm with --confirm-fill a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+    "fill_sheet_box": [
+     0.3126,
+     0.7446,
+     0.6893,
+     0.8148
+    ],
+    "fill_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-r2/attempt/qa_seg1_fill.jpg",
+    "fill_sheet_times": [
+     4.4,
+     4.5,
+     4.8,
+     6.4,
+     6.7,
+     6.9,
+     7.1,
+     7.5,
+     10.1,
+     10.3
+    ],
+    "timing": {
+     "index": 1,
+     "points": 16,
+     "offset_frames": -3.0,
+     "beyond_search": false,
+     "status": "off"
+    }
+   },
+   {
+    "index": 2,
+    "run_segment_id": "ce20781c-c728-4e31-9b1b-e0e6c18505dd",
+    "start_sec": 13.233,
+    "end_sec": 19.133,
+    "action": "swap",
+    "source_hits": 43,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.2941,
+     0.7415,
+     0.7059,
+     0.8148
+    ],
+    "timing": {
+     "index": 2,
+     "points": 10,
+     "offset_frames": -2.0,
+     "beyond_search": false,
+     "status": "off"
+    }
+   },
+   {
+    "index": 3,
+    "run_segment_id": "bdcee5a8-da4d-4e22-9563-4ebee8e3a217",
+    "start_sec": 19.133,
+    "end_sec": 26.9,
+    "action": "swap",
+    "source_hits": 73,
+    "result_hits": 26,
+    "needs_visual_check": false,
+    "verdict": "leftover",
+    "leftovers": [
+     {
+      "start_sec": 21.4,
+      "end_sec": 22.3,
+      "frames": 10,
+      "max_score": 381,
+      "box": [
+       0.411,
+       0.763,
+       0.589,
+       0.796
+      ]
+     },
+     {
+      "start_sec": 22.9,
+      "end_sec": 24.4,
+      "frames": 16,
+      "max_score": 450,
+      "box": [
+       0.385,
+       0.765,
+       0.619,
+       0.795
+      ]
+     }
+    ],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.3107,
+     0.7394,
+     0.6874,
+     0.819
+    ],
+    "crop_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-r2/attempt/qa_seg3.jpg",
+    "crop_times": [
+     21.5,
+     21.8,
+     22.1,
+     22.9,
+     23.3,
+     24.0
+    ],
+    "words": null,
+    "timing": {
+     "index": 3,
+     "points": 14,
+     "offset_frames": -5.5,
+     "beyond_search": false,
+     "status": "off"
+    }
+   },
+   {
+    "index": 4,
+    "run_segment_id": "d3301680-bfa7-4dfc-a96f-b6394a7a871d",
+    "start_sec": 26.9,
+    "end_sec": 34.667,
+    "action": "swap",
+    "source_hits": 77,
+    "result_hits": 24,
+    "needs_visual_check": false,
+    "verdict": "leftover",
+    "leftovers": [
+     {
+      "start_sec": 30.2,
+      "end_sec": 30.7,
+      "frames": 6,
+      "max_score": 364,
+      "box": [
+       0.409,
+       0.763,
+       0.593,
+       0.796
+      ]
+     },
+     {
+      "start_sec": 32.4,
+      "end_sec": 34.1,
+      "frames": 18,
+      "max_score": 479,
+      "box": [
+       0.382,
+       0.763,
+       0.62,
+       0.796
+      ]
+     }
+    ],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.3181,
+     0.7394,
+     0.6819,
+     0.82
+    ],
+    "crop_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-r2/attempt/qa_seg4.jpg",
+    "crop_times": [
+     30.4,
+     32.5,
+     33.0,
+     33.4,
+     33.6,
+     33.7,
+     33.8,
+     34.0
+    ],
+    "words": null,
+    "timing": {
+     "index": 4,
+     "points": 14,
+     "offset_frames": -8.5,
+     "beyond_search": false,
+     "status": "off"
+    }
+   },
+   {
+    "index": 5,
+    "run_segment_id": "153e68e9-65d6-4d17-9779-bb6e59663c05",
+    "start_sec": 34.667,
+    "end_sec": 38.833,
+    "action": "swap",
+    "source_hits": 28,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.2681,
+     0.7394,
+     0.7263,
+     0.82
+    ],
+    "timing": {
+     "index": 5,
+     "points": 6,
+     "offset_frames": -10.0,
+     "beyond_search": false,
+     "status": "off"
+    }
+   }
+  ],
+  "dirty_segments": [
+   3,
+   4
+  ],
+  "unconfirmed_false_positives": [],
+  "unconfirmed_fills": [
+   {
+    "index": 1,
+    "fill_job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b"
+   }
+  ],
+  "keep_with_captions": [],
+  "comparison_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-r2/attempt/qa_compare.jpg",
+  "warnings": [
+   "picture is up to 9 frame(s) off the source in places (the flow doc wants +-1 at final QA): look at the comparison sheet / lip sync"
+  ],
+  "clean": false
+ },
+ "qa_restitched": {
+  "source": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/source.mp4",
+  "final": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/results/final.mp4",
+  "calibration": {
+   "frames": 388,
+   "hits": 286,
+   "caption_like_hits": 286,
+   "hit_ratio": 0.7371,
+   "calibrated": true
+  },
+  "duration_drift_sec": 0.047,
+  "alignment": {
+   "in_sync": true,
+   "points": 76,
+   "max_abs_window_median": 0.0,
+   "frame_count_delta": 0,
+   "length_ok": true
+  },
+  "timeline_verified": true,
+  "timing": {
+   "fps": 30.0,
+   "search_frames": 15,
+   "tolerance_frames": 1,
+   "length_ok": true,
+   "segments": [
+    {
+     "index": 0,
+     "points": 8,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 1,
+     "points": 16,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 2,
+     "points": 10,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 3,
+     "points": 14,
+     "offset_frames": -0.5,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 4,
+     "points": 14,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 5,
+     "points": 6,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   ],
+   "verified": true
+  },
+  "sync_off_segments": [],
+  "segments": [
+   {
+    "index": 0,
+    "run_segment_id": "8fb7b5c7-028e-4917-8519-412d5eec8c2f",
+    "start_sec": 0.0,
+    "end_sec": 4.4,
+    "action": "swap",
+    "source_hits": 34,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.3348,
+     0.7373,
+     0.6652,
+     0.82
+    ],
+    "timing": {
+     "index": 0,
+     "points": 8,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 1,
+    "run_segment_id": "c2549d3e-0b13-4238-850b-cfd2388480fe",
+    "start_sec": 4.4,
+    "end_sec": 13.233,
+    "action": "swap",
+    "source_hits": 31,
+    "result_hits": 0,
+    "needs_visual_check": true,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "void_fill",
+    "mask_box": [
+     0.3126,
+     0.7446,
+     0.6893,
+     0.8148
+    ],
+    "fill": {
+     "job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+     "mask_box": [
+      0.3126,
+      0.7446,
+      0.6893,
+      0.8148
+     ],
+     "frames_masked": 102,
+     "basis": "source",
+     "source_as_is": false,
+     "applied_at": "2026-11-02T17:05:13.176121",
+     "replaced_take_id": null,
+     "delivery": "delivered",
+     "confirmed": false
+    },
+    "fill_needs_visual_check": true,
+    "fill_note": "VOID composite: the detector result above is necessary, not sufficient (it misses grey ghosts and smears). Look at the fill sheet: a few visibly patched frames pass; many, or a smear on a face / the phone screen, go to the operator; then confirm with --confirm-fill a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+    "fill_sheet_box": [
+     0.3126,
+     0.7446,
+     0.6893,
+     0.8148
+    ],
+    "fill_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-r3/attempt/qa_seg1_fill.jpg",
+    "fill_sheet_times": [
+     4.4,
+     4.5,
+     4.8,
+     6.4,
+     6.7,
+     6.9,
+     7.1,
+     7.5,
+     10.1,
+     10.3
+    ],
+    "timing": {
+     "index": 1,
+     "points": 16,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 2,
+    "run_segment_id": "ce20781c-c728-4e31-9b1b-e0e6c18505dd",
+    "start_sec": 13.233,
+    "end_sec": 19.133,
+    "action": "swap",
+    "source_hits": 43,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.2941,
+     0.7415,
+     0.7059,
+     0.8148
+    ],
+    "timing": {
+     "index": 2,
+     "points": 10,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 3,
+    "run_segment_id": "bdcee5a8-da4d-4e22-9563-4ebee8e3a217",
+    "start_sec": 19.133,
+    "end_sec": 26.9,
+    "action": "swap",
+    "source_hits": 73,
+    "result_hits": 26,
+    "needs_visual_check": false,
+    "verdict": "leftover",
+    "leftovers": [
+     {
+      "start_sec": 21.2,
+      "end_sec": 22.1,
+      "frames": 10,
+      "max_score": 382,
+      "box": [
+       0.411,
+       0.763,
+       0.589,
+       0.796
+      ]
+     },
+     {
+      "start_sec": 22.7,
+      "end_sec": 24.2,
+      "frames": 16,
+      "max_score": 459,
+      "box": [
+       0.385,
+       0.765,
+       0.619,
+       0.795
+      ]
+     }
+    ],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.3107,
+     0.7394,
+     0.6874,
+     0.819
+    ],
+    "crop_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-r3/attempt/qa_seg3.jpg",
+    "crop_times": [
+     21.3,
+     21.6,
+     21.9,
+     22.7,
+     23.1,
+     23.6,
+     24.0,
+     24.2
+    ],
+    "words": null,
+    "timing": {
+     "index": 3,
+     "points": 14,
+     "offset_frames": -0.5,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 4,
+    "run_segment_id": "d3301680-bfa7-4dfc-a96f-b6394a7a871d",
+    "start_sec": 26.9,
+    "end_sec": 34.667,
+    "action": "swap",
+    "source_hits": 77,
+    "result_hits": 23,
+    "needs_visual_check": false,
+    "verdict": "leftover",
+    "leftovers": [
+     {
+      "start_sec": 29.9,
+      "end_sec": 30.4,
+      "frames": 6,
+      "max_score": 365,
+      "box": [
+       0.409,
+       0.763,
+       0.593,
+       0.796
+      ]
+     },
+     {
+      "start_sec": 32.2,
+      "end_sec": 33.8,
+      "frames": 17,
+      "max_score": 473,
+      "box": [
+       0.38,
+       0.759,
+       0.62,
+       0.796
+      ]
+     }
+    ],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.3181,
+     0.7394,
+     0.6819,
+     0.82
+    ],
+    "crop_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-r3/attempt/qa_seg4.jpg",
+    "crop_times": [
+     30.1,
+     32.3,
+     32.7,
+     33.1,
+     33.3,
+     33.4,
+     33.5,
+     33.7
+    ],
+    "words": null,
+    "timing": {
+     "index": 4,
+     "points": 14,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 5,
+    "run_segment_id": "153e68e9-65d6-4d17-9779-bb6e59663c05",
+    "start_sec": 34.667,
+    "end_sec": 38.833,
+    "action": "swap",
+    "source_hits": 28,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.2681,
+     0.7394,
+     0.7263,
+     0.82
+    ],
+    "timing": {
+     "index": 5,
+     "points": 6,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   }
+  ],
+  "dirty_segments": [
+   3,
+   4
+  ],
+  "unconfirmed_false_positives": [],
+  "unconfirmed_fills": [
+   {
+    "index": 1,
+    "fill_job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b"
+   }
+  ],
+  "keep_with_captions": [],
+  "comparison_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-r3/attempt/qa_compare.jpg",
+  "warnings": [],
+  "clean": false
+ },
+ "clips": [
+  {
+   "index": 0,
+   "target_frames": 132,
+   "result_frames": 135,
+   "excess_frames": 3
+  },
+  {
+   "index": 1,
+   "target_frames": 265,
+   "result_frames": 265,
+   "excess_frames": 0
+  },
+  {
+   "index": 2,
+   "target_frames": 177,
+   "result_frames": 180,
+   "excess_frames": 3
+  },
+  {
+   "index": 3,
+   "target_frames": 233,
+   "result_frames": 235,
+   "excess_frames": 2
+  },
+  {
+   "index": 4,
+   "target_frames": 233,
+   "result_frames": 235,
+   "excess_frames": 2
+  },
+  {
+   "index": 5,
+   "target_frames": 125,
+   "result_frames": 125,
+   "excess_frames": 0
+  }
+ ],
+ "identities": {
+  "8fb7b5c7-028e-4917-8519-412d5eec8c2f": [
+   64513,
+   2084320,
+   3248226,
+   1793586348931492702
+  ],
+  "c2549d3e-0b13-4238-850b-cfd2388480fe": [
+   64513,
+   2085900,
+   13514758,
+   1793639110941346107
+  ],
+  "ce20781c-c728-4e31-9b1b-e0e6c18505dd": [
+   64513,
+   2066637,
+   3973555,
+   1793586638573296457
+  ],
+  "bdcee5a8-da4d-4e22-9563-4ebee8e3a217": [
+   64513,
+   2066638,
+   4947265,
+   1793586736345924604
+  ],
+  "d3301680-bfa7-4dfc-a96f-b6394a7a871d": [
+   64513,
+   2084322,
+   5331073,
+   1793586496236397660
+  ],
+  "153e68e9-65d6-4d17-9779-bb6e59663c05": [
+   64513,
+   2084321,
+   2833185,
+   1793586446028085961
+  ]
+ },
+ "answers": [
+  [
+   "retry:0847b1bc2271",
+   "consumed",
+   "approve",
+   "retry"
+  ],
+  [
+   "retry:fca95db3a870",
+   "superseded",
+   null,
+   null
+  ],
+  [
+   "blocked:a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+   "consumed",
+   "approve",
+   "void"
+  ],
+  [
+   "inconclusive:b012d010",
+   "approved",
+   "approve",
+   "accept"
+  ],
+  [
+   "eye:a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+   "approved",
+   "approve",
+   "accept"
+  ],
+  [
+   "operator:bdcee5a8-da4d-4e22-9563-4ebee8e3a217:ec33ffbf",
+   "approved",
+   "approve",
+   "manual"
+  ],
+  [
+   "operator:d3301680-bfa7-4dfc-a96f-b6394a7a871d:f14a1488",
+   "approved",
+   "approve",
+   "manual"
+  ]
+ ],
+ "qa_current": {
+  "source": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/source.mp4",
+  "final": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/results/final.mp4",
+  "calibration": {
+   "frames": 388,
+   "hits": 286,
+   "caption_like_hits": 286,
+   "hit_ratio": 0.7371,
+   "calibrated": true
+  },
+  "duration_drift_sec": 0.0,
+  "alignment": {
+   "in_sync": false,
+   "points": 76,
+   "max_abs_window_median": 9.0,
+   "frame_count_delta": 0,
+   "length_ok": true
+  },
+  "timeline_verified": false,
+  "timing": {
+   "fps": 30.0,
+   "search_frames": 15,
+   "tolerance_frames": 1,
+   "length_ok": true,
+   "segments": [
+    {
+     "index": 0,
+     "points": 8,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 1,
+     "points": 16,
+     "offset_frames": -3.0,
+     "beyond_search": false,
+     "status": "off"
+    },
+    {
+     "index": 2,
+     "points": 10,
+     "offset_frames": -2.0,
+     "beyond_search": false,
+     "status": "off"
+    },
+    {
+     "index": 3,
+     "points": 14,
+     "offset_frames": -5.5,
+     "beyond_search": false,
+     "status": "off"
+    },
+    {
+     "index": 4,
+     "points": 14,
+     "offset_frames": -8.0,
+     "beyond_search": false,
+     "status": "off"
+    },
+    {
+     "index": 5,
+     "points": 6,
+     "offset_frames": -9.0,
+     "beyond_search": false,
+     "status": "off"
+    }
+   ],
+   "verified": false
+  },
+  "sync_off_segments": [
+   1,
+   2,
+   3,
+   4,
+   5
+  ],
+  "segments": [
+   {
+    "index": 0,
+    "run_segment_id": "8fb7b5c7-028e-4917-8519-412d5eec8c2f",
+    "start_sec": 0.0,
+    "end_sec": 4.4,
+    "action": "swap",
+    "source_hits": 34,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.3348,
+     0.7373,
+     0.6652,
+     0.82
+    ],
+    "timing": {
+     "index": 0,
+     "points": 8,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 1,
+    "run_segment_id": "c2549d3e-0b13-4238-850b-cfd2388480fe",
+    "start_sec": 4.4,
+    "end_sec": 13.233,
+    "action": "swap",
+    "source_hits": 31,
+    "result_hits": 0,
+    "needs_visual_check": true,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "void_fill",
+    "mask_box": [
+     0.3126,
+     0.7446,
+     0.6893,
+     0.8148
+    ],
+    "fill": {
+     "job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+     "mask_box": [
+      0.3126,
+      0.7446,
+      0.6893,
+      0.8148
+     ],
+     "frames_masked": 102,
+     "basis": "source",
+     "source_as_is": false,
+     "applied_at": "2026-11-02T17:05:13.176121",
+     "replaced_take_id": null,
+     "delivery": "delivered",
+     "confirmed": false
+    },
+    "fill_needs_visual_check": true,
+    "fill_note": "VOID composite: the detector result above is necessary, not sufficient (it misses grey ghosts and smears). Look at the fill sheet: a few visibly patched frames pass; many, or a smear on a face / the phone screen, go to the operator; then confirm with --confirm-fill a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+    "fill_sheet_box": [
+     0.3126,
+     0.7446,
+     0.6893,
+     0.8148
+    ],
+    "fill_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-n1/attempt/qa_seg1_fill.jpg",
+    "fill_sheet_times": [
+     4.4,
+     4.5,
+     4.8,
+     6.4,
+     6.7,
+     6.9,
+     7.1,
+     7.5,
+     10.1,
+     10.3
+    ],
+    "timing": {
+     "index": 1,
+     "points": 16,
+     "offset_frames": -3.0,
+     "beyond_search": false,
+     "status": "off"
+    }
+   },
+   {
+    "index": 2,
+    "run_segment_id": "ce20781c-c728-4e31-9b1b-e0e6c18505dd",
+    "start_sec": 13.233,
+    "end_sec": 19.133,
+    "action": "swap",
+    "source_hits": 43,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.2941,
+     0.7415,
+     0.7059,
+     0.8148
+    ],
+    "timing": {
+     "index": 2,
+     "points": 10,
+     "offset_frames": -2.0,
+     "beyond_search": false,
+     "status": "off"
+    }
+   },
+   {
+    "index": 3,
+    "run_segment_id": "bdcee5a8-da4d-4e22-9563-4ebee8e3a217",
+    "start_sec": 19.133,
+    "end_sec": 26.9,
+    "action": "swap",
+    "source_hits": 73,
+    "result_hits": 26,
+    "needs_visual_check": false,
+    "verdict": "leftover",
+    "leftovers": [
+     {
+      "start_sec": 21.4,
+      "end_sec": 22.3,
+      "frames": 10,
+      "max_score": 381,
+      "box": [
+       0.411,
+       0.763,
+       0.589,
+       0.796
+      ]
+     },
+     {
+      "start_sec": 22.9,
+      "end_sec": 24.4,
+      "frames": 16,
+      "max_score": 450,
+      "box": [
+       0.385,
+       0.765,
+       0.619,
+       0.795
+      ]
+     }
+    ],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.3107,
+     0.7394,
+     0.6874,
+     0.819
+    ],
+    "crop_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-n1/attempt/qa_seg3.jpg",
+    "crop_times": [
+     21.5,
+     21.8,
+     22.1,
+     22.9,
+     23.3,
+     24.0
+    ],
+    "words": null,
+    "timing": {
+     "index": 3,
+     "points": 14,
+     "offset_frames": -5.5,
+     "beyond_search": false,
+     "status": "off"
+    }
+   },
+   {
+    "index": 4,
+    "run_segment_id": "d3301680-bfa7-4dfc-a96f-b6394a7a871d",
+    "start_sec": 26.9,
+    "end_sec": 34.667,
+    "action": "swap",
+    "source_hits": 77,
+    "result_hits": 0,
+    "needs_visual_check": true,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "void_fill",
+    "mask_box": [
+     0.3181,
+     0.7394,
+     0.6819,
+     0.82
+    ],
+    "fill": {
+     "job_id": "3beedbec-2b08-450e-9234-52afeec388e4",
+     "mask_box": [
+      0.3181,
+      0.7362,
+      0.6819,
+      0.82
+     ],
+     "frames_masked": 233,
+     "basis": "model_result",
+     "source_as_is": false,
+     "delivery": "delivered",
+     "replaced_take_id": null,
+     "confirmed": false
+    },
+    "fill_needs_visual_check": true,
+    "fill_note": "VOID composite: the detector result above is necessary, not sufficient (it misses grey ghosts and smears). Look at the fill sheet: a few visibly patched frames pass; many, or a smear on a face / the phone screen, go to the operator; then confirm with --confirm-fill 3beedbec-2b08-450e-9234-52afeec388e4",
+    "fill_sheet_box": [
+     0.3181,
+     0.7362,
+     0.6819,
+     0.82
+    ],
+    "fill_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-n1/attempt/qa_seg4_fill.jpg",
+    "fill_sheet_times": [
+     26.9,
+     27.5,
+     28.1,
+     28.6,
+     29.6,
+     30.0,
+     30.8,
+     32.0,
+     33.1,
+     33.8
+    ],
+    "timing": {
+     "index": 4,
+     "points": 14,
+     "offset_frames": -8.0,
+     "beyond_search": false,
+     "status": "off"
+    }
+   },
+   {
+    "index": 5,
+    "run_segment_id": "153e68e9-65d6-4d17-9779-bb6e59663c05",
+    "start_sec": 34.667,
+    "end_sec": 38.833,
+    "action": "swap",
+    "source_hits": 28,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.2681,
+     0.7394,
+     0.7263,
+     0.82
+    ],
+    "timing": {
+     "index": 5,
+     "points": 6,
+     "offset_frames": -9.0,
+     "beyond_search": false,
+     "status": "off"
+    }
+   }
+  ],
+  "dirty_segments": [
+   3
+  ],
+  "unconfirmed_false_positives": [],
+  "unconfirmed_fills": [
+   {
+    "index": 1,
+    "fill_job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b"
+   },
+   {
+    "index": 4,
+    "fill_job_id": "3beedbec-2b08-450e-9234-52afeec388e4"
+   }
+  ],
+  "keep_with_captions": [],
+  "comparison_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-n1/attempt/qa_compare.jpg",
+  "warnings": [
+   "picture is up to 9 frame(s) off the source in places (the flow doc wants +-1 at final QA): look at the comparison sheet / lip sync"
+  ],
+  "clean": false
+ },
+ "qa_current_restitched": {
+  "source": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/source.mp4",
+  "final": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/runs/d8105ab5-b325-4995-bca0-8585a7e9f1e1/results/final.mp4",
+  "calibration": {
+   "frames": 388,
+   "hits": 286,
+   "caption_like_hits": 286,
+   "hit_ratio": 0.7371,
+   "calibrated": true
+  },
+  "duration_drift_sec": 0.047,
+  "alignment": {
+   "in_sync": true,
+   "points": 76,
+   "max_abs_window_median": 0.0,
+   "frame_count_delta": 0,
+   "length_ok": true
+  },
+  "timeline_verified": true,
+  "timing": {
+   "fps": 30.0,
+   "search_frames": 15,
+   "tolerance_frames": 1,
+   "length_ok": true,
+   "segments": [
+    {
+     "index": 0,
+     "points": 8,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 1,
+     "points": 16,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 2,
+     "points": 10,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 3,
+     "points": 14,
+     "offset_frames": -0.5,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 4,
+     "points": 14,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    },
+    {
+     "index": 5,
+     "points": 6,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   ],
+   "verified": true
+  },
+  "sync_off_segments": [],
+  "segments": [
+   {
+    "index": 0,
+    "run_segment_id": "8fb7b5c7-028e-4917-8519-412d5eec8c2f",
+    "start_sec": 0.0,
+    "end_sec": 4.4,
+    "action": "swap",
+    "source_hits": 34,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.3348,
+     0.7373,
+     0.6652,
+     0.82
+    ],
+    "timing": {
+     "index": 0,
+     "points": 8,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 1,
+    "run_segment_id": "c2549d3e-0b13-4238-850b-cfd2388480fe",
+    "start_sec": 4.4,
+    "end_sec": 13.233,
+    "action": "swap",
+    "source_hits": 31,
+    "result_hits": 0,
+    "needs_visual_check": true,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "void_fill",
+    "mask_box": [
+     0.3126,
+     0.7446,
+     0.6893,
+     0.8148
+    ],
+    "fill": {
+     "job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+     "mask_box": [
+      0.3126,
+      0.7446,
+      0.6893,
+      0.8148
+     ],
+     "frames_masked": 102,
+     "basis": "source",
+     "source_as_is": false,
+     "applied_at": "2026-11-02T17:05:13.176121",
+     "replaced_take_id": null,
+     "delivery": "delivered",
+     "confirmed": false
+    },
+    "fill_needs_visual_check": true,
+    "fill_note": "VOID composite: the detector result above is necessary, not sufficient (it misses grey ghosts and smears). Look at the fill sheet: a few visibly patched frames pass; many, or a smear on a face / the phone screen, go to the operator; then confirm with --confirm-fill a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+    "fill_sheet_box": [
+     0.3126,
+     0.7446,
+     0.6893,
+     0.8148
+    ],
+    "fill_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-n2/attempt/qa_seg1_fill.jpg",
+    "fill_sheet_times": [
+     4.4,
+     4.5,
+     4.8,
+     6.4,
+     6.7,
+     6.9,
+     7.1,
+     7.5,
+     10.1,
+     10.3
+    ],
+    "timing": {
+     "index": 1,
+     "points": 16,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 2,
+    "run_segment_id": "ce20781c-c728-4e31-9b1b-e0e6c18505dd",
+    "start_sec": 13.233,
+    "end_sec": 19.133,
+    "action": "swap",
+    "source_hits": 43,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.2941,
+     0.7415,
+     0.7059,
+     0.8148
+    ],
+    "timing": {
+     "index": 2,
+     "points": 10,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 3,
+    "run_segment_id": "bdcee5a8-da4d-4e22-9563-4ebee8e3a217",
+    "start_sec": 19.133,
+    "end_sec": 26.9,
+    "action": "swap",
+    "source_hits": 73,
+    "result_hits": 26,
+    "needs_visual_check": false,
+    "verdict": "leftover",
+    "leftovers": [
+     {
+      "start_sec": 21.2,
+      "end_sec": 22.1,
+      "frames": 10,
+      "max_score": 382,
+      "box": [
+       0.411,
+       0.763,
+       0.589,
+       0.796
+      ]
+     },
+     {
+      "start_sec": 22.7,
+      "end_sec": 24.2,
+      "frames": 16,
+      "max_score": 459,
+      "box": [
+       0.385,
+       0.765,
+       0.619,
+       0.795
+      ]
+     }
+    ],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.3107,
+     0.7394,
+     0.6874,
+     0.819
+    ],
+    "crop_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-n2/attempt/qa_seg3.jpg",
+    "crop_times": [
+     21.3,
+     21.6,
+     21.9,
+     22.7,
+     23.1,
+     23.6,
+     24.0,
+     24.2
+    ],
+    "words": null,
+    "timing": {
+     "index": 3,
+     "points": 14,
+     "offset_frames": -0.5,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 4,
+    "run_segment_id": "d3301680-bfa7-4dfc-a96f-b6394a7a871d",
+    "start_sec": 26.9,
+    "end_sec": 34.667,
+    "action": "swap",
+    "source_hits": 77,
+    "result_hits": 0,
+    "needs_visual_check": true,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "void_fill",
+    "mask_box": [
+     0.3181,
+     0.7394,
+     0.6819,
+     0.82
+    ],
+    "fill": {
+     "job_id": "3beedbec-2b08-450e-9234-52afeec388e4",
+     "mask_box": [
+      0.3181,
+      0.7362,
+      0.6819,
+      0.82
+     ],
+     "frames_masked": 233,
+     "basis": "model_result",
+     "source_as_is": false,
+     "delivery": "delivered",
+     "replaced_take_id": null,
+     "confirmed": false
+    },
+    "fill_needs_visual_check": true,
+    "fill_note": "VOID composite: the detector result above is necessary, not sufficient (it misses grey ghosts and smears). Look at the fill sheet: a few visibly patched frames pass; many, or a smear on a face / the phone screen, go to the operator; then confirm with --confirm-fill 3beedbec-2b08-450e-9234-52afeec388e4",
+    "fill_sheet_box": [
+     0.3181,
+     0.7362,
+     0.6819,
+     0.82
+    ],
+    "fill_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-n2/attempt/qa_seg4_fill.jpg",
+    "fill_sheet_times": [
+     26.9,
+     27.5,
+     28.1,
+     28.6,
+     29.6,
+     30.0,
+     30.8,
+     32.0,
+     33.1,
+     33.8
+    ],
+    "timing": {
+     "index": 4,
+     "points": 14,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   },
+   {
+    "index": 5,
+    "run_segment_id": "153e68e9-65d6-4d17-9779-bb6e59663c05",
+    "start_sec": 34.667,
+    "end_sec": 38.833,
+    "action": "swap",
+    "source_hits": 28,
+    "result_hits": 0,
+    "needs_visual_check": false,
+    "verdict": "clean",
+    "leftovers": [],
+    "false_positives": [],
+    "result_kind": "model",
+    "mask_box": [
+     0.2681,
+     0.7394,
+     0.7263,
+     0.82
+    ],
+    "timing": {
+     "index": 5,
+     "points": 6,
+     "offset_frames": 0.0,
+     "beyond_search": false,
+     "status": "in_sync"
+    }
+   }
+  ],
+  "dirty_segments": [
+   3
+  ],
+  "unconfirmed_false_positives": [],
+  "unconfirmed_fills": [
+   {
+    "index": 1,
+    "fill_job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b"
+   },
+   {
+    "index": 4,
+    "fill_job_id": "3beedbec-2b08-450e-9234-52afeec388e4"
+   }
+  ],
+  "keep_with_captions": [],
+  "comparison_sheet": "/app/data/projects/514067f2-0af3-4396-baba-e1687de0abf9/autopilot/compute/qa-n2/attempt/qa_compare.jpg",
+  "warnings": [],
+  "clean": false
+ },
+ "segments_input_current": [
+  {
+   "index": 0,
+   "start_sec": 0.0,
+   "end_sec": 4.4,
+   "action": "swap",
+   "pre_roll_sec": 0.0,
+   "post_roll_sec": 0.0,
+   "run_segment_id": "8fb7b5c7-028e-4917-8519-412d5eec8c2f",
+   "prompt_override": null,
+   "status": "completed",
+   "result_kind": "model"
+  },
+  {
+   "index": 1,
+   "start_sec": 4.4,
+   "end_sec": 13.233333333333333,
+   "action": "swap",
+   "pre_roll_sec": 0.0,
+   "post_roll_sec": 0.0,
+   "run_segment_id": "c2549d3e-0b13-4238-850b-cfd2388480fe",
+   "prompt_override": null,
+   "status": "completed",
+   "result_kind": "void_fill",
+   "fill": {
+    "job_id": "a77c195e-77a4-4ae5-9c6a-fe1a7cb67b0b",
+    "mask_box": [
+     0.3126,
+     0.7446,
+     0.6893,
+     0.8148
+    ],
+    "frames_masked": 102,
+    "basis": "source",
+    "source_as_is": false,
+    "applied_at": "2026-11-02T17:05:13.176121",
+    "replaced_take_id": null,
+    "delivery": "delivered"
+   }
+  },
+  {
+   "index": 2,
+   "start_sec": 13.233333333333333,
+   "end_sec": 19.133333333333333,
+   "action": "swap",
+   "pre_roll_sec": 0.0,
+   "post_roll_sec": 0.0,
+   "run_segment_id": "ce20781c-c728-4e31-9b1b-e0e6c18505dd",
+   "prompt_override": null,
+   "status": "completed",
+   "result_kind": "model"
+  },
+  {
+   "index": 3,
+   "start_sec": 19.133333333333333,
+   "end_sec": 26.9,
+   "action": "swap",
+   "pre_roll_sec": 0.0,
+   "post_roll_sec": 0.0,
+   "run_segment_id": "bdcee5a8-da4d-4e22-9563-4ebee8e3a217",
+   "prompt_override": null,
+   "status": "completed",
+   "result_kind": "model"
+  },
+  {
+   "index": 4,
+   "start_sec": 26.9,
+   "end_sec": 34.666666666666664,
+   "action": "swap",
+   "pre_roll_sec": 0.0,
+   "post_roll_sec": 0.0,
+   "run_segment_id": "d3301680-bfa7-4dfc-a96f-b6394a7a871d",
+   "prompt_override": null,
+   "status": "completed",
+   "result_kind": "void_fill",
+   "fill": {
+    "job_id": "3beedbec-2b08-450e-9234-52afeec388e4",
+    "mask_box": [
+     0.3181,
+     0.7362,
+     0.6819,
+     0.82
+    ],
+    "frames_masked": 233,
+    "basis": "model_result",
+    "source_as_is": false,
+    "delivery": "delivered",
+    "replaced_take_id": null
+   }
+  },
+  {
+   "index": 5,
+   "start_sec": 34.666666666666664,
+   "end_sec": 38.833333333333336,
+   "action": "swap",
+   "pre_roll_sec": 0.0,
+   "post_roll_sec": 0.0,
+   "run_segment_id": "153e68e9-65d6-4d17-9779-bb6e59663c05",
+   "prompt_override": null,
+   "status": "completed",
+   "result_kind": "model"
+  }
+ ]
+}

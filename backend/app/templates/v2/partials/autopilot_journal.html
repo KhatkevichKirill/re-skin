@@ -1,0 +1,30 @@
+{# One page of the autopilot journal timeline (AICP-377, docs/autopilot-operator-ux.md §6).
+   First page (no ``before``): the Important / All lines switch and the list; an
+   older page: just its lines, replacing the "Older" item that asked for it.
+   ``url`` ends in "?" or "&". #}
+{% if not before %}
+<div class="ap-tl-filter">
+  <button type="button" class="btn btn-sm{% if not all %} btn-primary{% endif %}"
+          hx-get="{{ url }}all=0" hx-target="closest .ap-journal-body" hx-swap="innerHTML">Important</button>
+  <button type="button" class="btn btn-sm{% if all %} btn-primary{% endif %}"
+          hx-get="{{ url }}all=1" hx-target="closest .ap-journal-body" hx-swap="innerHTML">All lines</button>
+  {% if during %}<span class="hint">Lines marked <em>during this run</em> belong to this run's steps by time, not exactly.</span>{% endif %}
+</div>
+<ul class="ap-timeline">
+{% endif %}
+{% for j in entries %}
+  <li class="ap-tl ap-tl-{{ j.kind }}">
+    <span class="ap-tl-at" title="{{ j.at }} UTC">{{ j.at[:16]|replace("T", " ") }}</span>
+    <span class="badge">{{ j.kind|replace("_", " ") }}</span>
+    {% if j.step_id %}<span class="ap-tl-step">{{ step_label(j.step_id) }}</span>{% endif %}
+    — {{ j.message }}{% if j.cost_credits %} <strong>({{ "%.0f"|format(j.cost_credits) }} credits)</strong>{% endif %}
+    {% if j.during %}<span class="hint">during this run</span>{% endif %}
+  </li>
+{% else %}
+  {% if not before %}<li class="text-muted">{% if all %}nothing yet{% else %}nothing important yet — see All lines{% endif %}</li>{% endif %}
+{% endfor %}
+{% if next_before %}
+  <li class="ap-tl-more"><button type="button" class="btn btn-sm"
+      hx-get="{{ url }}all={{ all }}&before={{ next_before }}" hx-target="closest li" hx-swap="outerHTML">Older</button></li>
+{% endif %}
+{% if not before %}</ul>{% endif %}

@@ -1,11 +1,22 @@
 services:
   db:
-    image: postgres:16-alpine
+    # Pinned by digest (AICP-158) to the exact image prod already runs
+    # (postgres 16.14). Moving it is a deliberate step: pull, inspect
+    # RepoDigests, update here. No cap_drop: the entrypoint chowns PGDATA and
+    # drops to the postgres user, which needs CHOWN/SETUID/SETGID/DAC_OVERRIDE.
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
     container_name: re-skin-db
     restart: unless-stopped
-    # No host port: Postgres is reachable only on the internal docker network
-    # (api/worker connect by service name "db"). Exposing 5432 publicly is a
-    # security risk — keep it internal, matching the redis pattern.
+    # AICP-158: no setuid escalation inside the container.
+    security_opt:
+      - no-new-privileges:true
+    # Host port 5432 is published for remote access. This deviates from the
+    # normal "internal only" posture (see redis, which stays internal) —
+    # access is restricted at the firewall (DOCKER-USER iptables chain) to a
+    # single allow-listed source IP. See /root iptables rules / notes for the
+    # allow-listed IP and persistence mechanism.
+    ports:
+      - "5432:5432"
     expose:
       - "5432"
     environment:
@@ -26,9 +37,15 @@ services:
         max-file: "3"
 
   redis:
-    image: redis:7-alpine
+    # Pinned by digest (AICP-158) to the exact image prod already runs
+    # (redis 7.4.9). No cap_drop: the entrypoint chowns /data and drops to the
+    # redis user.
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     container_name: re-skin-redis
     restart: unless-stopped
+    # AICP-158: no setuid escalation inside the container.
+    security_opt:
+      - no-new-privileges:true
     # No host port: Redis is reachable only on the internal docker network
     # (worker/api connect by service name). Exposing 6379 publicly is a known
     # RCE/abuse vector — keep it internal.
@@ -50,6 +67,14 @@ services:
       dockerfile: backend/Dockerfile
     container_name: re-skin-api
     restart: unless-stopped
+    # AICP-158: the image runs as the unprivileged `reskin` user (uid/gid
+    # 10001, see backend/Dockerfile), with every capability dropped and no
+    # setuid escalation. ./data and ./secrets on the host must be owned by
+    # 10001 — deploy/container-hardening.md has the one-time migration.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     # Cap RAM so a runaway request can't drag the host into swap-thrash.
     mem_limit: 2g
     command: >
@@ -69,6 +94,9 @@ services:
       # Override DATA_DIR to the absolute mount point so api + worker agree
       DATA_DIR: /app/data
       PYTHONUNBUFFERED: "1"
+      # Fix #5: enable nginx X-Accel-Redirect for large media endpoints so
+      # video bytes bypass the uvicorn process entirely.
+      NGINX_ACCEL_ENABLED: "true"
     depends_on:
       redis:
         condition: service_healthy
@@ -79,8 +107,10 @@ services:
       - ./data:/app/data
       # Service-account JSON for Google Drive (read-only)
       - ./secrets:/app/secrets:ro
-      # Persist the downloaded InsightFace model (~280MB) across recreates
-      - insightface-models:/root/.insightface
+      # Persist the downloaded InsightFace model (~280MB) across recreates.
+      # Lives under the runtime user's HOME (was /root/.insightface while the
+      # containers ran as root); the volume's contents are unchanged.
+      - insightface-models:/home/reskin/.insightface
     logging:
       driver: json-file
       options:
@@ -107,15 +137,30 @@ services:
     #   api:        ~0.5 vCPU  / 2.0 GiB (mem_limit above)
     #   nginx:      ~0.1 vCPU  / 0.1 GiB
     #   2×worker:   2×2.0 vCPU / 2×6.0 GiB  ← sized below
+    #   knowledge-worker: 0.5 vCPU / 0.75 GiB (AICP-299, hard cap below)
+    #   localise-worker: 0.25 vCPU / 0.5 GiB cap, ~0.15 GiB real (AICP-338)
+    #   autopilot-worker: 0.25 vCPU / 0.5 GiB cap (AICP-363; real use = the app
+    #     imports incl. api_v2, measured in the image) — caps now exceed the
+    #     host's RAM; accepted by the operator 2026-10-31 (real use fits)
     #   ─────────────────────────────────────
-    #   TOTAL:      ~5.2 vCPU peak / ~14.7 GiB
-    #   headroom:   ~0.8 GiB / ~1.3 vCPU (host OS + burst)
+    #   TOTAL:      ~5.95 vCPU peak / ~15.95 GiB (caps; localise-worker real ~0.15)
+    #   headroom:   ~0.05 GiB at every cap, ~0.4 GiB at real localise-worker use
+    #   (+ fal-worker 0.25 vCPU / 0.375 GiB cap, ~0.1 GiB real, only when
+    #    started with --profile fal — AICP-330)
     #
     # With N=2 workers: each worker gets cpus=2.0 / mem_limit=6g.
     # A single 1080p stitch uses 2-4 GiB; InsightFace analyze uses ~2 GiB.
     # 6g per worker is a safe ceiling for the current workload.
     # DO NOT raise N beyond 2 on this host without cutting cpus/mem further.
     restart: unless-stopped
+    # AICP-158: the image runs as the unprivileged `reskin` user (uid/gid
+    # 10001, see backend/Dockerfile), with every capability dropped and no
+    # setuid escalation. ./data and ./secrets on the host must be owned by
+    # 10001 — deploy/container-hardening.md has the one-time migration.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     mem_limit: 6g
     memswap_limit: 7g
     cpus: "2.0"
@@ -135,6 +180,39 @@ services:
       # Parallel cut_clip calls during stitch assembly (keep + fallback segments).
       # Default 2: two ffmpeg cuts run simultaneously per worker. Safe on cpus=2.0.
       STITCH_CUT_CONCURRENCY: "2"
+      # Sources with a short side above this are downscaled (and 10-bit sources
+      # converted to 8-bit yuv420p) once at ingest — the mem_limit above is
+      # sized for 1080p frames; 4K/10-bit sources OOM-kill ffmpeg (rc=-9).
+      NORMALIZE_MAX_SHORT_SIDE: "1080"
+      # Delivery size cap (decimal MB) for everything uploaded to Drive: the
+      # stitched run result, tail edits, overlay burns, insert merges. The final
+      # encode is CRF-driven at DELIVERY_CRF with an x264 VBV cap sized so the
+      # muxed file cannot exceed it — content that fits at CRF quality is never
+      # padded up to the budget. Set to 0 to encode on CRF alone.
+      DELIVERY_MAX_SIZE_MB: "100"
+      # Quality target for that encode. CRF 20 is visually transparent on
+      # 1080x1920 AI footage and ~30% smaller than the CRF 18 the stitch used
+      # to hard-code; the preset matches what the stitch already used, so the
+      # size win is free. "medium" trades ~2x stitch time for ~10% less size.
+      DELIVERY_CRF: "20"
+      DELIVERY_PRESET: "fast"
+      # Ceiling on one upload to the kie.ai temp-file host. It answers an
+      # oversized body with a bare HTTP 500, refused on Content-Length before
+      # the body is sent, and a 500 is classed transient — so without a
+      # pre-flight check a too-large file costs four retries and reports a
+      # server error for what is really "your file is too big". Set to 0 if
+      # kie.ai ever raises the limit.
+      KIE_UPLOAD_MAX_SIZE_MB: "100"
+      # Geometry of the throwaway re-encode uploaded to a transcription model
+      # instead of the source (media.make_llm_proxy). The model only has to
+      # READ the video, while NORMALIZE_MAX_SHORT_SIDE caps resolution but not
+      # bitrate — a 59s 1080x1920 phone capture reaches transcription at 136 MB
+      # (over the ceiling above) and proxies down to ~4 MB. Video is kept, not
+      # stripped to audio, because the transcript's speaker labels describe who
+      # is visible on screen (docs/localisation.md §4.1).
+      LLM_PROXY_SHORT_SIDE: "480"
+      LLM_PROXY_FPS: "15"
+      LLM_PROXY_CRF: "30"
     depends_on:
       redis:
         condition: service_healthy
@@ -145,8 +223,243 @@ services:
       - ./data:/app/data
       # Service-account JSON for Google Drive (read-only)
       - ./secrets:/app/secrets:ro
-      # Persist the downloaded InsightFace model (~280MB) across recreates
-      - insightface-models:/root/.insightface
+      # Persist the downloaded InsightFace model (~280MB) across recreates.
+      # Lives under the runtime user's HOME (was /root/.insightface while the
+      # containers ran as root); the volume's contents are unchanged.
+      - insightface-models:/home/reskin/.insightface
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # AICP-299 §6.1: slim knowledge worker — the "knowledge" queue only (finals
+  # scan, importer, C2), never a run job. PID 1 is a supervisor that runs the
+  # RQ worker (no scheduler) and the slot ticker, and exits when either dies so
+  # the container restarts. No InsightFace, no run recovery. A no-op unless
+  # KNOWLEDGE_CAPTURE_ENABLED + an explicit KNOWLEDGE_PROJECT_IDS list.
+  knowledge-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: re-skin-knowledge-worker
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: "0.5"
+    command: python -m worker.knowledge_supervisor
+    env_file:
+      - .env
+    environment:
+      APP_BASE_DIR: /app
+      DATA_DIR: /app/data
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # AICP-338: the ONLY consumer of the "localise" queue — the background
+  # translation behind POST /projects/{pid}/localisation-prompt. One LLM call
+  # per job (a whole-video translation holds it for minutes), so it lives off
+  # the run workers. No InsightFace, no scheduler, no run recovery. Built and
+  # recreated by every plain deploy (no profile). The API answers 503 to a
+  # Translate click while no live worker serves the "localise" queue.
+  localise-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: re-skin-localise-worker
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # ~130 MB for the app imports + an ffmpeg frame grab of the hook (8 stills)
+    # + base64 JPEGs in the request body.
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: "0.25"
+    command: python -m worker.localise_worker
+    env_file:
+      - .env
+    environment:
+      APP_BASE_DIR: /app
+      DATA_DIR: /app/data
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      # Read: the project source for the hook frames (and .env-driven DB
+      # access via the shared app imports). Nothing is written.
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # AICP-389: the ONLY consumer of the "brand_asr" queue — the localisation
+  # autopilot's free brand check (local word ASR over the stitched final, the
+  # trailing-sibilant rule, the fix renders). One RQ worker = one ASR job at a
+  # time on the host. The image is the app + the hashed faster-whisper wheels
+  # (backend/Dockerfile target brand-asr); the run workers and the assistant
+  # ASR sidecar are unchanged. The asr-small model is mounted read-only and
+  # never downloaded (offline, manifest-checked by assistant_asr.LocalASR).
+  # Built and recreated by every plain deploy (no profile). Without it the
+  # brand check stays queued, is retried, then becomes an operator handoff.
+  # No secrets mount: it never talks to Drive or a provider.
+  brand-asr-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: brand-asr
+    container_name: re-skin-brand-asr-worker
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # ~0.8 GiB for the whisper child (measured 765-781 MiB peak RSS on 30 s
+    # chunks, deploy/assistant/ASR-README.md) + the RQ worker + ffmpeg. The
+    # child's own sandbox requires a cgroup bound of <= 2 GiB / <= 2 CPUs.
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    cpus: "1.0"
+    pids_limit: 256
+    command: python -m worker.brand_asr_worker
+    env_file:
+      - .env
+    environment:
+      APP_BASE_DIR: /app
+      DATA_DIR: /app/data
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+      BRAND_ASR_MODEL_DIR: /model
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      # Reads the run's final; writes the candidate + previews under
+      # data/projects/<pid>/autopilot/compute/<effect>/<attempt>/.
+      - ./data:/app/data
+      - type: bind
+        source: ${BRAND_ASR_MODEL_HOST_DIR:-/var/lib/reskin-assistant-runtime/asr-small}
+        target: /model
+        read_only: true
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  autopilot-worker:
+    # AICP-363: the "by Assistant" autopilot ticker (python -m
+    # worker.autopilot_ticker, PID 1, a plain loop — not an RQ worker). Ticks
+    # every AUTOPILOT_TICK_INTERVAL_SEC; does nothing unless AUTOPILOT_ENABLED
+    # is true. No InsightFace, no run recovery, no heavy work (compute effects
+    # go to the run workers' autopilot_compute queue). Imports app.api_v2, whose
+    # handlers it calls for paid admissions. Default profile: the standard
+    # deploy builds and recreates it. 512m / 0.25 CPU accepted by the operator
+    # on 2026-10-31 without trimming other caps (docs/autopilot-design.md Q3).
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: re-skin-autopilot-worker
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: "0.25"
+    command: python -m worker.autopilot_ticker
+    env_file:
+      - .env
+    environment:
+      APP_BASE_DIR: /app
+      DATA_DIR: /app/data
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      # Writes: approval artifact copies under data/projects/<pid>/autopilot/,
+      # and whatever the endpoints it calls write (a new run's references).
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  fal-worker:
+    # AICP-330: the ONLY consumer of the "fal" queue (Fal provider tasks), plus
+    # the Fal recovery/watchdog ticker. No InsightFace, no run jobs.
+    # Behind the "fal" profile: a plain `up -d` neither creates nor recreates
+    # it. Start it with `--profile fal` together with FAL_ENABLED=true, and
+    # keep passing `--profile fal` on EVERY deploy while it runs (otherwise it
+    # keeps the old image) and while any provider task is unfinished
+    # (`python -m app.pipeline_provider list`). Admission refuses (503) while no
+    # live worker serves the "fal" queue.
+    profiles: ["fal"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: re-skin-fal-worker
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # One <= 90 MB input is held in memory at a time (FAL_MAX_INPUT_BYTES).
+    mem_limit: 384m
+    memswap_limit: 384m
+    cpus: "0.25"
+    command: python -m worker.fal_supervisor
+    env_file:
+      - .env
+    environment:
+      APP_BASE_DIR: /app
+      DATA_DIR: /app/data
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
     logging:
       driver: json-file
       options:
@@ -160,13 +473,46 @@ services:
     container_name: re-skin-nginx
     restart: unless-stopped
     ports:
+      # AICP-150: 443 = HTTPS front door, 80 = ACME HTTP-01 + redirect to
+      # https. 8847 stays plain http for the transition (deploy/tls/README.md).
+      - "80:80"
+      - "443:443"
       - "${APP_EXTERNAL_PORT:-8847}:8847"
-    env_file:
-      - .env
+    # AICP-158: nginx gets ONLY the basic-auth credentials, not the whole .env
+    # (it used to receive the kie.ai/Ark keys and the DB password via
+    # env_file). Compose interpolates these from .env at `up` time.
+    environment:
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-reskin}
+      BASIC_AUTH_PASS: ${BASIC_AUTH_PASS:?BASIC_AUTH_PASS must be set in .env}
+    # The master stays root (it binds the port, writes the htpasswd and spawns
+    # the `nginx` workers); it needs CHOWN for its temp dirs + the htpasswd and
+    # SETUID/SETGID to drop the workers. Everything else is dropped.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       - api
     volumes:
       - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Fix #5: bind-mount data dir read-only so nginx can serve files via
+      # X-Accel-Redirect without streaming bytes through Python/uvicorn.
+      - ./data:/app/data:ro
+      # AICP-150: Let's Encrypt certificate (host certbot, deploy/tls/). Only
+      # live/ + archive/ (live/ symlinks into ../../archive) -- not accounts/.
+      - /etc/letsencrypt/live:/etc/letsencrypt/live:ro
+      - /etc/letsencrypt/archive:/etc/letsencrypt/archive:ro
+      # ACME HTTP-01 webroot that certbot --webroot writes into.
+      - /var/www/re-skin-acme:/var/www/acme:ro
+    # :80/:443 are privileged ports. Docker already sets this to 0 in every
+    # bridge-network container; pinned here because AICP-158's cap_drop: [ALL]
+    # leaves nginx without NET_BIND_SERVICE, so the binds depend on it.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
     logging:
       driver: json-file
       options:

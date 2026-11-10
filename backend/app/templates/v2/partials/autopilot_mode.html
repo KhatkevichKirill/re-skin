@@ -1,0 +1,290 @@
+{# The project mode picker (AICP-378, docs/autopilot-operator-ux.md §1, §7) on the
+   New project form and the project-from-run form.
+
+   Two cards, Manual / by Assistant; by Assistant is disabled with the reason
+   when the selected type has no flow or the autopilot is off (the same list as
+   before: autopilot_project_types()). For a localisation project the flow's
+   parameters are fields: an ordered language list (order = generation order,
+   the first gives the probe) and a CTA tail per language picked from the
+   library clips tagged with that language (GET /api/v2/library-clips, fetched
+   the first time the fields are shown). Everything serialises into the same
+   ``autopilot_params`` JSON the API validates (api_v2._validate_project_mode),
+   so the server side is unchanged. "Advanced (JSON)" keeps the other optional
+   keys reachable (model / resolution, the subtitle flow's resolution /
+   language / prompt); the fields win over the same keys in it.
+
+   Usage: {{ mp.mode_picker("new-project", ...) }} once per form, then
+   {{ mp.mode_script() }} once per page, then apMode.init(prefix, {...}). #}
+
+{% macro mode_picker(prefix, radio_name, params_name=None) -%}
+{% set ap_types = autopilot_project_types() %}
+<div class="form-group ap-mode" id="{{ prefix }}-mode-box" data-types="{{ ap_types | join(',') }}"
+     data-langs='{{ autopilot_languages() | tojson }}'>
+  <label>Mode</label>
+  <div class="ap-mode-cards">
+    <label class="ap-mode-card">
+      <input type="radio" name="{{ radio_name }}" value="manual" checked />
+      <span class="ap-mode-title">Manual</span>
+      <span class="ap-mode-desc">You start every run.</span>
+    </label>
+    <label class="ap-mode-card" id="{{ prefix }}-mode-assistant-card">
+      <input type="radio" name="{{ radio_name }}" value="assistant" />
+      <span class="ap-mode-title">by Assistant</span>
+      <span class="ap-mode-desc">It runs the <span data-ap-type-label>selected type's</span> flow.
+        It asks you to approve a budget before its first paid step, and again for each
+        regeneration, an overrun, and anything it cannot decide.</span>
+      <span class="ap-mode-off hint" data-ap-off></span>
+    </label>
+  </div>
+
+  <div class="ap-mode-loc" data-ap-loc style="display:none">
+    <label>Languages <span class="hint">— in the order to make them; the first is made first and gives the probe</span></label>
+    <ol class="ap-lang-list" data-ap-langs></ol>
+    <select data-ap-add aria-label="Add a language"><option value="">+ Add a language…</option></select>
+    <p class="hint">A CTA tail is picked from the <a href="/v2/library" target="_blank">library</a> clips
+      tagged with that language; "No CTA tail" leaves the video without one.</p>
+    <p class="ap-mode-err" data-ap-err style="display:none"></p>
+  </div>
+
+  <details class="ap-mode-adv" data-ap-adv style="display:none">
+    <summary>Advanced parameters (JSON, optional)</summary>
+    <input type="text" data-ap-json placeholder='e.g. {"resolution": "720p"}' />
+    <p class="hint" data-ap-json-hint></p>
+  </details>
+
+  <div class="ap-mode-next hint" data-ap-next style="display:none">
+    <strong>What happens next:</strong> it analyses the video, then asks you to approve a budget
+    before the first paid step.{% if autopilot_notify_on() %} Questions also go to Telegram.{% endif %}
+  </div>
+  {% if params_name %}<input type="hidden" name="{{ params_name }}" data-ap-params disabled />{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro mode_script() -%}
+<style>
+.ap-mode-cards{display:flex;flex-wrap:wrap;gap:8px}
+.ap-mode-card{flex:1 1 220px;display:flex;flex-direction:column;gap:2px;border:1px solid #ccc;border-radius:6px;padding:8px 10px;cursor:pointer;font-weight:400}
+.ap-mode-card:has(input:checked){border-color:#4a90d9;background:#f2f7fd}
+.ap-mode-card.ap-mode-disabled{opacity:.6;cursor:not-allowed}
+.ap-mode-card input{margin:0 0 2px 0;width:auto}
+.ap-mode-title{font-weight:600}.ap-mode-desc{font-size:12px;color:#444}
+.ap-mode-loc,.ap-mode-adv,.ap-mode-next{margin-top:8px}
+.ap-lang-list{margin:4px 0 6px 0;padding-left:22px}
+.ap-lang-list li{margin:3px 0}
+.ap-lang-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ap-lang-row select{width:auto;max-width:100%}
+.ap-lang-code{font-weight:600;min-width:84px}
+.ap-mode-err{color:#dc3545;font-size:12px}
+</style>
+<script>
+window.apMode = window.apMode || (function () {
+  var S = {};
+  function box(p) { return document.getElementById(p + '-mode-box'); }
+  function q(p, sel) { var b = box(p); return b ? b.querySelector(sel) : null; }
+  function radio(p, v) { var b = box(p); return b ? b.querySelector('input[type=radio][value="' + v + '"]') : null; }
+  function typeSel(p) { return document.getElementById(S[p].typeSelect); }
+  function scopeSel(p) { return S[p].scopeSelect ? document.getElementById(S[p].scopeSelect) : null; }
+  function currentType(p) { var t = typeSel(p); return t ? t.value : ''; }
+  function typeLabel(p) { var t = typeSel(p); var o = t && t.options[t.selectedIndex]; return o ? o.text : ''; }
+  function flowTypes(p) { var d = box(p).dataset.types || ''; return d ? d.split(',') : []; }
+  function mode(p) { var r = box(p).querySelector('input[type=radio]:checked'); return r ? r.value : 'manual'; }
+  function isLoc(p) { return mode(p) === 'assistant' && currentType(p) === 'localisation'; }
+  function langName(p, code) {
+    for (var i = 0; i < S[p].langs.length; i++) if (S[p].langs[i].code === code) return S[p].langs[i].label;
+    return code;
+  }
+  function el(tag, attrs, text) {
+    var e = document.createElement(tag);
+    for (var k in attrs) e.setAttribute(k, attrs[k]);
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function renderLangs(p) {
+    var st = S[p], ol = q(p, '[data-ap-langs]'), add = q(p, '[data-ap-add]');
+    ol.innerHTML = '';
+    st.order.forEach(function (code, i) {
+      var li = el('li'), row = el('div', {'class': 'ap-lang-row', 'data-lang': code});
+      row.appendChild(el('span', {'class': 'ap-lang-code'},
+        code.toUpperCase() + ' ' + langName(p, code) + (i === 0 ? ' (probe)' : '')));
+      var clips = st.clips.filter(function (c) { return c.language === code; });
+      var sel = el('select', {'data-ap-tail': code, 'aria-label': 'CTA tail for ' + code.toUpperCase()});
+      sel.appendChild(el('option', {value: ''}, 'No CTA tail'));
+      clips.forEach(function (c) {
+        var o = el('option', {value: c.id}, c.name + (c.duration_sec ? ' (' + c.duration_sec.toFixed(1) + ' s)' : ''));
+        if (st.tails[code] === c.id) o.selected = true;
+        sel.appendChild(o);
+      });
+      if (!clips.length) {
+        sel.disabled = true;
+        sel.title = st.clipsState === 'failed' ? 'The library could not be loaded'
+          : st.clipsState === 'done' ? 'No library clip is tagged ' + code.toUpperCase() : 'Loading the library…';
+      }
+      sel.addEventListener('change', function () { st.tails[code] = sel.value || null; write(p); });
+      row.appendChild(sel);
+      var up = el('button', {type: 'button', 'class': 'btn btn-sm', title: 'Make earlier'}, '↑');
+      up.disabled = i === 0;
+      up.addEventListener('click', function () { st.order.splice(i, 1); st.order.splice(i - 1, 0, code); renderLangs(p); write(p); });
+      var rm = el('button', {type: 'button', 'class': 'btn btn-sm', title: 'Remove'}, '×');
+      rm.addEventListener('click', function () { st.order.splice(i, 1); delete st.tails[code]; renderLangs(p); write(p); });
+      row.appendChild(up); row.appendChild(rm);
+      li.appendChild(row); ol.appendChild(li);
+    });
+    add.innerHTML = '';
+    add.appendChild(el('option', {value: ''}, st.order.length ? '+ Add another language…' : '+ Add a language…'));
+    st.langs.forEach(function (l) {
+      if (st.order.indexOf(l.code) < 0) add.appendChild(el('option', {value: l.code}, l.code.toUpperCase() + ' ' + l.label));
+    });
+  }
+
+  // The autopilot_params JSON, or '' (nothing to send). err = a message to show.
+  function compute(p) {
+    var st = S[p], out = {}, err = '';
+    if (mode(p) !== 'assistant') return {json: '', err: ''};
+    var raw = (q(p, '[data-ap-json]').value || '').trim();
+    if (raw) {
+      try { out = JSON.parse(raw); } catch (e) { return {json: raw, err: 'Advanced parameters are not valid JSON.'}; }
+      if (!out || typeof out !== 'object' || Array.isArray(out)) return {json: raw, err: 'Advanced parameters must be a JSON object.'};
+    }
+    if (currentType(p) === 'localisation') {
+      out.languages = st.order.slice();
+      var tails = {};
+      st.order.forEach(function (c) { tails[c] = st.tails[c] || null; });
+      out.tails = tails;
+      if (!st.order.length) err = 'Add at least one language.';
+    }
+    return {json: Object.keys(out).length ? JSON.stringify(out) : '', err: err};
+  }
+
+  function write(p) {
+    var c = compute(p), hid = q(p, '[data-ap-params]'), e = q(p, '[data-ap-err]');
+    if (hid) { hid.value = c.json; hid.disabled = !c.json; }
+    if (e) { e.textContent = c.err; e.style.display = c.err && isLoc(p) ? '' : 'none'; }
+    var jh = q(p, '[data-ap-json-hint]');
+    if (jh) jh.textContent = (c.err && !isLoc(p)) ? c.err : '';
+    snap(p);
+    return c;
+  }
+
+  // What the operator has entered, so a re-render of the form (the run page's
+  // status fragment polls while a derived job runs) can put it back.
+  function snap(p) {
+    var st = S[p], sc = scopeSel(p), keep = {};
+    (st.keep || []).forEach(function (id) { var e = document.getElementById(id); if (e) keep[id] = e.value; });
+    st.snap = {type: currentType(p), mode: mode(p), touched: st.touched, json: q(p, '[data-ap-json]').value,
+               order: st.order.slice(), tails: JSON.parse(JSON.stringify(st.tails)),
+               scope: sc ? sc.value : null, forced: st.forced, prevScope: st.prevScope, keep: keep,
+               clips: st.clips, clipsState: st.clipsState === 'loading' ? 'none' : st.clipsState};
+  }
+
+  function restore(p, prev) {
+    var st = S[p], t = typeSel(p), sc = scopeSel(p);
+    var sameType = !!(t && prev.type && t.querySelector('option[value="' + prev.type + '"]'));
+    if (sameType) {
+      t.value = prev.type;
+      if (typeof t.onchange === 'function') t.onchange();    // the page's own type handler
+    }
+    Object.keys(prev.keep || {}).forEach(function (id) { var e = document.getElementById(id); if (e) e.value = prev.keep[id]; });
+    st.lastType = currentType(p);
+    st.touched = prev.touched;
+    var r = radio(p, prev.mode);
+    if (r && !r.disabled) r.checked = true;
+    // Advanced keys belong to the saved type's flow: dropped if that type is gone.
+    q(p, '[data-ap-json]').value = sameType ? (prev.json || '') : '';
+    st.order = prev.order || []; st.tails = prev.tails || {};
+    st.clips = prev.clips || []; st.clipsState = prev.clipsState || 'none';
+    if (sc) {
+      if (prev.forced) { st.forced = true; st.prevScope = prev.prevScope; }
+      else if (prev.scope && sc.querySelector('option[value="' + prev.scope + '"]')) sc.value = prev.scope;
+    }
+  }
+
+  function loadClips(p) {
+    var st = S[p];
+    st.clipsState = 'loading';
+    fetch('/api/v2/library-clips', {headers: {'Accept': 'application/json'}})
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (rows) {
+        st.clips = (rows || []).filter(function (c) { return c && c.language; });
+        st.clipsState = 'done';
+        renderLangs(p);
+      })
+      .catch(function () { st.clipsState = 'failed'; renderLangs(p); });
+  }
+
+  function sync(p) {
+    var st = S[p], types = flowTypes(p), t = currentType(p), has = types.indexOf(t) >= 0;
+    var a = radio(p, 'assistant'), card = document.getElementById(p + '-mode-assistant-card');
+    var off = q(p, '[data-ap-off]');
+    a.disabled = !has;
+    card.classList.toggle('ap-mode-disabled', !has);
+    off.textContent = has ? '' : (types.length ? ('No assistant flow for ' + typeLabel(p) + ' projects yet.')
+                                                : 'Not available: the autopilot is off.');
+    var lbl = q(p, '[data-ap-type-label]');
+    if (lbl) lbl.textContent = typeLabel(p);
+    if (!has) radio(p, 'manual').checked = true;
+    else if (!st.touched) (st.defaultMode(t) === 'assistant' ? a : radio(p, 'manual')).checked = true;
+    var assist = mode(p) === 'assistant';
+    q(p, '[data-ap-loc]').style.display = isLoc(p) ? '' : 'none';
+    if (isLoc(p) && st.clipsState === 'none') loadClips(p);
+    q(p, '[data-ap-adv]').style.display = assist ? '' : 'none';
+    q(p, '[data-ap-next]').style.display = assist ? '' : 'none';
+    // The localisation autopilot re-speaks the whole video: whole scope only.
+    var sc = scopeSel(p);
+    if (sc) {
+      var hook = sc.querySelector('option[value=hook]');
+      if (isLoc(p)) {
+        if (!st.forced) { st.prevScope = sc.value; st.forced = true; }
+        sc.value = 'whole';
+        if (hook) hook.disabled = true;
+      } else if (st.forced) {
+        if (hook) hook.disabled = false;
+        sc.value = st.prevScope || sc.value;
+        st.forced = false;
+      }
+    }
+    write(p);
+  }
+
+  function init(p, opts) {
+    var b = box(p);
+    if (!b) return;
+    var prev = S[p] && S[p].snap;
+    var st = S[p] = {typeSelect: opts.typeSelect, scopeSelect: opts.scopeSelect || null,
+                     defaultMode: opts.defaultMode || function () { return 'manual'; },
+                     keep: opts.keep || [], touched: false, forced: false, prevScope: null,
+                     order: [], tails: {}, clips: [], clipsState: 'none',
+                     langs: JSON.parse(b.dataset.langs || '[]')};
+    st.lastType = currentType(p);
+    b.querySelectorAll('input[type=radio]').forEach(function (r) {
+      r.addEventListener('change', function () { st.touched = true; sync(p); });
+    });
+    q(p, '[data-ap-add]').addEventListener('change', function (ev) {
+      var v = ev.target.value;
+      if (v && st.order.indexOf(v) < 0) { st.order.push(v); st.tails[v] = null; }
+      renderLangs(p); write(p);
+    });
+    q(p, '[data-ap-json]').addEventListener('input', function () { write(p); });
+    var t = typeSel(p);
+    if (t) t.addEventListener('change', function () {
+      // Advanced keys belong to one flow: a new type starts without them.
+      if (currentType(p) !== st.lastType) q(p, '[data-ap-json]').value = '';
+      st.lastType = currentType(p);
+      sync(p);
+    });
+    (st.keep || []).forEach(function (id) {
+      var e = document.getElementById(id);
+      if (e) e.addEventListener('input', function () { snap(p); });
+    });
+    var scs = scopeSel(p);
+    if (scs) scs.addEventListener('change', function () { snap(p); });
+    if (prev) restore(p, prev);
+    renderLangs(p);
+    sync(p);
+  }
+
+  return {init: init, sync: sync, mode: mode,
+          value: function (p) { var c = write(p); return {mode: mode(p), params: c.json, error: c.err}; }};
+})();
+</script>
+{%- endmacro %}

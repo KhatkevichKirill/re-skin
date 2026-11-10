@@ -1,0 +1,79 @@
+<section class="card" id="run-assistant" data-run-id="{{ run.id }}" aria-labelledby="assistant-title">
+  <div class="card-header"><h2 id="assistant-title">Edit with AI <small>Private beta</small></h2></div>
+  <div class="card-body">
+    <p class="hint">Describe an edit to this run. Review the proposal before rendering a new version.
+      Claude uses included subscription capacity. External paid generation is unavailable.</p>
+    <button type="button" class="btn btn-primary" data-action="open">Open edit chat</button>
+    <p data-field="status" role="status" aria-live="polite"></p>
+    <div data-field="panel" hidden>
+      <label>Continue editing from <select data-field="versions" aria-label="Selected version"></select></label>
+      <div data-field="editing-preparation" hidden>
+        <p data-field="preparation-disclosure" class="hint"></p>
+        <button type="button" class="btn btn-primary" data-action="prepare-editable">Prepare editable copy</button>
+        <button type="button" class="btn btn-secondary" data-action="select-prepared" hidden>Select editable copy</button>
+        <p data-field="preparation-status" role="status" aria-live="polite"></p>
+      </div>
+      {% if captions %}
+      <details style="margin:12px 0"><summary>Use an existing captioned result</summary>
+        <p class="hint">Import a captioned result as a new version. Its saved subtitles and matching clean source must be verified before editing.</p>
+        <label>Captioned result <select data-field="caption-source">
+          {% for c in captions %}
+          {% set caption_status = c.status.value if c.status.value is defined else c.status|string %}
+          {% if caption_status == "done" %}<option value="{{ c.id }}">{{ c.id[:8] }} · {{ c.created_at.strftime('%Y-%m-%d %H:%M') if c.created_at else '' }}</option>{% endif %}
+          {% endfor %}
+        </select></label>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="import-caption">Import captioned version</button>
+      </details>
+      {% endif %}
+      <div style="display:flex;flex-wrap:wrap;gap:16px;margin:16px 0">
+        <div style="flex:1;min-width:240px"><h3>Selected version</h3>
+          <video data-field="player" controls preload="metadata" style="width:100%;max-height:360px"></video>
+          <p><a data-field="full" target="_blank" rel="noopener">Open full result</a></p>
+          <div data-field="run-result-controls">
+            <p data-field="run-result-current" class="hint"></p>
+            <p data-field="run-result-warning" class="hint"></p>
+            <button type="button" class="btn btn-primary" data-action="use-run-result">Use as Run result</button>
+            <p data-field="run-result-status" role="status" aria-live="polite"></p>
+            <details data-field="run-result-history" hidden>
+              <summary>Run result history</summary>
+              <div data-field="run-result-receipts"></div>
+            </details>
+          </div>
+        </div>
+        <div style="flex:1;min-width:240px"><h3>Preview</h3>
+          <video data-field="preview" controls preload="metadata" style="width:100%;max-height:360px"></video>
+          <p data-field="preview-note" class="hint"></p>
+        </div>
+      </div>
+      <details><summary>Compare with an earlier version</summary>
+        <label>Comparison version <select data-field="compare-versions"></select></label>
+        <video data-field="compare-player" controls preload="metadata" style="width:100%;max-height:300px"></video>
+      </details>
+      <div data-field="history" aria-label="Edit conversation" style="margin:18px 0;max-height:420px;overflow:auto"></div>
+      <p>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="older-history" hidden>Earlier history</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="latest-history" hidden>Latest history</button>
+      </p>
+      <form data-field="form">
+        <p data-field="editing-capability" role="status" aria-live="polite"></p>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="use-selected-base" hidden>Use selected version for this draft</button>
+        <label for="assistant-instruction">What would you like to change?</label>
+        <textarea id="assistant-instruction" data-field="instruction" rows="3" maxlength="3600" required
+          placeholder="For example: fade the last second to black, keeping the audio."></textarea>
+        <details style="margin:12px 0"><summary>Select a section or source (optional)</summary>
+          <p class="hint">Pause the selected version at each boundary, then mark the start and end.</p>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="start">Mark start</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="end">Mark end</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="clear-range">Clear section</button>
+          <span data-field="range" aria-live="polite"></span>
+          <p><button type="button" class="btn btn-secondary btn-sm" data-action="sources">Find available sources</button></p>
+          <label>Source <select data-field="sources"><option value="">Let the assistant clarify</option></select></label>
+          <video data-field="source-player" hidden controls preload="metadata" style="width:100%;max-height:240px"></video>
+          <p class="hint" data-field="source-note"></p>
+        </details>
+        <button type="submit" class="btn btn-primary" data-field="send">Send request</button>
+      </form>
+    </div>
+  </div>
+</section>
+<script src="/static/assistant.js" defer></script>

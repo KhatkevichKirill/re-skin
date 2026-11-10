@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Run {{ run.id[:8] }} — re-skin v2{% endblock %}
+{% block title %}Run {{ run.short_id }} — re-skin v2{% endblock %}
 
 {% block content %}
 
@@ -7,7 +7,8 @@
 <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px">
   <a href="/v2/projects/{{ run.project_id }}" class="btn btn-sm btn-secondary">&larr; Project</a>
   <h2 style="margin:0; font-size:17px">
-    Run <code style="font-size:14px">{{ run.id[:8] }}</code>
+    Run <code style="font-size:14px" id="run-short-id"
+              title="Short id — this is what the sheet gets as Job ID">{{ run.short_id }}</code>
     {% if run.name %}<span style="color:var(--color-muted);font-weight:400"> — {{ run.name }}</span>{% endif %}
     <span class="badge badge-{{ status_val }}" id="status-badge">{{ status_val }}</span>
   </h2>
@@ -32,17 +33,112 @@ function deleteThisRun(rid, pid) {
 }
 </script>
 
+{% if project_mode == "assistant" %}
+<!-- __ Assistant card (AICP-369): outside the 3 s status fragment, own 10 s refresh __ -->
+<div id="autopilot-run-card" hx-get="/v2/runs/{{ run.id }}/autopilot-card"
+     hx-trigger="load" hx-swap="outerHTML"><p class="text-muted">Loading the assistant…</p></div>
+{% endif %}
+
+<!-- __ Run settings __ -->
+<div class="card">
+  <div class="card-header"><h2>Run settings</h2></div>
+  <div class="card-body">
+    <div class="form-group" style="margin-bottom:0">
+      <label for="run-name">Run name</label>
+      <div style="display:flex; gap:8px; align-items:center; max-width:480px">
+        <input type="text" id="run-name" value="{{ run.name or '' }}"
+               placeholder="e.g. Blonde lead — take 2" maxlength="255" style="flex:1" />
+        <button type="button" class="btn btn-primary btn-sm" onclick="saveRunName('{{ run.id }}')">Save</button>
+        <span id="run-name-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+      <p class="hint">A human-readable label shown in the project's runs list. Leave blank to clear.
+        Only the first <strong>7 characters</strong> reach the sheet’s <code>Idea</code> column;
+        spaces and punctuation are dropped and bracketed parts removed
+        (<code>take 2 (Jp)</code> → <code>take2</code>).</p>
+    </div>
+
+    <div class="form-group" style="margin:16px 0 0">
+      <label for="run-language">Language</label>
+      <div style="display:flex; gap:8px; align-items:center; max-width:480px">
+        <select id="run-language" style="flex:1" onchange="saveRunLanguage('{{ run.id }}')">
+          {% for code, spec in languages.items() %}
+          <option value="{{ code }}" {% if (run.language or default_language) == code %}selected{% endif %}>{{ spec.label }}</option>
+          {% endfor %}
+        </select>
+        <span id="run-language-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+      <p class="hint">The spoken language of the delivered video — saved as soon as you pick it.
+        It only tags this run's short id (<code>1736426f</code> → <code>1736426f-ja</code>), which is what
+        the sheet receives as <code>Job ID</code> and what the renaming pipeline reads the language from.
+        English adds no suffix.
+        {% if sheet_exported %}
+        <strong>This run has already been exported</strong> — changing the language now will not rewrite
+        the row already in the sheet; edit that cell by hand if it is wrong.
+        {% else %}
+        Change it any time before you export.
+        {% endif %}</p>
+    </div>
+  </div>
+</div>
+
+<script>
+function saveRunName(rid) {
+  var inp = document.getElementById('run-name');
+  var statusEl = document.getElementById('run-name-status');
+  statusEl.textContent = 'Saving…';
+  fetch('/api/v2/runs/' + encodeURIComponent(rid), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: inp.value }),
+  })
+  .then(function (r) {
+    if (r.ok) {
+      statusEl.textContent = 'Saved.';
+      setTimeout(function () { statusEl.textContent = ''; }, 2500);
+    } else {
+      return r.json().then(function (b) { statusEl.textContent = 'Error: ' + (b.detail || r.status); });
+    }
+  })
+  .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
+}
+
+// Language save also refreshes the short id in the header and the Job ID hint
+// next to the export buttons, so what the operator sees always matches what an
+// export would write.
+function saveRunLanguage(rid) {
+  var sel = document.getElementById('run-language');
+  var statusEl = document.getElementById('run-language-status');
+  statusEl.textContent = 'Saving…';
+  fetch('/api/v2/runs/' + encodeURIComponent(rid), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ language: sel.value }),
+  })
+  .then(function (r) {
+    if (!r.ok) {
+      return r.json().then(function (b) { statusEl.textContent = 'Error: ' + (b.detail || r.status); });
+    }
+    return r.json().then(function (body) {
+      statusEl.textContent = 'Saved.';
+      setTimeout(function () { statusEl.textContent = ''; }, 2500);
+      // Mirrors app/languages.py: English (and unset) carry no suffix.
+      var short = rid.slice(0, 8) + (body.language && body.language !== 'en' ? '-' + body.language : '');
+      var el = document.getElementById('run-short-id');
+      if (el) el.textContent = short;
+      var jobEl = document.getElementById('export-job-id');
+      if (jobEl) jobEl.textContent = short;
+      document.title = 'Run ' + short + ' — re-skin v2';
+    });
+  })
+  .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
+}
+</script>
+
 <!-- __ Run metadata __ -->
 <div class="card">
   <div class="card-header"><h2>Run Info</h2></div>
   <div class="card-body">
     <div class="meta-grid">
-      {% if run.name %}
-      <div class="meta-item">
-        <label>Name</label>
-        <div class="val">{{ run.name }}</div>
-      </div>
-      {% endif %}
       <div class="meta-item">
         <label>Model</label>
         <div class="val">{{ run.model | model_label }}</div>
@@ -60,15 +156,45 @@ function deleteThisRun(rid, pid) {
       <label>Prompt</label>
       <div style="padding:8px 10px; background:#f8f9fa; border-radius:4px; font-size:13px; white-space:pre-wrap">{{ run.prompt }}</div>
     </div>
+    {% if stitch_plan_summary %}
+    <div class="form-group" style="margin:12px 0 0">
+      <label>Stitching</label>
+      <div style="padding:8px 10px; background:#f8f9fa; border-radius:4px; font-size:13px">{{ stitch_plan_summary }}</div>
+    </div>
+    {% endif %}
   </div>
 </div>
 
-{% if status_val in ("done", "failed") %}
+{% if status_val in ("done", "failed") and not copies_enabled %}
+<!-- __ Copy run, withdrawn: speech-only localisation (docs/localisation.md §7) __ -->
+<div class="card">
+  <div class="card-header"><h2>Copy run</h2></div>
+  <div class="card-body">
+    {% if rebuild_chunks %}
+    <p class="hint" style="margin:0" id="rb-no-copy">
+      Not available for a <strong>rebuild</strong> (images-only) run: it is generated from the
+      project's keyframes, not from a reference photo. Launch another rebuild run from the
+      <a href="/v2/projects/{{ project_id }}">project page</a>, or re-roll a chunk below.
+    </p>
+    {% else %}
+    <p class="hint" style="margin:0">
+      Not available for a <strong>speech-only</strong> localisation run. This run's prompt keeps the
+      person on screen, so a copy would re-submit the same generation and the reference photo a copy
+      adds would do nothing.
+      Copy run stays available on <strong>speech + character</strong> runs, where a new photo
+      re-runs this translated script on a new face — start one from the
+      <a href="/v2/projects/{{ project_id }}">project page</a>.
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if status_val in ("done", "failed") and copies_enabled %}
 <!-- __ Copy run: launch 1–10 copies, each with its own photo / quality / name __ -->
-{# Resolutions this run's model actually supports, straight off the registry
-   (web_v2 passes ai_models) — the copy control must not offer a tier that
-   create_run would reject. #}
-{% set copy_res = (ai_models.get(run.model) or ai_models.get("seedance")).resolutions %}
+{# Resolutions come from app/ai_models.py. Fall back to the base Seedance set
+   when the row holds a model that has since been dropped from the registry. #}
+{% set copy_res = ai_models[run.model].resolutions if run.model in ai_models else ["480p", "720p", "1080p"] %}
 <div class="card">
   <div class="card-header"><h2>Copy run</h2></div>
   <div class="card-body">
@@ -76,6 +202,14 @@ function deleteThisRun(rid, pid) {
       Re-submit this run (prompt, model{% if run.audio_mode %}, audio{% endif %}, and any per-segment prompt tweaks) as one or more new runs — up to {{ max_copy_runs }} at once.
       Give each copy its own reference photo, quality, and name. Leave a copy's photo blank to reuse the source run's references; provide a new photo to re-run the tuned settings on a new face of the same type — it replaces the photo in every segment.
     </p>
+    {% if run.preprocess_enabled %}
+    <p class="hint" style="margin-top:0">
+      This run was built with <strong>GPT Image</strong>. Tick <em>Re-run GPT Image</em> on a copy and its photo goes through the same recipe first —
+      the same {{ (run.reference_image_urls|length - 1) if run.reference_image_urls else 0 }} frame(s) and the same image prompt, only the character photo changes.
+      The generated images are approved automatically (you already approved this recipe here), so the copy starts generating without waiting on you.
+      Untick it to send the photo to {{ run.model }} raw, as copies have always done.
+    </p>
+    {% endif %}
 
     <div id="copy-rows"></div>
 
@@ -103,6 +237,7 @@ function deleteThisRun(rid, pid) {
     <div class="form-group" style="margin-bottom:0; flex:1; min-width:200px">
       <label>Reference photo URL (optional)</label>
       <input type="text" class="copy-ref-url" placeholder="https://… (comma-separated for several)" />
+      {% include "_drive_sa_notice.html" %}
     </div>
     <div class="form-group" style="margin-bottom:0">
       <label>…or upload</label>
@@ -112,6 +247,15 @@ function deleteThisRun(rid, pid) {
       <label>Name (optional)</label>
       <input type="text" class="copy-name" placeholder="defaults to “{{ run.name or 'run' }} · <quality|new ref>”" maxlength="255" />
     </div>
+    {% if run.preprocess_enabled %}
+    <div class="form-group" style="margin-bottom:0; min-width:170px">
+      <label style="display:flex; align-items:center; gap:5px; cursor:pointer">
+        <input type="checkbox" class="copy-preprocess" checked style="margin:0"
+               title="Send this copy's photo through GPT Image first, with the source run's frames and image prompt. Needs exactly one photo." />
+        Re-run GPT Image
+      </label>
+    </div>
+    {% endif %}
     <button type="button" class="btn btn-secondary copy-remove" onclick="removeCopyRow(this)" title="Remove this run">✕</button>
   </div>
 </template>
@@ -151,20 +295,42 @@ function copyRuns(rid) {
   statusEl.textContent = 'Submitting ' + rows.length + ' run' + (rows.length === 1 ? '' : 's') + '…';
 
   var fd = new FormData();
+  var badRow = 0;
   rows.forEach(function (row, i) {
     var res = row.querySelector('.copy-resolution').value;
     var name = row.querySelector('.copy-name').value;
     var refUrl = row.querySelector('.copy-ref-url').value;
     var refFileEl = row.querySelector('.copy-ref-file');
+    var ppEl = row.querySelector('.copy-preprocess');
     fd.append('runs[' + i + '][resolution]', res);
     if (name && name.trim()) fd.append('runs[' + i + '][name]', name.trim());
-    if (refUrl && refUrl.trim()) fd.append('runs[' + i + '][reference_urls]', refUrl.trim());
+    var urlCount = 0;
+    if (refUrl && refUrl.trim()) {
+      fd.append('runs[' + i + '][reference_urls]', refUrl.trim());
+      urlCount = refUrl.split(',').filter(function (u) { return u.trim(); }).length;
+    }
+    var fileCount = 0;
     if (refFileEl && refFileEl.files) {
-      for (var j = 0; j < refFileEl.files.length; j++) {
+      fileCount = refFileEl.files.length;
+      for (var j = 0; j < fileCount; j++) {
         fd.append('runs[' + i + '][reference_files]', refFileEl.files[j]);
       }
     }
+    if (ppEl && ppEl.checked) {
+      fd.append('runs[' + i + '][preprocess]', '1');
+      // Mirrors the server's rule (exactly one photo becomes the character
+      // reference). Checked here too because the batch is all-or-nothing —
+      // naming the offending row beats a bare 400 on ten of them.
+      if (urlCount + fileCount !== 1 && !badRow) badRow = i + 1;
+    }
   });
+
+  if (badRow) {
+    statusEl.textContent =
+      'Run ' + badRow + ': “Re-run GPT Image” needs exactly one reference photo ' +
+      '(it replaces the character photo; the frames come from this run).';
+    return;
+  }
 
   fetch('/api/v2/runs/' + encodeURIComponent(rid) + '/copy-batch', { method: 'POST', body: fd })
     .then(function (r) {
@@ -189,9 +355,199 @@ addCopyRow();
 </script>
 {% endif %}
 
+{% if not copies_enabled %}
+<!-- __ Automation, withdrawn: speech-only localisation (docs/localisation.md §7) __ -->
+<div class="card">
+  <div class="card-header"><h2>Automation</h2></div>
+  <div class="card-body">
+    {% if rebuild_chunks %}
+    <p class="hint" style="margin:0">
+      Not available for a <strong>rebuild</strong> (images-only) run: automation copies a run with
+      a new reference photo, and a rebuild run has none.
+    </p>
+    {% else %}
+    <p class="hint" style="margin:0">
+      Not available for a <strong>speech-only</strong> localisation run. Automation is Copy run on a
+      daily quota, so it would launch the same generation again every day and the sheet's reference
+      photo would do nothing. Automate a <strong>speech + character</strong> run instead.
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% else %}
+<!-- __ Automation: scheduled batch copies from the persona spreadsheet __ -->
+<div class="card">
+  <div class="card-header" style="display:flex; align-items:center; gap:10px">
+    <h2 style="margin:0">Automation</h2>
+    <label style="display:flex; align-items:center; gap:6px; margin-left:auto; font-size:13px; font-weight:400; cursor:pointer">
+      <input type="checkbox" id="auto-enabled" onchange="toggleAutoFields()" />
+      Enabled
+    </label>
+  </div>
+  <div class="card-body">
+    <p class="hint" style="margin-top:0">
+      Every day, automatically copy this run with fresh reference photos from the
+      “Daily Queue” sheet (rows matching the filter below; each row is used at most once).
+      Runs launch in batches; when a batch finishes, a webhook with result links is sent for QA.
+      Quota resets at 00:00 UTC.
+      {% if run.preprocess_enabled %}
+      With <em>Re-run GPT Image per launch</em>, each sheet photo goes through this run's recipe first
+      (same frames, same image prompt) and is approved automatically — nothing waits on you overnight.
+      {% endif %}
+    </p>
+
+    <div id="auto-fields" style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; opacity:.5">
+      <div class="form-group" style="margin-bottom:0; min-width:160px">
+        <label style="display:flex; align-items:center; gap:5px">
+          <input type="checkbox" id="auto-persona-not" style="margin:0"
+                 title="Exclude: skip rows matching any listed value" /> not · Persona
+        </label>
+        <input type="text" id="auto-persona" placeholder="any (comma-sep)"
+               title="One or more values separated by commas — a row matches any of them" />
+      </div>
+      <div class="form-group" style="margin-bottom:0; width:110px">
+        <label>Age</label>
+        <input type="text" id="auto-age" placeholder="18 or 18–22"
+               title="A single age matches any row whose range contains it (18 → 18–22); a range matches that exact range" />
+      </div>
+      <div class="form-group" style="margin-bottom:0; width:110px">
+        <label style="display:flex; align-items:center; gap:5px">
+          <input type="checkbox" id="auto-gender-not" style="margin:0"
+                 title="Exclude: skip rows matching any listed value" /> not · Gender
+        </label>
+        <input type="text" id="auto-gender" placeholder="any (comma-sep)"
+               title="One or more values separated by commas — a row matches any of them" />
+      </div>
+      <div class="form-group" style="margin-bottom:0; min-width:150px">
+        <label style="display:flex; align-items:center; gap:5px">
+          <input type="checkbox" id="auto-ethnicity-not" style="margin:0"
+                 title="Exclude: skip rows matching any listed value" /> not · Ethnicity
+        </label>
+        <input type="text" id="auto-ethnicity" placeholder="any (comma-sep)"
+               title="One or more values separated by commas — a row matches any of them" />
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label>Plan</label>
+        <select id="auto-plan">
+          <option value="close-up">close-up</option>
+          <option value="midplan">midplan</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0; width:110px">
+        <label>Videos / day</label>
+        <input type="number" id="auto-daily" min="1" max="100" value="5" />
+      </div>
+      <div class="form-group" style="margin-bottom:0; flex:1; min-width:220px">
+        <label>Webhook URL (optional)</label>
+        <input type="text" id="auto-webhook" placeholder="server default" />
+      </div>
+      {% if run.preprocess_enabled %}
+      <div class="form-group" style="margin-bottom:0; min-width:200px">
+        <label style="display:flex; align-items:center; gap:5px; cursor:pointer">
+          <input type="checkbox" id="auto-preprocess" style="margin:0"
+                 title="Send every sheet photo through this run's GPT Image recipe (same frames, same image prompt) before generating. Results are approved automatically." />
+          Re-run GPT Image per launch
+        </label>
+      </div>
+      {% endif %}
+    </div>
+
+    <div style="display:flex; gap:8px; align-items:center; margin-top:12px; flex-wrap:wrap">
+      <span id="auto-stats" class="text-muted" style="font-size:12px"></span>
+      <span style="flex:1"></span>
+      <button type="button" class="btn btn-primary" onclick="saveAutomation('{{ run.id }}')">Save automation</button>
+      <span id="auto-status" class="text-muted" style="font-size:12px"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+function toggleAutoFields() {
+  var on = document.getElementById('auto-enabled').checked;
+  document.getElementById('auto-fields').style.opacity = on ? '1' : '.5';
+}
+
+function fillAutomation(d) {
+  document.getElementById('auto-enabled').checked = !!d.enabled;
+  document.getElementById('auto-persona').value = d.filter_persona || '';
+  document.getElementById('auto-age').value = d.filter_age || '';
+  document.getElementById('auto-gender').value = d.filter_gender || '';
+  document.getElementById('auto-ethnicity').value = d.filter_ethnicity || '';
+  document.getElementById('auto-persona-not').checked = !!d.exclude_persona;
+  document.getElementById('auto-gender-not').checked = !!d.exclude_gender;
+  document.getElementById('auto-ethnicity-not').checked = !!d.exclude_ethnicity;
+  document.getElementById('auto-plan').value = d.plan || 'close-up';
+  document.getElementById('auto-daily').value = d.daily_count || 5;
+  document.getElementById('auto-webhook').value = d.webhook_url || '';
+  // Only rendered when the template run used GPT Image.
+  var ppEl = document.getElementById('auto-preprocess');
+  if (ppEl) ppEl.checked = !!d.preprocess_refs;
+  var stats = '';
+  if (d.configured) {
+    stats = 'Today: ' + d.launched_today + ' / ' + d.daily_count +
+            ' · in flight: ' + d.in_flight + ' · photos used total: ' + d.used_total;
+  }
+  document.getElementById('auto-stats').textContent = stats;
+  toggleAutoFields();
+}
+
+function loadAutomation(rid) {
+  fetch('/api/v2/runs/' + encodeURIComponent(rid) + '/automation')
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) { if (d) fillAutomation(d); })
+    .catch(function () { /* panel stays at defaults */ });
+}
+
+function saveAutomation(rid) {
+  var statusEl = document.getElementById('auto-status');
+  statusEl.textContent = 'Saving…';
+  var body = {
+    enabled: document.getElementById('auto-enabled').checked,
+    filter_persona: document.getElementById('auto-persona').value,
+    filter_age: document.getElementById('auto-age').value,
+    filter_gender: document.getElementById('auto-gender').value,
+    filter_ethnicity: document.getElementById('auto-ethnicity').value,
+    exclude_persona: document.getElementById('auto-persona-not').checked,
+    exclude_gender: document.getElementById('auto-gender-not').checked,
+    exclude_ethnicity: document.getElementById('auto-ethnicity-not').checked,
+    plan: document.getElementById('auto-plan').value,
+    daily_count: parseInt(document.getElementById('auto-daily').value, 10) || 0,
+    webhook_url: document.getElementById('auto-webhook').value,
+    preprocess_refs: !!(document.getElementById('auto-preprocess') || {}).checked,
+  };
+  fetch('/api/v2/runs/' + encodeURIComponent(rid) + '/automation', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  .then(function (r) {
+    if (r.ok) {
+      return r.json().then(function (d) {
+        fillAutomation(d);
+        statusEl.textContent = 'Saved.';
+        setTimeout(function () { statusEl.textContent = ''; }, 2500);
+      });
+    }
+    return r.json().then(function (b) { statusEl.textContent = 'Error: ' + (b.detail || r.status); });
+  })
+  .catch(function (e) { statusEl.textContent = 'Network error: ' + e; });
+}
+
+loadAutomation('{{ run.id }}');
+</script>
+{% endif %}
+
 <!-- __ Status-driven content (polling target) __ -->
-<div id="run-status-content">
+<script src="/static/run_status.js" defer></script>
+{% if assistant_available %}
+{% include "partials/run_assistant.html" %}
+{% endif %}
+<div id="run-status-content" data-run-id="{{ run.id }}">
   {% include "partials/run_status_content.html" %}
 </div>
+{% if knowledge_card %}
+<!-- Outcome card (AICP-299): OUTSIDE the polling target, loaded once, never self-polls -->
+<div id="knowledge-card" hx-get="/v2/runs/{{ run.id }}/knowledge-fragment" hx-trigger="load" hx-swap="innerHTML"></div>
+{% endif %}
 
 {% endblock %}

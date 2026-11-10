@@ -11,6 +11,93 @@
     <code style="font-size:14px">{{ project.id[:8] }}</code>
     <span class="badge badge-{{ status_val }}" id="status-badge">{{ status_val }}</span>
   </h2>
+  <span class="text-muted" style="font-size:13px">{{ project.project_type | project_type_label }}</span>
+</div>
+
+{% if project.mode == "assistant" %}
+<!-- ── Autopilot card (AICP-363), loaded and refreshed by HTMX ── -->
+<div id="autopilot-card" hx-get="/v2/projects/{{ project.id }}/autopilot-card"
+     hx-trigger="load" hx-swap="outerHTML"><p class="text-muted">Loading the autopilot…</p></div>
+{% endif %}
+
+{% if source_step and source_step.url %}
+<!-- ── "moved here from <step> of <run>" banner (AICP-331: started from a caption,
+     tail edit or overlay of a run; the step still exists) ── -->
+<div class="alert alert-info" style="margin-bottom:16px" id="source-step-banner">
+  Created from the
+  <a href="{{ source_step.url }}">{{ source_step.label }}
+    <code style="font-size:12px">{{ source_step.short_id }}</code></a>
+  of {% if source_run %}run
+  <a href="/v2/runs/{{ source_run.id }}">{{ source_run.name or "unnamed" }}
+    <code style="font-size:12px">{{ source_run.short_id }}</code></a>{% else %}a deleted run{% endif %}
+  — this project has its own copy of that file.
+</div>
+{% elif source_run %}
+<!-- ── "moved here from <run>" banner (project started from a run's final video,
+     or from a step of it that has since been deleted) ── -->
+<div class="alert alert-info" style="margin-bottom:16px">
+  Created from run
+  <a href="/v2/runs/{{ source_run.id }}">{{ source_run.name or "unnamed" }}
+    <code style="font-size:12px">{{ source_run.short_id }}</code></a>'s
+  {% if source_step %}{{ source_step.label }}
+  <code style="font-size:12px">{{ source_step.short_id }}</code> (since deleted){% else %}final video{% endif %}
+  — this project has its own copy of that file.
+</div>
+{% endif %}
+
+{% if extracted_from %}
+<!-- ── "extracted from <parent>" banner (this project is a PIP-insert child) ── -->
+<div class="alert alert-info" style="margin-bottom:16px">
+  Extracted from
+  <a href="/v2/projects/{{ extracted_from.id }}">{{ extracted_from.name or extracted_from.source_ref }}
+    <code style="font-size:12px">{{ extracted_from.id[:8] }}</code></a>
+  as a picture-in-picture insert.
+</div>
+{% endif %}
+
+{% if child_inserts %}
+<!-- ── Extracted insert children (this project is a PIP-insert parent) ── -->
+<div class="card">
+  <div class="card-header"><h2>Extracted inserts</h2></div>
+  <div class="card-body">
+    <table>
+      <thead>
+        <tr>
+          <th>Child project</th>
+          <th>Placement</th>
+          <th>Time window</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in child_inserts %}
+        {% set cp = item.project %}
+        {% set ext = item.extraction %}
+        {% set csv = cp.status.value if cp.status.value is defined else cp.status|string %}
+        <tr>
+          <td>
+            {% if cp.name %}{{ cp.name }}{% else %}<em class="text-muted">unnamed</em>{% endif %}
+            <div><code style="font-size:11px;color:var(--color-muted)">{{ cp.id[:8] }}…</code></div>
+          </td>
+          <td>{{ ext.width }}×{{ ext.height }} @ ({{ ext.x }}, {{ ext.y }})
+            {% if ext.corner_radius_px %}<span class="text-muted">· radius {{ ext.corner_radius_px }}px</span>{% endif %}
+          </td>
+          <td>{{ "%.1f"|format(ext.start_sec) }}–{{ "%.1f"|format(ext.end_sec) }}s</td>
+          <td class="text-right">
+            <span class="badge badge-{{ csv }}">{{ csv }}</span>
+            <a class="btn btn-sm btn-secondary" href="/v2/projects/{{ cp.id }}">View</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── PIP-insert merges targeting this project ── -->
+<div id="project-merges-content">
+  {% include "partials/project_merges_list.html" %}
 </div>
 
 <!-- ── Project settings ── -->
@@ -21,11 +108,33 @@
       <label for="project-name">Project name</label>
       <div style="display:flex; gap:8px; align-items:center; max-width:480px">
         <input type="text" id="project-name" value="{{ project.name or '' }}"
-               placeholder="e.g. Erewhon promo — September" maxlength="255" style="flex:1" />
+               placeholder="e.g. Acme promo — September" maxlength="255" style="flex:1" />
         <button type="button" class="btn btn-primary btn-sm" onclick="saveProjectName('{{ project.id }}')">Save</button>
         <span id="project-name-status" class="text-muted" style="font-size:12px"></span>
       </div>
-      <p class="hint">A human-readable label shown in the projects list. Leave blank to clear.</p>
+      <p class="hint">A human-readable label shown in the projects list. Leave blank to clear.
+        Only the first <strong>27 characters</strong> reach the sheet’s <code>Idea</code> column;
+        spaces and punctuation are dropped and bracketed parts removed
+        (<code>My Idea (Jp)</code> → <code>MyIdea</code>).</p>
+    </div>
+
+    <div class="form-group">
+      <label style="font-weight:400">
+        <input type="checkbox" id="project-mute-source"
+               {% if project.mute_source %}checked{% endif %}
+               onchange="saveProjectMuteSource('{{ project.id }}')" />
+        Remove original audio
+        <span id="project-mute-source-status" class="text-muted" style="font-size:12px; margin-left:6px"></span>
+      </label>
+      <p class="hint">
+        Clips are uploaded to the AI model <strong>without</strong> the source soundtrack, so it
+        writes audio from your prompt instead of reacting to what it hears. Use this when the model
+        keeps reproducing the original audio even though the prompt says not to.
+        The source file is not modified and unswapped ("keep") segments still carry their audio, so
+        the Run's <strong>Audio</strong> setting keeps working either way — pick
+        <strong>Generated clip audio</strong> to actually deliver what the model wrote.
+        Applies to every run started from now on; runs already past the submit phase are unaffected.
+      </p>
     </div>
 
     {# NULL means "the universal 10s default", so the blank option is selected
@@ -35,7 +144,7 @@
        12.5 cap to 12 the moment the operator re-picked it. `%g` renders 15.0 as
        "15" and 12.5 as "12.5" for display. #}
     {% set cur_seg_cap = project.max_segment_sec %}
-    <div class="form-group" style="margin-bottom:0">
+    <div class="form-group">
       <label for="project-max-segment">Max segment length</label>
       <div style="display:flex; gap:8px; align-items:center; max-width:480px">
         <select id="project-max-segment" style="flex:1"
@@ -54,39 +163,53 @@
         and less identity drift across cuts, but they <strong>lock the project to the models
         that can generate them</strong>: a run on a model with a lower per-clip limit cannot
         produce the over-long segments, so it delivers the <strong>original, un-swapped
-        footage</strong> for them and flags the run as partly swapped. Timing and audio still
-        line up.
-        <strong>This only takes effect the next time the video is analyzed</strong> — it
-        changes nothing for the segments already cut, so re-analyze the project (or edit the
-        segments by hand) for a new cap to matter.
-      </p>
-    </div>
-
-    <!-- Remove original audio (read at SUBMIT time — no re-analysis needed) -->
-    <div class="form-group">
-      <label style="display:flex; gap:8px; align-items:center; cursor:pointer">
-        <input type="checkbox" id="project-mute-source"
-               {% if project.mute_source %}checked{% endif %}
-               onchange="saveProjectMuteSource('{{ project.id }}')" />
-        <span>Remove original audio</span>
-        <span id="project-mute-source-status" class="text-muted" style="font-size:12px"></span>
-      </label>
-      <p class="hint">
-        Uploads every swap clip to the AI model <strong>video-only</strong>, so it can't hear
-        the source soundtrack and writes audio from your prompt instead. Use this when the
-        model keeps reproducing the original audio even though the prompt says not to —
-        telling it in words is unreliable, muting the input is not. The source file is not
-        changed, and unlike the two settings above this one applies to the
-        <strong>next run</strong> with no re-analysis.
+        footage</strong> for them and flags the run as partly swapped.
+        <strong>This only takes effect the next time the video is analyzed</strong> — unlike
+        "Remove original audio" it changes nothing for the segments already cut, so re-analyze
+        the project (or edit the segments by hand) for a new cap to matter.
       </p>
     </div>
 
     {# ── Hook length — localisation only (docs/localisation.md §5) ──────────
-       Lives next to "Max segment length" because the two are the same kind of
-       setting: both are consumed at ANALYZE time and neither changes a segment
-       that is already cut. The clamp warning underneath is forward-looking —
-       what the NEXT analysis would do with the value in the box. #}
+       Lives here, next to "Max segment length", because the two are the same
+       kind of setting: both are consumed at ANALYZE time and neither changes a
+       segment that is already cut. It was previously settable only on the
+       create form, so an operator who picked the wrong hook had no remedy but
+       to delete the project. The clamp warning underneath is forward-looking —
+       what the NEXT analysis would do with the value in the box; what the LAST
+       analysis actually cut is stated in the Segment Editor, next to the
+       segments that are the evidence for it. #}
     {% if hook_visible %}
+    {# ── Localisation scope (AICP-340) ─────────────────────────────────────
+       Not saved on its own: the scope must always describe the segments on
+       the page, so the select only chooses what the Re-analyze button below
+       will cut (POST /analyze?localisation_scope=). #}
+    <div class="form-group">
+      <label for="project-localisation-scope">What to localise</label>
+      <div style="display:flex; gap:8px; align-items:center; max-width:480px">
+        <select id="project-localisation-scope" style="flex:1" onchange="onLocalisationScopeChange()">
+          {% set scope_choice = localisation_scope_requested or localisation_scope %}
+          <option value="hook" {% if scope_choice != "whole" %}selected{% endif %}>Hook only — swap the hook, append a library tail</option>
+          <option value="whole" {% if scope_choice == "whole" %}selected{% endif %}>Whole video — swap segments at scene cuts (≤ {{ "%g"|format(whole_video_target_sec) }}s each)</option>
+        </select>
+      </div>
+      <p class="hint">
+        Currently analyzed as <strong>{{ "whole video" if localisation_whole else "hook only" }}</strong>.
+        <em>Whole video</em> re-speaks every second: analysis cuts the video into swap segments at
+        scene changes, each at most {{ "%g"|format(whole_video_target_sec) }}s, ignores the hook
+        length, and the New Run form appends no tail.
+        <strong>Changing this applies only through <em>Re-analyze video</em> below</strong>, which
+        re-cuts the segments with the chosen scope.
+      </p>
+      <div class="alert alert-warning" id="project-localisation-scope-pending" style="margin-top:8px; {% if not localisation_scope_requested %}display:none{% endif %}">
+        {% if localisation_scope_requested %}A re-analysis as
+        <strong>{{ "whole video" if localisation_scope_requested == "whole" else "hook only" }}</strong>
+        was requested and has not been applied yet.
+        {% endif %}Press <strong>Re-analyze video</strong> below to apply the new scope — until
+        then the segments, Translate and the New Run form keep the current one.
+      </div>
+    </div>
+
     <div class="form-group">
       <label for="project-hook-sec">Hook length (s)</label>
       <div style="display:flex; gap:8px; align-items:center; max-width:480px">
@@ -94,7 +217,8 @@
            it: api_v2._validate_hook_sec rejects 0 with a 400. Blank still means
            "use the default" — an empty number input never trips min. The value
            is the RAW stored float (blank when NULL) so the box shows the
-           operator's own choice, not the resolved default. #}
+           operator's own choice, not the resolved default; `%g` renders 15.0 as
+           "15". #}
         <input type="number" id="project-hook-sec" min="0.1" step="0.1" style="flex:1"
                value="{% if project.hook_sec is not none %}{{ "%g"|format(project.hook_sec) }}{% endif %}"
                placeholder="{{ "%g"|format(hook_default_sec) }} (default)" />
@@ -105,9 +229,12 @@
       <p class="hint">
         How much of the front of the video is the <strong>hook</strong> — the only part
         re-generated in the new language. Analysis cuts one <em>swap</em> segment over
-        <code>[0, hook]</code> and leaves the rest as one <em>keep</em> segment, which is
-        delivered as the original, untranslated footage.
+        <code>[0, hook]</code> and leaves the rest as one <em>keep</em> segment, to be
+        replaced at stitch time by a language-matched tail from the
+        <a href="/v2/library" target="_blank">library</a>.
         Leave blank for the {{ "%g"|format(hook_default_sec) }}s default.
+        {% if localisation_whole %}<strong>Not used while the project is analyzed as the whole
+        video.</strong>{% endif %}
         <strong>This only takes effect the next time the video is analyzed</strong> —
         saving it re-cuts nothing, so use <em>Re-analyze video</em> below for a new hook
         to matter.
@@ -115,7 +242,7 @@
 
       {% if hook_clamp_reason %}
       {# The clamp, stated before it happens. hook_planned_sec is what analysis
-         WILL cut from the value in the box above — never silently. #}
+         WILL cut from the value in the box above — never silently, now. #}
       <div class="alert alert-warning" id="project-hook-clamp" style="margin-top:8px">
         <strong>The next analysis will cut a {{ "%.1f"|format(hook_planned_sec) }}s hook, not
         {{ "%.1f"|format(hook_requested_sec) }}s{% if hook_is_default %} (the default){% endif %}.</strong>
@@ -138,13 +265,41 @@
     </div>
     {% endif %}
 
+    {# ── Re-cut at speech pauses (AICP-347) ───────────────────────────────
+       Whole-video localisation only. Moves the existing boundaries off spoken
+       transcript lines (POST /recut-at-pauses). An explicit action, never
+       automatic, so the Analyze cut stays reproducible. Like Re-analyze it is
+       never disabled by state: the endpoint answers 409 with the reason. The
+       preview (dry_run) is shown in the confirm and applied only if nothing
+       changed since (expected_fingerprint). #}
+    {% if localisation_whole %}
+    <div class="form-group" style="margin-bottom:0; padding-top:14px; border-top:1px solid var(--color-border, #e2e2e2)">
+      <label>Re-cut at speech pauses</label>
+      <div style="display:flex; gap:8px; align-items:center">
+        <button type="button" class="btn btn-secondary" id="recut-btn"
+                onclick="recutAtPauses('{{ project.id }}')">Re-cut at speech pauses</button>
+        <span id="recut-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+      <p class="hint">
+        After the transcript is ready: moves each segment boundary that falls inside a
+        spoken line to the nearest pause between lines (a scene cut inside the pause
+        when there is one) that keeps every segment at most
+        {{ "%g"|format(whole_video_target_sec) }}s. The number of segments, their
+        swap/keep flags and pre/post-roll stay; a boundary no pause can take stays and
+        is reported. Shows the moves and asks before changing anything; refused while a
+        run is working. Finished runs keep their own segments.
+      </p>
+    </div>
+    {% endif %}
+
     {# ── Re-analyze ─────────────────────────────────────────────────────────
        The apply button for both analyze-time settings above. Rendered for every
        project type and every status: the cap applies to all of them, and a
-       FAILED project is exactly the one that most needs re-analyzing. It is
+       FAILED project is exactly the one that most needs re-analyzing (the
+       transcript panel's "analysis failed" banner tells the operator to). It is
        never disabled by status — the endpoint answers 409 with the reason, and
-       a message from the server beats a button greyed out by a page render that
-       may be minutes stale. #}
+       a message from the server beats a button greyed out by a page render
+       that may be minutes stale. #}
     <div class="form-group" style="margin-bottom:0; padding-top:14px; border-top:1px solid var(--color-border, #e2e2e2)">
       <label>Re-analyze</label>
       <div style="display:flex; gap:8px; align-items:center">
@@ -156,20 +311,194 @@
         Re-cuts the segments from scratch with the settings above.
         <strong>This deletes every segment</strong> — including every boundary, swap/keep
         flag and pre/post-roll you edited by hand — and with them every run's per-segment
-        generation history. Runs themselves survive: a finished run keeps its row, its
-        delivered video and its Drive link. It asks for confirmation first, and is refused
-        while the project is already analyzing or while any run of it is still working.
+        generation history, so those clips stop being listed on
+        <a href="/v2/generations" target="_blank">Generations</a> and any run whose stitch
+        plan names individual segments will point at segments that no longer exist.
+        Runs themselves survive: a finished run keeps its row and its delivered video and
+        Drive link. It asks for confirmation first, and is refused while the project is
+        already analyzing or while any run of it is still working.
       </p>
     </div>
+
+    {# ── QA caption detector (AICP-343) ─────────────────────────────────────
+       What this project's burned captions look like, for the free QA caption
+       detector (app.qa_tools). Read by the QA tools, the autopilot review, the
+       VOID fill mask and caption placement — never by the runs — so it sits
+       below Re-analyze, apart from the settings that re-cut segments. A blank
+       band_y = located on the source (docs/autopilot-subtitle-flow.md §1.5). Blank = the default shown as the placeholder; the
+       server stores only the non-default fields, so all-blank is NULL. Fields
+       set through the API but not shown here (glyph size, tolerances, …) are
+       kept on save. Subtitle-removal projects only (AICP-361): on other types
+       it means nothing. The API field stays writable for every type, and a
+       value saved on another type is kept — the block is only not rendered. #}
+    {% if project.project_type == "subtitle_removal" %}
+    {% set cd = project.caption_detector or {} %}
+    <div class="form-group" style="padding-top:14px; border-top:1px solid var(--color-border, #e2e2e2)">
+      <label>QA caption detector</label>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; max-width:640px">
+        <span style="font-size:12px">Band y</span>
+        <input type="number" id="cd-band-y0" min="0" max="1" step="0.01" style="width:80px"
+               value="{{ cd.band_y[0] if cd.band_y else '' }}" placeholder="0.50" />
+        <span style="font-size:12px">to</span>
+        <input type="number" id="cd-band-y1" min="0" max="1" step="0.01" style="width:80px"
+               value="{{ cd.band_y[1] if cd.band_y else '' }}" placeholder="0.72" />
+        <span style="font-size:12px">Band x</span>
+        <input type="number" id="cd-band-x0" min="0" max="1" step="0.01" style="width:80px"
+               value="{{ cd.band_x[0] if cd.band_x else '' }}" placeholder="0.12" />
+        <span style="font-size:12px">to</span>
+        <input type="number" id="cd-band-x1" min="0" max="1" step="0.01" style="width:80px"
+               value="{{ cd.band_x[1] if cd.band_x else '' }}" placeholder="0.88" />
+        <span style="font-size:12px">Text</span>
+        <input type="text" id="cd-text-color" maxlength="16" style="width:90px"
+               value="{{ cd.text_color or '' }}" placeholder="#FFFFFF" />
+        <span style="font-size:12px">Outline</span>
+        <select id="cd-outline-style">
+          <option value="" {% if not cd.outline_style %}selected{% endif %}>outline (default)</option>
+          <option value="none" {% if cd.outline_style == 'none' %}selected{% endif %}>none — plain text</option>
+        </select>
+        <input type="text" id="cd-outline-color" maxlength="16" style="width:90px"
+               value="{{ cd.outline_color or '' }}" placeholder="#000000" />
+        <span style="font-size:12px">Threshold</span>
+        <input type="number" id="cd-threshold" min="1" max="100000" step="1" style="width:80px"
+               value="{{ cd.threshold if cd.threshold is defined and cd.threshold is not none else '' }}" placeholder="40" />
+        <button type="button" class="btn btn-primary btn-sm"
+                onclick="saveCaptionDetector('{{ project.id }}')">Save</button>
+        <button type="button" class="btn btn-secondary btn-sm"
+                onclick="resetCaptionDetector('{{ project.id }}')">Reset to defaults</button>
+        <span id="cd-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+      <p class="hint">
+        Read by the free QA caption check (<code>python -m app.qa_tools captions … --project
+        {{ project.id }}</code>), the autopilot's caption review and post-run QA, the VOID fill mask and
+        caption placement — never by the Omni runs themselves. The defaults find white captions with a
+        black outline between 50% and 72% of the frame height and 12% to 88% of its width.
+        <strong>Band y</strong> blank = the captions are <em>located</em> on the source: the autopilot
+        searches the whole frame and saves the band it finds (it asks first when unsure;
+        <code>python -m app.qa_tools locate SOURCE --project {{ project.id }}</code> prints it for a
+        manual project). A Band y typed here always wins — 0.50 / 0.72 typed in locks the default band;
+        Reset to defaults goes back to locating. <strong>Band y</strong> /
+        <strong>Band x</strong> are those ranges as fractions; colours are <code>#RGB</code>, <code>#RRGGBB</code> or a name
+        (white, black, yellow, red, lime, green, …). <strong>none</strong> counts plain text-coloured pixels without an
+        outline — raise the threshold then. Always calibrate on the source: a config that does not
+        match the source's captions reports <em>clean_uncalibrated</em>, never <em>clean</em>.
+      </p>
+    </div>
+    {# ── Caption removal method (2026-11-03, docs/segment-fill-batch-design.md §7) ── #}
+    {% set crm = project.caption_removal_method or 'omni' %}
+    <div class="form-group" style="padding-top:14px; border-top:1px solid var(--color-border, #e2e2e2)">
+      <label for="caption-removal-method">Caption removal</label>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; max-width:640px">
+        <select id="caption-removal-method">
+          <option value="void_source" {% if crm == 'void_source' %}selected{% endif %}>VOID from the source (every segment; Omni only as a per-segment fallback)</option>
+          <option value="omni" {% if crm == 'omni' %}selected{% endif %}>Omni pass, VOID for leftovers</option>
+        </select>
+        <button type="button" class="btn btn-primary btn-sm"
+                onclick="saveCaptionRemoval('{{ project.id }}')">Save</button>
+        <span id="crm-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+      <p class="hint">
+        <strong>VOID from the source</strong>: nothing is sent to Omni; each swap segment's captions are
+        repainted by VOID on the original clip ($0.10 reserved, about $0.05 charged per segment) and the
+        rest of the picture stays original, frame-exact with the sound. Captions over a phone / iPad
+        screen or app UI can leave a grey patch or a smeared icon there: those segments get an eye check,
+        with Omni as their fallback. <strong>Omni</strong>: one Omni pass over every swap segment, VOID only
+        for the captions it leaves. Applies to the next run.
+      </p>
+    </div>
+    {# ── VOID allowance (2026-11-03, docs/segment-fill-batch-design.md §3) ── #}
+    <div class="form-group" style="padding-top:14px; border-top:1px solid var(--color-border, #e2e2e2)">
+      <label for="void-auto-usd">Auto VOID up to (USD per run)</label>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; max-width:640px">
+        <input type="number" id="void-auto-usd" min="0" max="20" step="0.10" style="width:90px"
+               value="{{ '%.2f'|format(project.void_auto_usd_per_run) if project.void_auto_usd_per_run is not none else '' }}"
+               placeholder="{{ '%.2f'|format(void_auto_default) }}" />
+        <button type="button" class="btn btn-primary btn-sm"
+                onclick="saveVoidAllowance('{{ project.id }}')">Save</button>
+        <span id="void-auto-status" class="text-muted" style="font-size:12px"></span>
+      </div>
+      <p class="hint">
+        VOID caption rebuilds the autopilot ("by Assistant") starts <em>without asking</em> on one run,
+        in reservations ($0.10 each, about $0.05 charged). Above it, each batch is asked. Blank = the
+        default (${{ '%.2f'|format(void_auto_default) }}); 0 = always ask. The daily spend cap and the
+        autopilot's approved budget still apply; Omni reruns are always asked.
+      </p>
+    </div>
+    {% endif %}
   </div>
 </div>
 
 <script>
-// Shared PATCH /api/v2/projects/{pid} helper: writes progress/errors into
-// *statusEl* and resolves true/false so a caller can roll its control back when
-// the server rejected the change (what's on screen must never disagree with what
-// the next run will do).
-function patchProject(pid, body, statusEl, okMsg) {
+{% if project.project_type == "subtitle_removal" %}
+var _captionDetectorSaved = {{ (project.caption_detector or {}) | tojson }};
+
+function _cdNumber(id, label, integer) {
+  var inp = document.getElementById(id);
+  var raw = inp.value.trim();
+  if (inp.validity && inp.validity.badInput) throw label + ' must be a number.';
+  if (raw === '') return null;
+  var v = integer ? Number(raw) : parseFloat(raw);
+  if (!isFinite(v) || (integer && Math.floor(v) !== v)) throw label + ' must be a number.';
+  return v;
+}
+
+function saveCaptionDetector(pid) {
+  var statusEl = document.getElementById('cd-status');
+  var cfg = JSON.parse(JSON.stringify(_captionDetectorSaved || {}));
+  try {
+    var y0 = _cdNumber('cd-band-y0', 'Band y', false);
+    var y1 = _cdNumber('cd-band-y1', 'Band y', false);
+    if ((y0 === null) !== (y1 === null)) throw 'Fill both ends of Band y, or neither.';
+    if (y0 === null) delete cfg.band_y; else cfg.band_y = [y0, y1];
+    var x0 = _cdNumber('cd-band-x0', 'Band x', false);
+    var x1 = _cdNumber('cd-band-x1', 'Band x', false);
+    if ((x0 === null) !== (x1 === null)) throw 'Fill both ends of Band x, or neither.';
+    if (x0 === null) delete cfg.band_x; else cfg.band_x = [x0, x1];
+    var th = _cdNumber('cd-threshold', 'Threshold', true);
+    if (th === null) delete cfg.threshold; else cfg.threshold = th;
+  } catch (msg) { statusEl.textContent = msg; return; }
+  var pairs = [['cd-text-color', 'text_color'], ['cd-outline-color', 'outline_color'],
+               ['cd-outline-style', 'outline_style']];
+  pairs.forEach(function (p) {
+    var v = document.getElementById(p[0]).value.trim();
+    if (v === '') delete cfg[p[1]]; else cfg[p[1]] = v;
+  });
+  patchProject(pid, { caption_detector: cfg }, statusEl, 'Saved.')
+  .then(function (ok) { if (ok) _captionDetectorSaved = cfg; });
+}
+
+function resetCaptionDetector(pid) {
+  var statusEl = document.getElementById('cd-status');
+  patchProject(pid, { caption_detector: null }, statusEl, 'Reset to defaults.')
+  .then(function (ok) {
+    if (!ok) return;
+    _captionDetectorSaved = {};
+    ['cd-band-y0', 'cd-band-y1', 'cd-band-x0', 'cd-band-x1', 'cd-text-color', 'cd-outline-color', 'cd-threshold',
+     'cd-outline-style'].forEach(function (id) { document.getElementById(id).value = ''; });
+  });
+}
+{% endif %}
+function saveCaptionRemoval(pid) {
+  var el = document.getElementById('caption-removal-method');
+  patchProject(pid, { caption_removal_method: el.value },
+               document.getElementById('crm-status'), 'Saved.');
+}
+
+function saveVoidAllowance(pid) {
+  var el = document.getElementById('void-auto-usd');
+  var statusEl = document.getElementById('void-auto-status');
+  var v = el.value.trim();
+  var val = null;
+  if (v !== '') {
+    val = Number(v);
+    if (!isFinite(val) || val < 0 || val > 20) {
+      statusEl.textContent = 'Error: 0 .. 20';
+      return;
+    }
+  }
+  patchProject(pid, { void_auto_usd_per_run: val }, statusEl, 'Saved.');
+}
+
+function patchProject(pid, body, statusEl, okText) {
   statusEl.textContent = 'Saving…';
   return fetch('/api/v2/projects/' + encodeURIComponent(pid), {
     method: 'PATCH',
@@ -178,8 +507,8 @@ function patchProject(pid, body, statusEl, okMsg) {
   })
   .then(function (r) {
     if (r.ok) {
-      statusEl.textContent = okMsg || 'Saved.';
-      setTimeout(function () { statusEl.textContent = ''; }, 4000);
+      statusEl.textContent = okText;
+      setTimeout(function () { statusEl.textContent = ''; }, 2500);
       return true;
     }
     return r.json().then(function (b) {
@@ -196,14 +525,8 @@ function patchProject(pid, body, statusEl, okMsg) {
 function saveProjectName(pid) {
   var inp = document.getElementById('project-name');
   patchProject(pid, { name: inp.value },
-               document.getElementById('project-name-status'));
+               document.getElementById('project-name-status'), 'Saved.');
 }
-
-// Last value the server accepted, so a rejected PATCH can be rolled back.
-var _maxSegmentSaved = (function () {
-  var sel = document.getElementById('project-max-segment');
-  return sel ? sel.value : '';
-})();
 
 function saveProjectMuteSource(pid) {
   var box = document.getElementById('project-mute-source');
@@ -217,6 +540,13 @@ function saveProjectMuteSource(pid) {
     if (!ok) box.checked = !wanted;
   });
 }
+
+// Last value the server accepted, so a rejected PATCH can be rolled back (the
+// checkbox above does the same with box.checked).
+var _maxSegmentSaved = (function () {
+  var sel = document.getElementById('project-max-segment');
+  return sel ? sel.value : '';
+})();
 
 function saveProjectMaxSegment(pid) {
   var sel = document.getElementById('project-max-segment');
@@ -237,57 +567,268 @@ function saveProjectMaxSegment(pid) {
 {% if hook_visible %}
 // Hook length — the localisation twin of saveProjectMaxSegment above: same
 // PATCH, same status line, same "Applies on the next analysis." sentence,
-// because it is the same analyze-time contract.
+// because it is the same analyze-time contract (docs/localisation.md §5).
 //
 // Emitted under the same `hook_visible` gate as the field it drives, so this
 // function never exists on a page without #project-hook-sec to act on.
 function saveProjectHookSec(pid) {
   var inp = document.getElementById('project-hook-sec');
-  var raw = (inp.value || '').trim();
-  // Blank = "no explicit hook" → NULL, which both analysis and the translate
-  // endpoint read as the configured default. Never send "" or 0.
-  var wanted = raw === '' ? null : parseFloat(raw);
-  patchProject(pid, { hook_sec: wanted },
-               document.getElementById('project-hook-sec-status'),
-               (wanted === null ? 'Cleared — using the default.' : 'Set to ' + wanted + 's.')
-                 + ' Applies on the next analysis.');
+  var statusEl = document.getElementById('project-hook-sec-status');
+  var raw = inp.value.trim();
+
+  // A number input holding something unparseable reports value === "" with
+  // validity.badInput set. Without this check "abc" would be indistinguishable
+  // from a blank field and would silently CLEAR the hook back to the default —
+  // the opposite of what was typed.
+  if (inp.validity && inp.validity.badInput) {
+    statusEl.textContent = 'Enter a number of seconds, or leave blank for the default.';
+    return;
+  }
+
+  // Blank = "no explicit choice" → null, which the backend reads as
+  // settings.LOCALISATION_DEFAULT_HOOK_SEC. Never send "" or 0.
+  var wanted = null;
+  if (raw !== '') {
+    wanted = parseFloat(raw);
+    // parseFloat("abc") is NaN and JSON.stringify turns NaN into null, i.e. a
+    // typo would clear the field instead of erroring. Refuse locally.
+    if (!isFinite(wanted)) {
+      statusEl.textContent = 'Enter a number of seconds, or leave blank for the default.';
+      return;
+    }
+  }
+
+  patchProject(pid, { hook_sec: wanted }, statusEl,
+               (wanted === null
+                  ? 'Set to the {{ "%g"|format(hook_default_sec) }}s default.'
+                  : 'Set to ' + wanted + 's.')
+                 + ' Applies on the next analysis — press Re-analyze video.');
 }
 {% endif %}
 
-// Re-analyze: the only way an analyze-time setting (max segment length, hook
-// length) can be made to take effect after creation. Destructive — see the hint
-// text next to the button — so it confirms first. Never pre-disabled by status:
-// the endpoint answers 409 with the actual reason, which beats a button greyed
-// out by a page render that may be minutes stale.
-function reanalyzeProject(pid) {
-  if (!window.confirm(
-    'Re-analyze this video?\n\n'
-    + 'Every segment is deleted and re-cut from scratch — including boundaries you '
-    + 'edited by hand — and every run loses its per-segment breakdown. Finished runs '
-    + 'keep their delivered video.'
-  )) return;
+{% if hook_visible %}
+var LOCALISATION_SCOPE_CURRENT = {{ localisation_scope | tojson }};
+function onLocalisationScopeChange() {
+  var sel = document.getElementById('project-localisation-scope');
+  var note = document.getElementById('project-localisation-scope-pending');
+  if (sel && note) note.style.display = (sel.value !== LOCALISATION_SCOPE_CURRENT) ? '' : 'none';
+}
+{% endif %}
+
+// The scope the Re-analyze button applies: the select above when the page has
+// one (localisation projects), else nothing — the endpoint keeps the stored
+// scope when the parameter is omitted.
+function reanalyzeQuery() {
+  var sel = document.getElementById('project-localisation-scope');
+  return sel ? ('?localisation_scope=' + encodeURIComponent(sel.value)) : '';
+}
+
+// Re-analyze — POST /api/v2/projects/{pid}/analyze → 202.
+//
+// Destructive: analysis deletes every SegmentDef and the FK cascades to every
+// RunSegment hanging off them, so it never fires without a confirm that names
+// what goes and what stays.
+var REANALYZE_CONFIRM = [
+  'Re-analyze this project?',
+  '',
+  'This DELETES every segment and cuts them again from the source:',
+  '  • every segment boundary, swap/keep flag and pre/post-roll you edited by hand,',
+  '  • every run’s per-segment generation history (those clips disappear from',
+  '    Generations), because run segments hang off the segments being deleted,',
+  '  • any run whose stitch plan names individual segments now points at segments',
+  '    that no longer exist.',
+  '',
+  'What survives: every run row — name, prompt, references, model — and every',
+  'finished run’s delivered video and Drive link. A done run keeps its result.',
+  '',
+  'The transcript is untouched.',
+].join('\n');
+
+// Wait for the re-analysis to land, then reload.
+//
+// Neither obvious shortcut works here, and both fail SILENTLY — which is why
+// this is hand-rolled rather than an hx-trigger:
+//
+//   · "the page's existing status polling will pick it up." It will not. The
+//     only hx-trigger in project_status_content.html is in its created/
+//     analyzing branch; the "ready" branch — the segment editor, which is what
+//     is on screen when this button is reachable — carries no polling
+//     attribute at all. Verified against the rendered fragment: zero hx-trigger
+//     attributes in a ready project's /status-fragment response.
+//   · "reload, the project is analyzing now." It is not, not yet. POST /analyze
+//     only ENQUEUES; pipeline_v2.analyze_project is what transitions the row to
+//     `analyzing`, in a worker, some time after the 202 — the response body
+//     still says "ready". Reloading immediately re-renders the ready branch with
+//     the OLD segments and no timer, and the page then sits there lying.
+//
+// Mounting an htmx poller aimed at #status-content has the same flaw one step
+// later: the first poll answered while the row still says "ready" swaps the
+// ready branch over the poller and deletes it.
+//
+// So poll for the thing that actually proves the work happened: the SegmentDef
+// ids. analyze_project deletes every row and inserts fresh ones, so the id set
+// changes exactly once, only when the new segmentation is committed. Status is
+// not usable as the signal — it is still "ready" at the 202, and the analyzing
+// window for a hook_split project (which reads no frames) can easily be shorter
+// than a poll interval.
+var REANALYZE_POLL_MS = 2000;
+var REANALYZE_POLL_MAX = 150;  // ~5 minutes, then hand it back to the operator
+
+function watchReanalysis(pid, before) {
   var statusEl = document.getElementById('reanalyze-status');
-  var btn = document.getElementById('reanalyze-btn');
-  statusEl.textContent = 'Starting…';
-  btn.disabled = true;
-  fetch('/api/v2/projects/' + encodeURIComponent(pid) + '/analyze', { method: 'POST' })
-  .then(function (r) {
-    if (r.ok) {
-      statusEl.textContent = 'Analysis queued — reloading…';
-      // Reload rather than poll: the whole page (segments, runs, transcript
-      // panel) is about to change, and #status-content polls from `analyzing`.
-      setTimeout(function () { window.location.reload(); }, 800);
-      return;
-    }
-    btn.disabled = false;
-    return r.json().then(function (b) {
-      statusEl.textContent = 'Error: ' + apiErrorText(b, r);
+  var host = document.getElementById('status-content');
+  if (host) {
+    // A plain spinner, with NO hx-* of its own: nothing must re-swap this
+    // container on a timer while the operator waits, or a half-typed New Run
+    // prompt would be wiped every two seconds.
+    host.innerHTML =
+      '<div class="card"><div class="card-body"><div class="polling-section">' +
+        '<span class="spinner"></span>' +
+        '<span>Re-analysis queued — the segments are being re-cut. ' +
+        'This page reloads by itself when they land.</span>' +
+      '</div></div></div>';
+  }
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries += 1;
+    Promise.all([
+      fetch('/api/v2/projects/' + encodeURIComponent(pid))
+        .then(function (r) { return r.ok ? r.json() : null; }),
+      fetch('/api/v2/projects/' + encodeURIComponent(pid) + '/segments')
+        .then(function (r) { return r.ok ? r.json() : null; }),
+    ]).then(function (res) {
+      var proj = res[0], segs = res[1];
+      if (segs) {
+        var now = segs.map(function (s) { return s.id; }).sort().join(',');
+        // before === null only if the pre-POST read failed; adopt the first
+        // reading as the baseline rather than reloading on a phantom change.
+        if (before === null) { before = now; }
+        else if (now !== before) { clearInterval(timer); location.reload(); return; }
+      }
+      // Analysis that fails never reaches the segment rewrite, so the id set
+      // never changes — the status is the only way out of the wait.
+      if (proj && proj.status === 'failed') { clearInterval(timer); location.reload(); return; }
+      if (proj && statusEl) statusEl.textContent = 'Re-analysis: ' + proj.status + '…';
+      if (tries >= REANALYZE_POLL_MAX) {
+        clearInterval(timer);
+        if (statusEl) {
+          statusEl.textContent =
+            'Still queued after ' +
+            Math.round(REANALYZE_POLL_MAX * REANALYZE_POLL_MS / 60000) +
+            ' min — the workers may be busy. Reload to check.';
+        }
+      }
+    }).catch(function () { /* transient — the next tick retries */ });
+  }, REANALYZE_POLL_MS);
+}
+
+// Re-cut at speech pauses (AICP-347): preview, confirm, apply, reload.
+function recutAtPauses(pid) {
+  var btn = document.getElementById('recut-btn');
+  var statusEl = document.getElementById('recut-status');
+  var base = '/api/v2/projects/' + encodeURIComponent(pid) + '/recut-at-pauses';
+  function fail(r, b) {
+    if (btn) btn.disabled = false;
+    if (statusEl) statusEl.textContent = 'Error: ' + apiErrorText(b, r);
+  }
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = 'Planning…';
+  fetch(base + '?dry_run=true', { method: 'POST' })
+    .then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (b) {
+        if (!r.ok) { fail(r, b); return; }
+        var warn = (b.warnings || []).join('\n');
+        if (!b.feasible || !b.changed) {
+          if (btn) btn.disabled = false;
+          if (statusEl) statusEl.textContent =
+            (b.feasible ? 'No boundary needs to move.' : 'Cannot re-cut.') +
+            (warn ? ' ' + warn : '');
+          return;
+        }
+        var moves = (b.boundaries || []).filter(function (x) { return x.moved; })
+          .map(function (x) {
+            return '  • ' + x.old_sec.toFixed(2) + 's → ' + x.new_sec.toFixed(2) + 's' +
+              (x.source === 'scene_cut' ? ' (scene cut)' : '') +
+              (x.old_inside_line_ids.length ? '  — was inside line ' + x.old_inside_line_ids.join(', ') : '');
+          });
+        var msg = ['Re-cut the segments at speech pauses?', '', 'Boundary moves:']
+          .concat(moves)
+          .concat(warn ? ['', warn] : [])
+          .concat(['', 'Every segment stays ≤ ' + b.target_sec + 's. Finished runs keep their own segments.'])
+          .join('\n');
+        if (!window.confirm(msg)) {
+          if (btn) btn.disabled = false;
+          if (statusEl) statusEl.textContent = '';
+          return;
+        }
+        if (statusEl) statusEl.textContent = 'Applying…';
+        return fetch(base + '?expected_fingerprint=' + encodeURIComponent(b.fingerprint),
+                     { method: 'POST' })
+          .then(function (r2) {
+            return r2.json().catch(function () { return {}; }).then(function (b2) {
+              if (!r2.ok) { fail(r2, b2); return; }
+              location.reload();
+            });
+          });
+      });
+    })
+    .catch(function (e) {
+      if (btn) btn.disabled = false;
+      if (statusEl) statusEl.textContent = 'Network error: ' + e;
     });
-  })
-  .catch(function (e) {
-    btn.disabled = false;
-    statusEl.textContent = 'Network error: ' + e;
-  });
+}
+
+function reanalyzeProject(pid) {
+  if (!window.confirm(REANALYZE_CONFIRM)) return;
+  var btn = document.getElementById('reanalyze-btn');
+  var statusEl = document.getElementById('reanalyze-status');
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = 'Starting…';
+
+  // Read the baseline from the API, not from the segment rows in the DOM: on a
+  // project that is failed (or mid-analysis) the editor is not rendered at all,
+  // so the DOM would report "no segments" while the database still holds the
+  // old ones — and every poll would then look like a change.
+  fetch('/api/v2/projects/' + encodeURIComponent(pid) + '/segments')
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .catch(function () { return null; })
+    .then(function (segs) {
+      var before = segs
+        ? segs.map(function (s) { return s.id; }).sort().join(',')
+        : null;
+      return fetch('/api/v2/projects/' + encodeURIComponent(pid) + '/analyze' + reanalyzeQuery(),
+                   { method: 'POST' })
+        .then(function (r) {
+          if (r.ok) {
+            if (statusEl) statusEl.textContent = 'Re-analysis queued…';
+            // The transcript panel lives OUTSIDE #status-content and does not
+            // poll in a terminal state, so on a localisation project it would
+            // keep showing the old "ready" transcript even though POST /analyze
+            // just set the row back to "pending" (a re-analysis chains a fresh
+            // transcription). Its own helper re-renders it, which is also what
+            // re-arms its 3s poll. Guarded: it only exists on localisation
+            // projects.
+            if (typeof refreshTranscriptPanel === 'function') refreshTranscriptPanel(pid);
+            watchReanalysis(pid, before);
+            // The button stays disabled: a second analyze while the first is
+            // queued is exactly what the endpoint's 409 exists to stop, and the
+            // reload re-enables it.
+            return;
+          }
+          return r.json().catch(function () { return {}; }).then(function (b) {
+            if (btn) btn.disabled = false;
+            // Both 409s land here — "already analyzing" and "a run is active".
+            // apiErrorText prints the server's own sentence rather than a
+            // generic failure, because which of the two it is decides whether
+            // you wait a minute or go and stop a run.
+            if (statusEl) statusEl.textContent = 'Error: ' + apiErrorText(b, r);
+          });
+        });
+    })
+    .catch(function (e) {
+      if (btn) btn.disabled = false;
+      if (statusEl) statusEl.textContent = 'Network error: ' + e;
+    });
 }
 </script>
 
@@ -296,6 +837,10 @@ function reanalyzeProject(pid) {
   <div class="card-header"><h2>Project Info</h2></div>
   <div class="card-body">
     <div class="meta-grid">
+      <div class="meta-item">
+        <label>Project type</label>
+        <div class="val">{{ project.project_type | project_type_label }}</div>
+      </div>
       <div class="meta-item">
         <label>Source type</label>
         <div class="val">{{ project.source_type }}</div>

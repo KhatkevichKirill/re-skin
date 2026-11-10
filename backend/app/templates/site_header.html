@@ -1,0 +1,42 @@
+{# Shared site header — included by every full-page base.html (v2 + overlay)
+   so the header is byte-identical across the app. Edit here, not per-area. #}
+<header class="site-header">
+  <h1><a href="/v2/" style="color:inherit">re-skin</a></h1>
+  <span class="tagline">Video character replacement</span>
+  <span style="margin-left:auto;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:4px 12px;font-size:11px;color:var(--color-muted)">
+    <span
+      class="credit-balance"
+      hx-get="/v2/credits-fragment"
+      hx-trigger="load, every 120s"
+      hx-swap="innerHTML"
+      title="kie.ai account credit balance"
+    >credits: …</span>
+    <span
+      class="assistant-badge"
+      hx-get="/v2/assistant/badge"
+      hx-trigger="load, every 30s"
+      hx-swap="innerHTML"
+    ><a href="/v2/assistant">Waiting for you</a></span>
+    <a href="/v2/generations">Generations</a>
+    <a href="/v2/automations">Automations</a>
+    <a href="/v2/library">Library</a>
+    <a href="/v2/overlays/">Overlays</a>
+  </span>
+</header>
+{# AICP-350: deploy admission gate banner (empty while admitting). #}
+<div class="ops-gate-banner-slot" hx-get="/v2/ops-gate-banner" hx-trigger="load, every 30s" hx-swap="innerHTML"></div>
+<script>
+// AICP-350: an HTMX action refused by the deploy admission gate (503) says so
+// instead of failing silently; fetch() callers already show `detail` via
+// apiErrorText. Refreshes the banner too.
+document.addEventListener('htmx:responseError', function (ev) {
+  var xhr = ev.detail && ev.detail.xhr;
+  if (!xhr || xhr.status !== 503) return;
+  var msg = '';
+  try { msg = JSON.parse(xhr.responseText).detail || ''; } catch (e) { return; }
+  if (typeof msg !== 'string' || msg.indexOf('Deploy in progress') !== 0) return;
+  window.alert(msg);
+  var slot = document.querySelector('.ops-gate-banner-slot');
+  if (slot && window.htmx) window.htmx.trigger(slot, 'load');
+});
+</script>

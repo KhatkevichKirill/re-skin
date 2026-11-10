@@ -1,0 +1,21 @@
+{
+  "_about": "AICP-340 acceptance fixture. PySceneDetect ContentDetector(min_scene_len=120 frames = 4 s at 30 fps, i.e. settings.SCENE_MIN_LEN_SECONDS) run locally on 2026-10-29 against a read-only mount of prod project 5b1b9b67's source.mp4 (21698_Creator-HowDoYouRead, subtitle_removal, 78.878186 s @ 30 fps), via scenedetect in the re-skin-api image. 'scenes' is detect()'s output verbatim. 'cleaned' is the same detector on the de-captioned copy that became localisation project 46cc6443 (78.854966 s), which also finds a cut at 63.367. 'operator_cut' is the whole-video segmentation the operator chose by hand for 46cc6443 in AICP-332 (flow journal step 4; tests/fixtures/localisation_46cc6443.json 'segments').",
+  "duration_sec": 78.878186,
+  "fps": 30.0,
+  "scenes": [
+    [0.0, 12.133333333333333],
+    [12.133333333333333, 16.166666666666668],
+    [16.166666666666668, 35.9],
+    [35.9, 41.2],
+    [41.2, 74.2],
+    [74.2, 78.83333333333333]
+  ],
+  "cleaned": {
+    "duration_sec": 78.854966,
+    "scenes": [
+      [0.0, 12.133], [12.133, 16.167], [16.167, 35.9], [35.9, 41.2],
+      [41.2, 63.367], [63.367, 74.2], [74.2, 78.833]
+    ]
+  },
+  "operator_cut": [0.0, 12.1333, 26.0333, 35.9, 49.45, 57.7, 65.95, 78.85]
+}

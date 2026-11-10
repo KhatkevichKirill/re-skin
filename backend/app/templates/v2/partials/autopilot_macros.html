@@ -1,0 +1,340 @@
+{# Shared pieces of the autopilot cards (AICP-363 project card, AICP-369 run card).
+   Functional only — the UX is designed later (AICP-367). #}
+
+{# Refresh guard: the 10 s poll skips while the operator is typing / has picked
+   an option / a video or audio is playing / a POST of this card is in flight, so a refresh never wipes a
+   half-written answer. Defined once per page; re-running it on a swap is a no-op. #}
+{% macro idle_script() -%}
+<script>
+window.apIdle = window.apIdle || function (el) {
+  if (!el || el.classList.contains('htmx-request') || el.querySelector('.htmx-request')) return false;
+  if (el.querySelector('input[type=radio]:checked')) return false;
+  var ts = el.querySelectorAll('textarea');
+  for (var i = 0; i < ts.length; i++) { if (ts[i].value.trim()) return false; }
+  var vs = el.querySelectorAll('video, audio');            // a playing preview (AICP-376)
+  for (var j = 0; j < vs.length; j++) { if (!vs[j].paused && !vs[j].ended) return false; }
+  var a = document.activeElement;
+  if (a && el.contains(a) && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')) return false;
+  return true;
+};
+</script>
+{%- endmacro %}
+
+{# Links to a question end in #ap-<approval id> (AICP-373, docs/autopilot-operator-ux.md
+   §2.2): every approval's element on a card carries that id. Called at the end of
+   each card render; on the first render that sees the fragment it scrolls to the
+   element, or — when the question is no longer on this card — says so, and keeps
+   saying so across the 10 s refreshes. Defined once per page. #}
+{% macro fragment_script(card_id) -%}
+<script>
+window.apFocusFragment = window.apFocusFragment || function (card) {
+  var h = window.location.hash || '';
+  if (!card || !/^#ap-[A-Za-z0-9-]+$/.test(h)) return;
+  var seen = (window.__apFragment = window.__apFragment || {});
+  var el = document.getElementById(h.slice(1));
+  if (el && card.contains(el)) {
+    // An answered question sits in the collapsed "Your answers" list: keep it
+    // open across refreshes until the operator closes it ('closed').
+    if (seen[h] !== 'closed') {
+      for (var d = el.closest('details'); d; d = d.parentElement && d.parentElement.closest('details')) {
+        d.open = true;
+        d.addEventListener('toggle', function (ev) { if (!ev.target.open) seen[h] = 'closed'; });
+      }
+    }
+    if (!seen[h]) { el.scrollIntoView({block: 'center'}); el.style.outline = '2px solid #f0ad4e'; }
+    if (seen[h] !== 'closed') seen[h] = 'found';
+    return;
+  }
+  if (seen[h] && seen[h] !== 'gone') return;   // was found: it closed while the page was open
+  seen[h] = 'gone';
+  var n = document.createElement('p');
+  n.className = 'ap-fragment-gone text-muted';
+  n.textContent = 'The question this link points to is no longer open.';
+  var title = card.querySelector('h3');
+  card.insertBefore(n, title ? title.nextSibling : card.firstChild);
+};
+window.apFocusFragment(document.getElementById('{{ card_id }}'));
+</script>
+{%- endmacro %}
+
+{% macro budget_line(b, bar=None) -%}
+<div class="form-group">
+  <strong>Budget (whole project):</strong>
+  {% if bar %}
+  <div class="ap-bar" title="consumed {{ "%.0f"|format(b.consumed.credits) }} · settled {{ "%.0f"|format(b.settled.credits) }} credits">
+    <div class="ap-bar-band" style="left:{{ bar.approved_pct }}%;width:{{ bar.ceiling_pct - bar.approved_pct }}%"></div>
+    <div class="ap-bar-fill ap-fill-{{ bar.tone }}" style="width:{{ bar.committed_pct }}%"></div>
+    <div class="ap-bar-mark" style="left:{{ bar.approved_pct }}%"></div>
+  </div>
+  {% endif %}
+  {{ "%.0f"|format(b.committed.credits) }} credits committed
+  (${{ "%.2f"|format(b.committed.usd) }})
+  {% if b.approved %}
+    of {{ "%.0f"|format(b.approved.credits) }} approved
+    (+{{ "%.0f"|format(b.tolerance * 100) }} % tolerance, shaded)
+  {% else %}— no budget approved yet{% endif %};
+  consumed {{ "%.0f"|format(b.consumed.credits) }}, settled {{ "%.0f"|format(b.settled.credits) }}.
+  <span class="hint">{{ b.note }}</span>
+</div>
+{%- endmacro %}
+
+{# §5 (AICP-377): the status line, the paused banner and the stepper. ``ux`` is
+   app/autopilot/status.py summary(). #}
+{% macro status_block(ux) -%}
+<div class="ap-status ap-tone-{{ ux.line.tone }}">{{ ux.line.text }}</div>
+{% if ux.banner %}
+<div class="ap-banner">
+  <strong>Paused.</strong> {{ ux.banner.cause }}
+  {% if ux.banner.reason %}<div class="ap-banner-reason">{{ ux.banner.reason }}</div>{% endif %}
+  <div><strong>To continue:</strong> {{ ux.banner.fix }}{% if ux.banner.hint %} <span class="hint">{{ ux.banner.hint }}</span>{% endif %}</div>
+  {% if ux.banner.lines %}
+  <ul class="ap-banner-lines">
+    {% for j in ux.banner.lines %}<li>{{ j.at[:16]|replace("T", " ") }} · {{ j.kind }} — {{ j.message }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endif %}
+{{ stepper(ux.stepper) }}
+{%- endmacro %}
+
+{% macro stepper(rows) -%}
+{% set sym = {"done": "✓", "active": "●", "you": "?", "failed": "✗", "skipped": "–", "pending": "○"} %}
+<div class="ap-stepper">
+  {% for row in rows %}
+  <div class="ap-step-row">
+    {% if row.language %}<span class="ap-step-lang">{{ row.language }}</span>{% endif %}
+    {% for c in row.cells %}
+      <span class="ap-step ap-step-{{ c.state }}"
+            title="{{ c.step_id }}: {{ {"you": "waiting for you"}.get(c.state, c.state) }}{% if c.generation > 1 %} (redone {{ c.generation - 1 }}×){% endif %}{% if c.reason %} — {{ c.reason }}{% endif %}">{{ sym.get(c.state, "○") }} {{ c.label }}{% if c.generation > 1 %} ×{{ c.generation }}{% endif %}</span>{% if not loop.last %}<span class="ap-step-arrow">→</span>{% endif %}
+    {% endfor %}
+  </div>
+  {% else %}<div class="text-muted">no steps yet</div>{% endfor %}
+</div>
+{%- endmacro %}
+
+{# The journal timeline (§6): loaded from ``url`` when opened, then kept as is
+   across the card's 10 s refreshes (hx-preserve, one id per attempt / run) so
+   the pages already loaded and the filter stay; reopening reloads the newest. #}
+{% macro journal_box(box_id, url, json_url, json_label="full JSON") -%}
+<details id="{{ box_id }}" class="ap-journal" hx-preserve="true">
+  <summary>Journal</summary>
+  <div class="ap-journal-body" hx-get="{{ url }}" hx-trigger="toggle[target.open] from:closest details"
+       hx-swap="innerHTML"><span class="text-muted">loading…</span></div>
+  <a href="{{ json_url }}" target="_blank">{{ json_label }}</a>
+</details>
+{%- endmacro %}
+
+{% macro ux_style() -%}
+<style>
+.ap-status{font-weight:600;padding:6px 10px;border-radius:4px;margin:6px 0;background:#f1f3f5;overflow-wrap:anywhere}
+.ap-tone-you{background:#fff3cd}.ap-tone-paused{background:#fde2c8}.ap-tone-ended{background:#f8d7da}
+.ap-tone-done{background:#d4edda}
+.ap-banner{border:1px solid #f0ad4e;background:#fff8ef;border-radius:4px;padding:8px 10px;margin:6px 0;overflow-wrap:anywhere}
+.ap-banner-reason{font-size:12px;color:#555;margin:2px 0}
+.ap-banner-lines{font-size:12px;margin:4px 0 0 16px;padding:0}
+.ap-stepper{margin:6px 0}
+.ap-step-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:3px 0}
+.ap-step-lang{font-weight:600;font-size:12px;min-width:28px}
+.ap-step{font-size:12px;padding:2px 6px;border-radius:10px;border:1px solid #ccc;white-space:nowrap;cursor:default}
+.ap-step-done{background:#e6f4ea;border-color:#9fd3ad}.ap-step-active{background:#e7f1ff;border-color:#8bb8f0}
+.ap-step-you{background:#fff3cd;border-color:#f0ad4e;font-weight:600}.ap-step-failed{background:#f8d7da;border-color:#e4a1a8}
+.ap-step-skipped,.ap-step-pending{color:#888}
+.ap-step-arrow{color:#aaa;font-size:11px}
+.ap-bar{position:relative;height:10px;background:#eef0f2;border-radius:5px;margin:4px 0;max-width:420px;overflow:hidden}
+.ap-bar-band{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,#f6d7a7,#f6d7a7 3px,#fbe9cf 3px,#fbe9cf 6px)}
+.ap-bar-fill{position:absolute;top:2px;bottom:2px;left:0;border-radius:3px;background:#4a90d9}
+.ap-fill-band{background:#e0a030}.ap-fill-over{background:#dc3545}
+.ap-bar-mark{position:absolute;top:0;bottom:0;width:2px;background:#333}
+.ap-tl-filter{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0}
+.ap-timeline{font-size:12px;padding-left:16px;margin:4px 0}
+.ap-tl{margin:2px 0;overflow-wrap:anywhere}.ap-tl-at{color:#666}.ap-tl-step{font-weight:600}
+.ap-tl-paused,.ap-tl-failed,.ap-tl-stopped,.ap-tl-refused,.ap-tl-warning{color:#8a4b00}
+</style>
+{%- endmacro %}
+
+{# One pending approval: the approval card v2 (AICP-376, docs/autopilot-operator-ux.md
+   §4). ``a.card`` comes from app/autopilot/card.py. Media first, each option a
+   button with its consequence and cost, the "no" control by the approval's
+   origin (§4.3), the raw question and proposal under Details. Every button posts
+   the same ``decision`` / ``option`` the v1 form posted (hx-vals) together with
+   the form's hidden ids and comment; the response replaces the card (``target``). #}
+{% macro approval_form(a, post_url, target, autopilot_id=None) -%}
+{% set c = a.card %}
+<form id="{{ a.anchor }}" class="card ap-approval" style="padding:10px; margin-bottom:10px" onsubmit="return false">
+  <input type="hidden" name="approval_id" value="{{ a.id }}" />
+  {% if autopilot_id %}<input type="hidden" name="autopilot_id" value="{{ autopilot_id }}" />{% endif %}
+  <div style="display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;margin-bottom:6px">
+    <span class="badge ap-kind">{{ c.header }}</span>
+    <strong class="ap-title">{{ a.title }}</strong>
+    <span class="text-muted" style="font-size:12px">{% if c.waited %}· waiting {{ c.waited }}{% endif %}{% if a.subject %} · {{ a.subject }}{% endif %}</span>
+  </div>
+
+  {% if a.question and a.question != a.title %}<p class="ap-question" style="margin:0 0 6px;font-size:13px">{{ a.question }}</p>{% endif %}
+
+  {# 1. media first #}
+  {% if c.pair %}
+  <div class="ap-pair" data-ap-pair style="margin-bottom:6px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      {% for v in c.pair %}
+      <figure style="margin:0;flex:1 1 240px;min-width:0">
+        <video src="{{ v.url }}" preload="metadata" playsinline {% if not loop.first %}muted{% endif %} style="width:100%;max-height:360px;background:#000"></video>
+        <figcaption style="font-size:12px">{{ v.label }}</figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button type="button" class="btn btn-sm" data-ap-play>Play</button>
+      <input type="range" min="0" max="1000" value="0" step="1" data-ap-scrub style="flex:1" aria-label="Scrub both videos" />
+    </div>
+  </div>
+  {% for v in c.media.videos[2:] %}
+    <div>{{ v.label }}: <video src="{{ v.url }}" controls preload="none" style="max-width:100%;max-height:320px"></video></div>
+  {% endfor %}
+  {% else %}
+  {% for v in c.media.videos %}
+    <figure style="margin:0 0 6px"><video src="{{ v.url }}" controls preload="metadata" style="max-width:100%;max-height:360px;background:#000"></video>
+      <figcaption style="font-size:12px">{{ v.label }}</figcaption></figure>
+  {% endfor %}
+  {% endif %}
+  {% if c.media.images %}
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+    {% for im in c.media.images %}
+      <a href="{{ im.url }}" target="_blank" title="Open full size"><img src="{{ im.url }}" loading="lazy" alt="{{ im.label }}" style="max-width:320px;max-height:240px;border:1px solid var(--color-border,#ddd)" /><div style="font-size:12px">{{ im.label }}</div></a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% for au in c.media.audios %}<div style="font-size:12px">{{ au.label }}: <audio src="{{ au.url }}" controls preload="none"></audio></div>{% endfor %}
+  {% if c.preview %}<div style="margin-bottom:6px"><a href="{{ c.preview }}" target="_blank"><img src="{{ c.preview }}" loading="lazy" style="max-width:320px" alt="preview" /></a></div>{% endif %}
+
+  {# budget (§4.4) #}
+  {% if c.budget %}
+  <table style="font-size:12px;margin:4px 0">
+    <thead><tr><th>Line</th><th class="text-right">Credits</th></tr></thead>
+    <tbody>
+    {% for l in c.budget.lines %}<tr><td>{{ l.label }}</td><td class="text-right">{{ "%.0f"|format(l.credits or 0) }}</td></tr>{% endfor %}
+    <tr><td><strong>Total</strong></td><td class="text-right"><strong>{{ "%.0f"|format(c.budget.total_credits or 0) }}</strong>{% if c.budget.total_usd is not none %} (${{ "%.2f"|format(c.budget.total_usd) }}){% endif %}</td></tr>
+    </tbody>
+  </table>
+  <div class="hint">Estimated when asked{% if c.budget.tolerance is not none %}; +{{ "%.0f"|format(c.budget.tolerance * 100) }} % tolerance (editable on the project card){% endif %}.</div>
+  {% elif c.cost %}
+  <div style="font-size:13px">Cost: ~{{ "%.0f"|format(c.cost.credits) }} credits (${{ "%.2f"|format(c.cost.usd) }}){% if c.after %} · after this: {{ "%.0f"|format(c.after.credits) }} of {{ "%.0f"|format(c.after.budget) }} credits{% endif %}
+    <span class="hint">— estimated when asked; the launch re-checks spend</span></div>
+  {% endif %}
+
+  <textarea name="comment" rows="2" placeholder="Comment (optional). {{ c.no.comment_prompt }}" style="width:100%;margin:6px 0"></textarea>
+
+  {# 2. the choices — one fieldset: while one answer is in flight every button
+     of this approval is disabled, so a second click cannot race the first #}
+  <fieldset class="ap-actions" style="border:0;padding:0;margin:0;min-width:0">
+  <div class="ap-choices" style="display:flex;flex-direction:column;gap:6px">
+  {% for o in c.options %}
+    <div class="ap-choice">
+      <button type="button" class="btn btn-primary"
+              hx-post="{{ post_url }}" hx-target="{{ target }}" hx-swap="outerHTML"
+              hx-sync="closest .ap-card:replace" hx-disabled-elt="closest fieldset"
+              hx-vals='{{ {"decision": "approve", "option": o.id}|tojson }}'>{{ o.label }}</button>
+      {% if o.consequence or o.credits %}<span class="hint" style="margin-left:6px">{{ o.consequence }}{% if o.credits %}{% if o.consequence %} · {% endif %}~{{ "%.0f"|format(o.credits) }} credits (${{ "%.2f"|format(o.usd) }}), estimated when asked{% endif %}</span>{% endif %}
+    </div>
+  {% else %}
+    <div class="ap-choice">
+      <button type="button" class="btn btn-primary"
+              hx-post="{{ post_url }}" hx-target="{{ target }}" hx-swap="outerHTML"
+              hx-sync="closest .ap-card:replace" hx-disabled-elt="closest fieldset"
+              hx-vals='{{ {"decision": "approve"}|tojson }}'>{{ c.approve_label }}</button>
+    </div>
+  {% endfor %}
+  </div>
+
+  {# 3. saying no, by origin (§4.3) #}
+  <div class="ap-no" style="margin-top:8px">
+    <button type="button" class="btn btn-sm" data-ap-no
+            hx-post="{{ post_url }}" hx-target="{{ target }}" hx-swap="outerHTML"
+            hx-sync="closest .ap-card:replace" hx-disabled-elt="closest fieldset"
+            {% if c.no.confirm %}hx-confirm="{{ c.no.confirm }}"{% endif %}
+            hx-vals='{{ c.no.post|tojson }}'>{{ c.no.label }}</button>
+    {% if c.no.note %}<span class="hint">{{ c.no.note }}</span>{% endif %}
+  </div>
+  </fieldset>
+  <div class="hint" style="margin-top:4px">The assistant re-checks the answer before acting on it; if the run changed meanwhile it asks again.</div>
+
+  {# 4. details #}
+  <details style="margin-top:6px;font-size:12px">
+    <summary>Details</summary>
+    <table style="font-size:12px;margin:4px 0">
+      {% for k, v in c.details.items() %}<tr><td><code>{{ k }}</code></td><td>{{ v }}</td></tr>{% endfor %}
+      <tr><td><code>step</code></td><td>{{ a.step_id }}{% if a.step_generation and a.step_generation > 1 %} (gen {{ a.step_generation }}){% endif %} · <code>{{ a.name }}</code></td></tr>
+    </table>
+  </details>
+</form>
+{%- endmacro %}
+
+{# Two videos, one scrub bar (AICP-376): binds every [data-ap-pair] of a card
+   render once; play/pause and seeking move both. Defined once per page. #}
+{% macro media_script(card_id) -%}
+<script>
+window.apBindPairs = window.apBindPairs || function (card) {
+  if (!card) return;
+  card.querySelectorAll('[data-ap-pair]').forEach(function (box) {
+    if (box.dataset.apBound) return;
+    box.dataset.apBound = '1';
+    var vids = box.querySelectorAll('video'), scrub = box.querySelector('[data-ap-scrub]'),
+        play = box.querySelector('[data-ap-play]'), lead = vids[0];
+    if (!lead || !scrub || !play) return;
+    var each = function (f) { for (var i = 0; i < vids.length; i++) f(vids[i]); };
+    play.addEventListener('click', function () {
+      if (lead.paused) { each(function (v) { v.currentTime = lead.currentTime; v.play(); }); play.textContent = 'Pause'; }
+      else { each(function (v) { v.pause(); }); play.textContent = 'Play'; }
+    });
+    scrub.addEventListener('input', function () {
+      var d = lead.duration;
+      if (!d || !isFinite(d)) return;
+      var t = d * scrub.value / 1000;
+      each(function (v) { v.currentTime = Math.min(t, (v.duration || t)); });
+    });
+    lead.addEventListener('timeupdate', function () {
+      if (lead.duration && isFinite(lead.duration)) scrub.value = Math.round(1000 * lead.currentTime / lead.duration);
+    });
+    lead.addEventListener('ended', function () { each(function (v) { v.pause(); }); play.textContent = 'Play'; });
+  });
+};
+window.apBindPairs(document.getElementById('{{ card_id }}'));
+</script>
+{%- endmacro %}
+
+{# The operator's answered choices that launched nothing ("ship as is", "I fix
+   it by hand" ...): "Ask again" takes the answer back and the assistant asks the
+   question afresh with its current proposal (core.reopen, 2026-11-02). #}
+{% macro answered_list(items, post_url, target, autopilot_id=None) -%}
+{% if items %}
+<details class="form-group">
+  <summary>Your answers ({{ items|length }}) — ask again</summary>
+  {% for a in items %}
+  <form id="{{ a.anchor }}" style="margin:4px 0" hx-post="{{ post_url }}" hx-target="{{ target }}" hx-swap="outerHTML"
+        hx-sync="closest .ap-card:replace" hx-disabled-elt="find button">
+    <input type="hidden" name="approval_id" value="{{ a.id }}" />
+    {% if autopilot_id %}<input type="hidden" name="autopilot_id" value="{{ autopilot_id }}" />{% endif %}
+    {% set chosen = (a.options or [])|selectattr("id", "equalto", a.chosen_option)|list %}
+    {% if a.subject %}<strong>{{ a.subject }}</strong>: {% endif %}you chose
+    <em>{{ chosen[0].label if chosen else a.chosen_option }}</em>
+    <button type="submit" class="btn btn-sm">Ask again</button>
+  </form>
+  {% endfor %}
+</details>
+{% endif %}
+{%- endmacro %}
+
+{% macro journal_list(entries) -%}
+<ul style="font-size:12px">
+  {% for j in entries %}
+    <li>{{ j.at[:19] }} · {{ j.kind }}{% if j.step_id %} · {{ j.step_id }}{% endif %} — {{ j.message }}{% if j.cost_credits %} ({{ "%.0f"|format(j.cost_credits) }} cr){% endif %}</li>
+  {% else %}<li class="text-muted">nothing yet</li>{% endfor %}
+</ul>
+{%- endmacro %}
+
+{% macro steps_list(steps) -%}
+<ul style="margin:4px 0">
+  {% for s in steps %}
+    <li><code>{{ s.step_id }}</code> — {{ s.status }}{% if s.generation > 1 %} (gen {{ s.generation }}){% endif %}{% if s.reason %}: {{ s.reason }}{% endif %}</li>
+  {% else %}<li class="text-muted">none started yet</li>{% endfor %}
+</ul>
+{%- endmacro %}

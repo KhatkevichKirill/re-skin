@@ -1,0 +1,155 @@
+{% from "error_detail.html" import error_detail %}
+{% if captions %}
+<div
+  class="card"
+  id="captions-card"
+  {% if captions_active %}
+  hx-get="/v2/runs/{{ run_id }}/captions-fragment"
+  hx-trigger="every 3s"
+  hx-target="#captions-content"
+  hx-swap="innerHTML"
+  {% endif %}
+>
+  <div class="card-header"><h2>Captions</h2></div>
+  <div class="card-body">
+    <table>
+      <thead>
+        <tr>
+          <th>Source</th>
+          <th>Created</th>
+          <th>Language</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in captions %}
+        {% set csv = c.status.value if c.status.value is defined else c.status|string %}
+        <tr id="caption-{{ c.id }}">
+          <td style="font-size:11px">
+            {% if c.source_type == "tail_edit" %}
+            <span class="text-muted">Tail edit:</span>
+            {{ caption_source_labels.get(c.source_tail_edit_id, "(deleted)") }}
+            {% else %}
+            <span class="text-muted">Run result</span>
+            {% endif %}
+          </td>
+          <td style="font-size:11px">{{ c.created_at.strftime("%Y-%m-%d %H:%M") if c.created_at else "" }}</td>
+          <td><code style="font-size:11px">{{ c.language or "auto" }}</code></td>
+          <td>
+            <span class="badge badge-{{ csv }}">{{ csv }}</span>
+            {% if csv == "failed" and c.error_message %}
+            <div style="font-size:11px;color:#c00;margin-top:2px">
+              {{ error_detail(c.error_message, 120) }}
+            </div>
+            {% endif %}
+          </td>
+          <td class="text-right" style="font-size:11px">
+            {% if csv == "done" %}
+            <a class="btn btn-sm btn-success" href="/api/v2/captions/{{ c.id }}/result" download>Download</a>
+            {% if c.gdrive_file_id %}
+            <a class="btn btn-sm btn-secondary"
+               href="https://drive.google.com/file/d/{{ c.gdrive_file_id }}/view"
+               target="_blank" rel="noopener">Drive</a>
+            {% endif %}
+            {% if c.final_creatives_exported_at %}
+            <button type="button" class="btn btn-sm btn-success" disabled title="Already logged to the Final Creatives sheet">✓ Creatives</button>
+            {% else %}
+            <button
+              type="button"
+              class="btn btn-sm btn-secondary"
+              data-caption-id="{{ c.id }}"
+              onclick="captionExportToSheet(this)"
+            >Creatives</button>
+            {% endif %}
+            {# AICP-331: pick this caption as the "Move to new project" source #}
+            <button type="button" class="btn btn-sm btn-secondary" title="Start a new project from this captioned video"
+                    data-move-kind="caption" data-move-id="{{ c.id }}"
+                    data-move-label="Captions {{ c.id[:8] }} ({{ c.created_at.strftime('%Y-%m-%d %H:%M') if c.created_at else '?' }})"
+                    onclick="window.moveStepToProject && moveStepToProject(this.dataset.moveKind, this.dataset.moveId, this.dataset.moveLabel)">New project</button>
+            {% elif csv == "failed" %}
+            <button type="button" class="btn btn-sm btn-warning"
+                    onclick="retryCaption('{{ c.id }}', '{{ run_id }}')">Retry</button>
+            {% endif %}
+            {% if csv in ("done", "failed") %}
+            <button type="button" class="btn btn-sm btn-danger"
+                    onclick="deleteCaption('{{ c.id }}', '{{ run_id }}')">Delete</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+function retryCaption(captionId, runId) {
+  fetch('/api/v2/captions/' + encodeURIComponent(captionId) + '/retry', { method: 'POST' })
+    .then(function (r) {
+      if (r.ok) {
+        if (window.htmx) {
+          htmx.ajax('GET', '/v2/runs/' + encodeURIComponent(runId) + '/captions-fragment', {
+            target: '#captions-content', swap: 'innerHTML',
+          });
+        } else {
+          location.reload();
+        }
+      } else {
+        return r.json().then(function (b) { alert('Error: ' + (b.detail || r.status)); });
+      }
+    })
+    .catch(function (e) { alert('Network error: ' + e); });
+}
+
+function deleteCaption(captionId, runId) {
+  if (!confirm('Delete this caption job? The video file is removed from the server; the Google Drive copy and any sheet rows stay.')) return;
+  fetch('/api/v2/captions/' + encodeURIComponent(captionId), { method: 'DELETE' })
+    .then(function (r) {
+      if (r.ok) {
+        if (window.htmx) {
+          htmx.ajax('GET', '/v2/runs/' + encodeURIComponent(runId) + '/captions-fragment', {
+            target: '#captions-content', swap: 'innerHTML',
+          });
+        } else {
+          location.reload();
+        }
+      } else {
+        return r.json().then(function (b) { alert('Error: ' + (b.detail || r.status)); });
+      }
+    })
+    .catch(function (e) { alert('Network error: ' + e); });
+}
+
+/* Caption export function — guarded against redefinition from HTMX re-renders */
+window.captionExportToSheet = window.captionExportToSheet || function (btn) {
+  var captionId = btn.dataset.captionId;
+  if (!captionId) return;
+  if (!confirm('Add this caption to the Final Creatives sheet?')) return;
+  btn.disabled = true;
+  var origText = btn.textContent;
+  btn.textContent = 'Adding…';
+  fetch('/api/v2/captions/' + encodeURIComponent(captionId) + '/export-to-sheet', { method: 'POST' })
+    .then(function (resp) {
+      return resp.json().then(function (body) { return { ok: resp.ok, body: body }; });
+    })
+    .then(function (r) {
+      if (r.ok) {
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-success');
+        btn.textContent = '✓ Creatives';
+        btn.title = 'Already logged to the Final Creatives sheet';
+      } else {
+        btn.disabled = false;
+        btn.textContent = origText;
+        alert('Error: ' + ((r.body && r.body.detail) || 'request failed'));
+      }
+    })
+    .catch(function (err) {
+      btn.disabled = false;
+      btn.textContent = origText;
+      alert('Network error: ' + err);
+    });
+};
+</script>
+{% endif %}

@@ -1,0 +1,24 @@
+{# Compact "where did this video come from" cell, shared by the v2 projects
+   dashboard and the overlay project list (both fall back to templates/, see
+   web_v2.py / web_overlay.py). The full source_ref is always kept in the hover
+   title — the visible text is a one-glance marker of the KIND of source, so the
+   column stays narrow instead of eating 240px of pasted Drive URL:
+
+     • a run's short id — this project was started from a finished run's final
+       video (POST /runs/{rid}/move-to-project). Tested FIRST because such a
+       project owns a copy of the file and is therefore stored as
+       source_type="upload": the source_type test below would call it a plain
+       operator upload.
+     • "GD"   — a pasted Google Drive link (source_type="gdrive").
+     • "file" — an operator's own upload, including the crop children made by
+       "extract insert" (they carry the parent's file, not a run's).
+#}
+{% macro source_cell(project) -%}
+{%- if project.source_run_id -%}
+<code style="font-size:11px; cursor:help" title="{{ project.source_ref }}">{{ project.source_run_id[:8] }}</code>
+{%- elif project.source_type == "gdrive" -%}
+<span style="cursor:help" title="{{ project.source_ref }}">GD</span>
+{%- else -%}
+<span style="cursor:help" title="{{ project.source_ref }}">file</span>
+{%- endif -%}
+{%- endmacro %}

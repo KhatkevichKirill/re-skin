@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1
+ARG PYTHON_IMAGE=python:3.12.15-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+FROM ${PYTHON_IMAGE}
+
+# Use the production dependency lock, selecting only Pydantic's dependency
+# closure. JPEG envelopes are checked without a native image decoder. No provider
+# SDK, database client or application config is copied.
+COPY backend/requirements.lock /tmp/production.lock
+RUN python - <<'PY'
+import re
+from pathlib import Path
+names = {'pydantic', 'pydantic-core', 'annotated-types', 'typing-extensions', 'typing-inspection'}
+blocks = re.split(r'(?=^[a-zA-Z0-9][a-zA-Z0-9_.-]*==)', Path('/tmp/production.lock').read_text(), flags=re.M)
+selected = [block for block in blocks if block.split('==', 1)[0] in names]
+assert len(selected) == len(names)
+Path('/tmp/runner.lock').write_text(''.join(selected))
+PY
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r /tmp/runner.lock \
+    && rm /tmp/runner.lock /tmp/production.lock
+
+# The native named build context is the preverified administrator binary tree,
+# never an auth/config directory. Requalification is required to change bytes.
+COPY --from=assistant_native claude /opt/reskin-assistant/bin/claude
+RUN echo '4d704a8aecbe038affa3000f498ae17c1b4f753add8facb8764120affc99b658  /opt/reskin-assistant/bin/claude' | sha256sum -c - \
+    && chmod 0755 /opt/reskin-assistant/bin/claude \
+    && /opt/reskin-assistant/bin/claude --version \
+    && groupadd --gid 998 reskin-assistant \
+    && useradd --uid 999 --gid 998 --home-dir /home/reskin-assistant --create-home --shell /usr/sbin/nologin reskin-assistant \
+    && install -d -o 999 -g 998 -m 0700 /config /state /work \
+    && install -d -o 999 -g 998 -m 0755 /socket \
+    && install -d -m 0755 /egress /runtime/app
+COPY backend/app/__init__.py backend/app/assistant_contracts.py backend/app/assistant_agent_contracts.py backend/app/assistant_images.py backend/app/assistant_planner.py backend/app/assistant_broker.py backend/app/assistant_broker_client.py backend/app/assistant_egress.py /runtime/app/
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/runtime
+WORKDIR /runtime
+USER 999:998
+ENTRYPOINT ["python", "-m", "app.assistant_broker"]

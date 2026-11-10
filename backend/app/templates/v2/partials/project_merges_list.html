@@ -1,0 +1,77 @@
+{% from "error_detail.html" import error_detail %}
+{% if merges %}
+<div
+  class="card"
+  id="merges-card"
+  {% if merges_active %}
+  hx-get="/v2/projects/{{ project_id }}/merges-fragment"
+  hx-trigger="every 3s"
+  hx-target="#project-merges-content"
+  hx-swap="innerHTML"
+  {% endif %}
+>
+  <div class="card-header"><h2>Merges</h2></div>
+  <div class="card-body">
+    <table>
+      <thead>
+        <tr>
+          <th>Source run</th>
+          <th>Placement</th>
+          <th>Time window</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in merges %}
+        {% set msv = m.status.value if m.status.value is defined else m.status|string %}
+        <tr>
+          <td>
+            <a href="/v2/runs/{{ m.child_run_id }}">Run <code style="font-size:11px">{{ m.child_run_id[:8] }}</code></a>
+          </td>
+          <td>{{ m.width }}&times;{{ m.height }} @ ({{ m.x }}, {{ m.y }})
+            {% if m.corner_radius_px %}<span class="text-muted">&middot; radius {{ m.corner_radius_px }}px</span>{% endif %}
+          </td>
+          <td>{{ "%.1f"|format(m.start_sec) }}&ndash;{{ "%.1f"|format(m.end_sec) }}s</td>
+          <td>
+            <span class="badge badge-{{ msv }}">{{ msv }}</span>
+            {% if msv == "failed" and m.error_message %}
+            <div style="font-size:11px;color:#c00;margin-top:2px">
+              {{ error_detail(m.error_message, 120) }}
+            </div>
+            {% endif %}
+          </td>
+          <td class="text-right">
+            {% if msv == "done" and m.gdrive_url %}
+            <a class="btn btn-sm btn-secondary" href="{{ m.gdrive_url }}" target="_blank" rel="noopener">Open in Drive</a>
+            {% elif msv == "failed" %}
+            <button type="button" class="btn btn-sm btn-warning" onclick="retryProjectMerge('{{ m.id }}', '{{ project_id }}')">Retry</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+function retryProjectMerge(mergeId, projectId) {
+  fetch('/api/v2/merges/' + encodeURIComponent(mergeId) + '/retry', { method: 'POST' })
+    .then(function (r) {
+      if (r.ok) {
+        if (window.htmx) {
+          htmx.ajax('GET', '/v2/projects/' + encodeURIComponent(projectId) + '/merges-fragment', {
+            target: '#project-merges-content', swap: 'innerHTML',
+          });
+        } else {
+          location.reload();
+        }
+      } else {
+        return r.json().then(function (b) { alert('Error: ' + (b.detail || r.status)); });
+      }
+    })
+    .catch(function (e) { alert('Network error: ' + e); });
+}
+</script>
+{% endif %}

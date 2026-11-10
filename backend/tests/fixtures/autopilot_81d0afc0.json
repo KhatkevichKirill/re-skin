@@ -1,0 +1,2782 @@
+{
+ "_source": "prod read-only 2026-11-03: autopilot ff218831 (project 81d0afc0, run d46bb1b8), clean step as of 13:44 (QA effect c858675b after the free re-stitch); identities = stat of the result files; answers = their status at 13:44 (operator:/stop:/eye: cards pending from before the re-stitch, answered only at 19:20)",
+ "answers": [
+  [
+   "redeliver_failed:4b6267504eaa",
+   "superseded",
+   null,
+   null
+  ],
+  [
+   "inconclusive:38d0fbce",
+   "consumed",
+   "approve",
+   "accept"
+  ],
+  [
+   "inconclusive:4ea82906",
+   "consumed",
+   "approve",
+   "accept"
+  ],
+  [
+   "operator:8b366754-55cd-482f-ae0f-edbe9e4e91c3:c465c105",
+   "pending",
+   null,
+   null
+  ],
+  [
+   "operator:53282712-fee2-455c-a265-3255ac8593da:d85157c5",
+   "pending",
+   null,
+   null
+  ],
+  [
+   "operator:e5244b94-45c2-4ef3-b0a7-afd8bbdf0bde:7db1b707",
+   "pending",
+   null,
+   null
+  ],
+  [
+   "operator:33169d73-a9d4-4da3-9d48-355c929f0266:2448fbf3",
+   "pending",
+   null,
+   null
+  ],
+  [
+   "operator:3f476146-7546-471e-b91c-d3c2767b8b12:05362c0a",
+   "pending",
+   null,
+   null
+  ],
+  [
+   "stop:027778d1-a07b-4b2e-adc1-83214c8ad62c",
+   "pending",
+   null,
+   null
+  ],
+  [
+   "operator:f1c81b27-20f7-4264-b0d1-b743d85a96ed:9dc7f63e",
+   "pending",
+   null,
+   null
+  ],
+  [
+   "stop:1d5ad9a5-8bc9-48c7-b82f-3bf7b347f05d",
+   "pending",
+   null,
+   null
+  ],
+  [
+   "eye:f8c5aef0-c960-4171-bce4-36999431748c",
+   "pending",
+   null,
+   null
+  ],
+  [
+   "operator:a93e9435-2361-42be-80b1-db74efe67965:d4b96d9a",
+   "pending",
+   null,
+   null
+  ]
+ ],
+ "identities": {
+  "028224c3-0d32-4a50-ac11-fc8e5c642a8e": [
+   64513,
+   2574125,
+   6724413,
+   1793671395635705886
+  ],
+  "33169d73-a9d4-4da3-9d48-355c929f0266": [
+   64513,
+   2086130,
+   3103263,
+   1793649946047212244
+  ],
+  "3f476146-7546-471e-b91c-d3c2767b8b12": [
+   64513,
+   2086131,
+   3322040,
+   1793649946259213778
+  ],
+  "53282712-fee2-455c-a265-3255ac8593da": [
+   64513,
+   2086128,
+   3201935,
+   1793649944527201241
+  ],
+  "5813ca9d-6904-4f29-8d22-4a9808a199f9": [
+   64513,
+   2086126,
+   2879828,
+   1793649942251184767
+  ],
+  "8b366754-55cd-482f-ae0f-edbe9e4e91c3": [
+   64513,
+   2086127,
+   2559003,
+   1793649942275184941
+  ],
+  "9fd9e7e7-2f90-4840-8fcd-b43a8b326f39": [
+   64513,
+   2574138,
+   10012465,
+   1793672737902343877
+  ],
+  "a93e9435-2361-42be-80b1-db74efe67965": [
+   64513,
+   2086135,
+   2690482,
+   1793650083600207860
+  ],
+  "e5244b94-45c2-4ef3-b0a7-afd8bbdf0bde": [
+   64513,
+   2086129,
+   3231115,
+   1793649945031204889
+  ],
+  "e9168a6e-bf67-4694-b08e-f5888eb08d0d": [
+   64513,
+   2574148,
+   10091997,
+   1793675872177818839
+  ],
+  "f1c81b27-20f7-4264-b0d1-b743d85a96ed": [
+   64513,
+   2086133,
+   3950893,
+   1793649998527592098
+  ]
+ },
+ "jobs": [
+  {
+   "box_source": "measured",
+   "created_at": "2026-11-03T01:07:38.683402",
+   "estimated_usd": 0.1,
+   "job_id": "f8c5aef0-c960-4171-bce4-36999431748c",
+   "mask_box": [
+    0.3015,
+    0.6519,
+    0.7059,
+    0.7263
+   ],
+   "provider_task_id": "99630c01-34b6-4ada-8db3-122fad356f6a",
+   "run_segment_id": "028224c3-0d32-4a50-ac11-fc8e5c642a8e",
+   "status": "applied"
+  },
+  {
+   "box_source": "measured",
+   "created_at": "2026-11-03T02:10:48.919096",
+   "estimated_usd": 0.1,
+   "job_id": "1d5ad9a5-8bc9-48c7-b82f-3bf7b347f05d",
+   "mask_box": [
+    0.2756,
+    0.6519,
+    0.7541,
+    0.7263
+   ],
+   "provider_task_id": "464933b6-bc55-4b0d-bd8b-ac3699c4a8c2",
+   "run_segment_id": "9fd9e7e7-2f90-4840-8fcd-b43a8b326f39",
+   "status": "applied"
+  },
+  {
+   "box_source": "measured",
+   "created_at": "2026-11-03T02:24:16.884367",
+   "error_code": "stale_preview",
+   "estimated_usd": 0.1,
+   "job_id": "eda8c828-65ec-459e-b572-570072f51e0e",
+   "mask_box": [
+    0.2237,
+    0.6477,
+    0.7504,
+    0.7263
+   ],
+   "provider_task_id": null,
+   "run_segment_id": "f1c81b27-20f7-4264-b0d1-b743d85a96ed",
+   "status": "canceled"
+  },
+  {
+   "box_source": "measured",
+   "created_at": "2026-11-03T02:58:51.524163",
+   "estimated_usd": 0.1,
+   "job_id": "027778d1-a07b-4b2e-adc1-83214c8ad62c",
+   "mask_box": [
+    0.1719,
+    0.6519,
+    0.7596,
+    0.7263
+   ],
+   "provider_task_id": "acc211af-7331-4a0c-962c-e6f72bc92c13",
+   "run_segment_id": "e9168a6e-bf67-4694-b08e-f5888eb08d0d",
+   "status": "applied"
+  }
+ ],
+ "project_id": "81d0afc0-487d-4813-912f-1947092d68ed",
+ "qa_effect_c858675b": {
+  "actionable": true,
+  "detector_sha": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+  "fill": {
+   "actionable": true,
+   "active_fill": null,
+   "after_next": "one fill at a time: after this request, poll GET /api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill and run qa again; after a fill is delivered, run qa again rather than continuing this proposal",
+   "approval_required": true,
+   "cost": {
+    "currency": "USD",
+    "expected_usd_per_segment": 0.05,
+    "expected_usd_total": 0.35,
+    "kie_credits": 0,
+    "note": "reserve = what the spend cap holds and approved_usd must cover; expected = the observed Fal charge; the same call, not a sum",
+    "reserve_usd_per_segment": 0.1,
+    "reserve_usd_total": 0.7,
+    "segments": 7
+   },
+   "endpoint": "fal-ai/void-video-inpainting",
+   "model": "void",
+   "next": {
+    "index": 0,
+    "request": {
+     "body": {},
+     "method": "POST",
+     "paid": false,
+     "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/8b366754-55cd-482f-ae0f-edbe9e4e91c3/fill/preview"
+    },
+    "run_segment_id": "8b366754-55cd-482f-ae0f-edbe9e4e91c3",
+    "state": "propose_preview"
+   },
+   "not_actionable_reason": null,
+   "on_visual_reject": [
+    {
+     "fill_job_id": "1d5ad9a5-8bc9-48c7-b82f-3bf7b347f05d",
+     "index": 8,
+     "options": [
+      {
+       "available": false,
+       "endpoint": "fal-ai/ltx-2.3-quality/inpaint",
+       "note": "same mask, judged slightly cleaner by eye (AICP-354); not a platform endpoint yet: by hand",
+       "option": "ltx_inpaint",
+       "usd_estimate": [
+        0.41,
+        0.54
+       ]
+      },
+      {
+       "executable": false,
+       "note": "puts back the output the fill replaced (its captions too)",
+       "option": "restore_previous_take",
+       "paid": false,
+       "request": {
+        "body": {
+         "discard_audio_patch": false,
+         "takes": [
+          "17746057-6d54-46b1-9d7f-f7e86c717035"
+         ]
+        },
+        "method": "POST",
+        "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/restore"
+       }
+      },
+      {
+       "executable": false,
+       "option": "accept",
+       "paid": false
+      },
+      {
+       "executable": false,
+       "option": "omni_rerun",
+       "see": "operator_options.omni_rerun"
+      }
+     ],
+     "run_segment_id": "9fd9e7e7-2f90-4840-8fcd-b43a8b326f39"
+    },
+    {
+     "fill_job_id": "f8c5aef0-c960-4171-bce4-36999431748c",
+     "index": 9,
+     "options": [
+      {
+       "available": false,
+       "endpoint": "fal-ai/ltx-2.3-quality/inpaint",
+       "note": "same mask, judged slightly cleaner by eye (AICP-354); not a platform endpoint yet: by hand",
+       "option": "ltx_inpaint",
+       "usd_estimate": [
+        0.41,
+        0.54
+       ]
+      },
+      {
+       "executable": false,
+       "note": "puts back the output the fill replaced (its captions too)",
+       "option": "restore_previous_take",
+       "paid": false,
+       "request": {
+        "body": {
+         "discard_audio_patch": false,
+         "takes": [
+          "f99094d1-1755-4fb6-9009-d25ecc976a75"
+         ]
+        },
+        "method": "POST",
+        "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/restore"
+       }
+      },
+      {
+       "executable": false,
+       "option": "accept",
+       "paid": false
+      },
+      {
+       "executable": false,
+       "option": "omni_rerun",
+       "see": "operator_options.omni_rerun"
+      }
+     ],
+     "run_segment_id": "028224c3-0d32-4a50-ac11-fc8e5c642a8e"
+    }
+   ],
+   "order": [
+    0,
+    2,
+    3,
+    4,
+    5,
+    7,
+    10
+   ],
+   "run_blockers": [],
+   "segments": [
+    {
+     "ambiguous": [],
+     "blockers": [],
+     "cost": {
+      "currency": "USD",
+      "expected_usd": 0.05,
+      "kie_credits": 0,
+      "reserve_usd": 0.1
+     },
+     "end_sec": 6.717,
+     "expected_mask_box": [
+      0.283,
+      0.6519,
+      0.717,
+      0.7263
+     ],
+     "fill_history": [],
+     "index": 0,
+     "leftovers": [
+      {
+       "box": [
+        0.376,
+        0.672,
+        0.626,
+        0.701
+       ],
+       "end_sec": 3.7,
+       "frames": 7,
+       "max_score": 542,
+       "start_sec": 3.1
+      },
+      {
+       "box": [
+        0.459,
+        0.672,
+        0.548,
+        0.701
+       ],
+       "end_sec": 5.5,
+       "frames": 4,
+       "max_score": 204,
+       "start_sec": 5.2
+      }
+     ],
+     "prechecked": true,
+     "request": {
+      "body": {},
+      "method": "POST",
+      "paid": false,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/8b366754-55cd-482f-ae0f-edbe9e4e91c3/fill/preview"
+     },
+     "result_kind": "model",
+     "run_segment_id": "8b366754-55cd-482f-ae0f-edbe9e4e91c3",
+     "start_sec": 0.0,
+     "state": "propose_preview",
+     "then": {
+      "body": {
+       "approved_usd": 0.1,
+       "discard_audio_patch": false
+      },
+      "executable": false,
+      "fill_id_from": "the preview response's id",
+      "method": "POST",
+      "paid": true,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/{fill_id}/start",
+      "requires": [
+       "poll GET /api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill until this job is 'ready' (or 'failed')",
+       "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+       "estimated_usd <= the approved reservation (else ask again)",
+       "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+      ],
+      "step": "start"
+     },
+     "timing": {
+      "beyond_search": false,
+      "index": 0,
+      "offset_frames": 0.0,
+      "points": 12,
+      "status": "in_sync"
+     },
+     "why": "leftover"
+    },
+    {
+     "ambiguous": [],
+     "blockers": [],
+     "cost": {
+      "currency": "USD",
+      "expected_usd": 0.05,
+      "kie_credits": 0,
+      "reserve_usd": 0.1
+     },
+     "end_sec": 22.905,
+     "expected_mask_box": [
+      0.2793,
+      0.6519,
+      0.7448,
+      0.721
+     ],
+     "fill_history": [],
+     "index": 2,
+     "leftovers": [
+      {
+       "box": [
+        0.311,
+        0.672,
+        0.691,
+        0.701
+       ],
+       "end_sec": 20.3,
+       "frames": 19,
+       "max_score": 826,
+       "start_sec": 18.5
+      }
+     ],
+     "prechecked": true,
+     "request": {
+      "body": {},
+      "method": "POST",
+      "paid": false,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/53282712-fee2-455c-a265-3255ac8593da/fill/preview"
+     },
+     "result_kind": "model",
+     "run_segment_id": "53282712-fee2-455c-a265-3255ac8593da",
+     "start_sec": 13.433,
+     "state": "propose_preview",
+     "then": {
+      "body": {
+       "approved_usd": 0.1,
+       "discard_audio_patch": false
+      },
+      "executable": false,
+      "fill_id_from": "the preview response's id",
+      "method": "POST",
+      "paid": true,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/{fill_id}/start",
+      "requires": [
+       "poll GET /api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill until this job is 'ready' (or 'failed')",
+       "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+       "estimated_usd <= the approved reservation (else ask again)",
+       "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+      ],
+      "step": "start"
+     },
+     "timing": {
+      "beyond_search": false,
+      "index": 2,
+      "offset_frames": -1.0,
+      "points": 18,
+      "status": "in_sync"
+     },
+     "why": "leftover"
+    },
+    {
+     "ambiguous": [
+      {
+       "edge": "end",
+       "neighbour": 4,
+       "span": {
+        "box": [
+         0.387,
+         0.672,
+         0.613,
+         0.701
+        ],
+        "end_sec": 32.3,
+        "frames": 7,
+        "max_score": 447,
+        "start_sec": 31.7
+       }
+      }
+     ],
+     "blockers": [],
+     "cost": {
+      "currency": "USD",
+      "expected_usd": 0.05,
+      "kie_credits": 0,
+      "reserve_usd": 0.1
+     },
+     "end_sec": 32.376,
+     "expected_mask_box": [
+      0.257,
+      0.6519,
+      0.7467,
+      0.721
+     ],
+     "fill_history": [],
+     "index": 3,
+     "leftovers": [
+      {
+       "box": [
+        0.396,
+        0.672,
+        0.594,
+        0.701
+       ],
+       "end_sec": 31.1,
+       "frames": 11,
+       "max_score": 436,
+       "start_sec": 30.1
+      },
+      {
+       "box": [
+        0.387,
+        0.672,
+        0.613,
+        0.701
+       ],
+       "end_sec": 32.3,
+       "frames": 7,
+       "max_score": 447,
+       "start_sec": 31.7
+      }
+     ],
+     "prechecked": true,
+     "request": {
+      "body": {},
+      "method": "POST",
+      "paid": false,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/e5244b94-45c2-4ef3-b0a7-afd8bbdf0bde/fill/preview"
+     },
+     "result_kind": "model",
+     "run_segment_id": "e5244b94-45c2-4ef3-b0a7-afd8bbdf0bde",
+     "start_sec": 22.905,
+     "state": "propose_preview",
+     "then": {
+      "body": {
+       "approved_usd": 0.1,
+       "discard_audio_patch": false
+      },
+      "executable": false,
+      "fill_id_from": "the preview response's id",
+      "method": "POST",
+      "paid": true,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/{fill_id}/start",
+      "requires": [
+       "poll GET /api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill until this job is 'ready' (or 'failed')",
+       "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+       "estimated_usd <= the approved reservation (else ask again)",
+       "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+      ],
+      "step": "start"
+     },
+     "timing": {
+      "beyond_search": false,
+      "index": 3,
+      "offset_frames": 1.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     "why": "leftover"
+    },
+    {
+     "ambiguous": [
+      {
+       "edge": "start",
+       "neighbour": 3,
+       "span": {
+        "box": [
+         0.409,
+         0.672,
+         0.587,
+         0.701
+        ],
+        "end_sec": 32.7,
+        "frames": 4,
+        "max_score": 395,
+        "start_sec": 32.4
+       }
+      }
+     ],
+     "blockers": [],
+     "cost": {
+      "currency": "USD",
+      "expected_usd": 0.05,
+      "kie_credits": 0,
+      "reserve_usd": 0.1
+     },
+     "end_sec": 41.848,
+     "expected_mask_box": [
+      0.2737,
+      0.6519,
+      0.7059,
+      0.7263
+     ],
+     "fill_history": [],
+     "index": 4,
+     "leftovers": [
+      {
+       "box": [
+        0.409,
+        0.672,
+        0.587,
+        0.701
+       ],
+       "end_sec": 32.7,
+       "frames": 4,
+       "max_score": 395,
+       "start_sec": 32.4
+      },
+      {
+       "box": [
+        0.328,
+        0.67,
+        0.676,
+        0.702
+       ],
+       "end_sec": 41.7,
+       "frames": 39,
+       "max_score": 781,
+       "start_sec": 37.0
+      }
+     ],
+     "prechecked": true,
+     "request": {
+      "body": {},
+      "method": "POST",
+      "paid": false,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/33169d73-a9d4-4da3-9d48-355c929f0266/fill/preview"
+     },
+     "result_kind": "model",
+     "run_segment_id": "33169d73-a9d4-4da3-9d48-355c929f0266",
+     "start_sec": 32.376,
+     "state": "propose_preview",
+     "then": {
+      "body": {
+       "approved_usd": 0.1,
+       "discard_audio_patch": false
+      },
+      "executable": false,
+      "fill_id_from": "the preview response's id",
+      "method": "POST",
+      "paid": true,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/{fill_id}/start",
+      "requires": [
+       "poll GET /api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill until this job is 'ready' (or 'failed')",
+       "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+       "estimated_usd <= the approved reservation (else ask again)",
+       "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+      ],
+      "step": "start"
+     },
+     "timing": {
+      "beyond_search": false,
+      "index": 4,
+      "offset_frames": 0.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     "why": "leftover"
+    },
+    {
+     "ambiguous": [],
+     "blockers": [],
+     "cost": {
+      "currency": "USD",
+      "expected_usd": 0.05,
+      "kie_credits": 0,
+      "reserve_usd": 0.1
+     },
+     "end_sec": 51.319,
+     "expected_mask_box": [
+      0.2348,
+      0.6477,
+      0.7893,
+      0.7263
+     ],
+     "fill_history": [],
+     "index": 5,
+     "leftovers": [
+      {
+       "box": [
+        0.287,
+        0.672,
+        0.715,
+        0.701
+       ],
+       "end_sec": 43.7,
+       "frames": 12,
+       "max_score": 915,
+       "start_sec": 42.6
+      },
+      {
+       "box": [
+        0.378,
+        0.672,
+        0.62,
+        0.701
+       ],
+       "end_sec": 47.5,
+       "frames": 16,
+       "max_score": 553,
+       "start_sec": 46.0
+      },
+      {
+       "box": [
+        0.411,
+        0.672,
+        0.589,
+        0.701
+       ],
+       "end_sec": 51.2,
+       "frames": 10,
+       "max_score": 387,
+       "start_sec": 50.3
+      }
+     ],
+     "prechecked": true,
+     "request": {
+      "body": {},
+      "method": "POST",
+      "paid": false,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/3f476146-7546-471e-b91c-d3c2767b8b12/fill/preview"
+     },
+     "result_kind": "model",
+     "run_segment_id": "3f476146-7546-471e-b91c-d3c2767b8b12",
+     "start_sec": 41.848,
+     "state": "propose_preview",
+     "then": {
+      "body": {
+       "approved_usd": 0.1,
+       "discard_audio_patch": false
+      },
+      "executable": false,
+      "fill_id_from": "the preview response's id",
+      "method": "POST",
+      "paid": true,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/{fill_id}/start",
+      "requires": [
+       "poll GET /api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill until this job is 'ready' (or 'failed')",
+       "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+       "estimated_usd <= the approved reservation (else ask again)",
+       "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+      ],
+      "step": "start"
+     },
+     "timing": {
+      "beyond_search": false,
+      "index": 5,
+      "offset_frames": 1.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     "why": "leftover"
+    },
+    {
+     "ambiguous": [],
+     "blockers": [],
+     "end_sec": 60.79,
+     "expected_mask_box": [
+      0.1719,
+      0.6519,
+      0.7596,
+      0.7263
+     ],
+     "fill_history": [
+      {
+       "approved_usd": 0.1,
+       "basis": "model_result",
+       "block_task": "b83ec06e9410f66baad02e99ad74c650",
+       "box_source": "measured",
+       "clip_path": null,
+       "created_at": "2026-11-03T02:58:51.524163",
+       "default_prompt": true,
+       "error_code": null,
+       "error_message": null,
+       "estimated_usd": 0.1,
+       "frames_masked": 285,
+       "job_id": "027778d1-a07b-4b2e-adc1-83214c8ad62c",
+       "mask_box": [
+        0.1719,
+        0.6519,
+        0.7596,
+        0.7263
+       ],
+       "preview_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segment_fills/027778d1-a07b-4b2e-adc1-83214c8ad62c/prep-a095177592bc4e0ab8cb03ce445876f9/preview.jpg",
+       "preview_url": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/027778d1-a07b-4b2e-adc1-83214c8ad62c/preview.jpg",
+       "provider_status": "done",
+       "provider_task_id": "acc211af-7331-4a0c-962c-e6f72bc92c13",
+       "reservation_held": false,
+       "source_as_is": false,
+       "source_as_is_reason": null,
+       "stale": null,
+       "status": "applied"
+      }
+     ],
+     "fill_job_id": "027778d1-a07b-4b2e-adc1-83214c8ad62c",
+     "index": 6,
+     "leftovers": [
+      {
+       "box": [
+        0.759,
+        0.672,
+        0.802,
+        0.701
+       ],
+       "end_sec": 55.1,
+       "frames": 4,
+       "max_score": 82,
+       "start_sec": 54.7
+      }
+     ],
+     "options": [
+      {
+       "cost": {
+        "currency": "USD",
+        "expected_usd": 0.05,
+        "kie_credits": 0,
+        "reserve_usd": 0.1
+       },
+       "executable": false,
+       "mask_box": [
+        0.1419,
+        0.6319,
+        0.832,
+        0.7463
+       ],
+       "note": "a wider box does not make the glyph mask catch a ghost; only for edge letters outside the old box",
+       "option": "widen_mask",
+       "paid": true,
+       "request": {
+        "body": {
+         "mask_box": [
+          0.1419,
+          0.6319,
+          0.832,
+          0.7463
+         ]
+        },
+        "method": "POST",
+        "paid": false,
+        "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/e9168a6e-bf67-4694-b08e-f5888eb08d0d/fill/preview"
+       },
+       "second_paid_attempt": true,
+       "then": {
+        "body": {
+         "approved_usd": 0.1,
+         "discard_audio_patch": false
+        },
+        "executable": false,
+        "fill_id_from": "the preview response's id",
+        "method": "POST",
+        "paid": true,
+        "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/{fill_id}/start",
+        "requires": [
+         "poll GET /api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill until this job is 'ready' (or 'failed')",
+         "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+         "estimated_usd <= the approved reservation (else ask again)",
+         "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+        ],
+        "step": "start"
+       }
+      },
+      {
+       "available": false,
+       "endpoint": "fal-ai/ltx-2.3-quality/inpaint",
+       "note": "same mask, judged slightly cleaner by eye (AICP-354); not a platform endpoint yet: by hand",
+       "option": "ltx_inpaint",
+       "usd_estimate": [
+        0.41,
+        0.54
+       ]
+      },
+      {
+       "box": [
+        0.749,
+        0.662,
+        0.812,
+        0.711
+       ],
+       "executable": false,
+       "manual": true,
+       "note": "ffmpeg delogo over that box and time window, for a small leftover on a plain background (flow step 6); no endpoint",
+       "option": "delogo",
+       "paid": false,
+       "windows": [
+        [
+         54.7,
+         55.1
+        ]
+       ]
+      },
+      {
+       "executable": false,
+       "note": "puts back the output the fill replaced (its captions too)",
+       "option": "restore_previous_take",
+       "paid": false,
+       "request": {
+        "body": {
+         "discard_audio_patch": false,
+         "takes": [
+          "c159ff37-b4f4-47ad-bea4-31c4b3ef67ad"
+         ]
+        },
+        "method": "POST",
+        "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/restore"
+       }
+      },
+      {
+       "executable": false,
+       "option": "accept",
+       "paid": false
+      },
+      {
+       "executable": false,
+       "option": "omni_rerun",
+       "see": "operator_options.omni_rerun"
+      }
+     ],
+     "prechecked": true,
+     "reason": "the result is already a VOID composite and the detector still sees caption words: no automatic second fill",
+     "request": null,
+     "result_kind": "void_fill",
+     "run_segment_id": "e9168a6e-bf67-4694-b08e-f5888eb08d0d",
+     "start_sec": 51.319,
+     "state": "stop",
+     "timing": {
+      "beyond_search": false,
+      "index": 6,
+      "offset_frames": 0.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     "why": "leftover"
+    },
+    {
+     "ambiguous": [
+      {
+       "edge": "start",
+       "neighbour": 6,
+       "span": {
+        "box": [
+         0.526,
+         0.672,
+         0.722,
+         0.701
+        ],
+        "end_sec": 61.1,
+        "frames": 4,
+        "max_score": 414,
+        "start_sec": 60.8
+       }
+      },
+      {
+       "edge": "end",
+       "neighbour": 8,
+       "span": {
+        "box": [
+         0.411,
+         0.672,
+         0.676,
+         0.701
+        ],
+        "end_sec": 70.2,
+        "frames": 23,
+        "max_score": 505,
+        "start_sec": 68.0
+       }
+      }
+     ],
+     "blockers": [],
+     "cost": {
+      "currency": "USD",
+      "expected_usd": 0.05,
+      "kie_credits": 0,
+      "reserve_usd": 0.1
+     },
+     "end_sec": 70.262,
+     "expected_mask_box": [
+      0.2237,
+      0.6477,
+      0.7504,
+      0.7263
+     ],
+     "fill_history": [
+      {
+       "approved_usd": null,
+       "basis": "model_result",
+       "block_task": "145b4b1737fb8c67cd752edcbd74fe87",
+       "box_source": "measured",
+       "clip_path": null,
+       "created_at": "2026-11-03T02:24:16.884367",
+       "default_prompt": true,
+       "error_code": "stale_preview",
+       "error_message": "run.final_revision changed since the preview",
+       "estimated_usd": 0.1,
+       "frames_masked": 285,
+       "job_id": "eda8c828-65ec-459e-b572-570072f51e0e",
+       "mask_box": [
+        0.2237,
+        0.6477,
+        0.7504,
+        0.7263
+       ],
+       "preview_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segment_fills/eda8c828-65ec-459e-b572-570072f51e0e/prep-cdee8a55bf804b40ad40f175310ed2f1/preview.jpg",
+       "preview_url": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/eda8c828-65ec-459e-b572-570072f51e0e/preview.jpg",
+       "provider_status": null,
+       "provider_task_id": null,
+       "reservation_held": null,
+       "source_as_is": false,
+       "source_as_is_reason": null,
+       "stale": null,
+       "status": "canceled"
+      }
+     ],
+     "index": 7,
+     "leftovers": [
+      {
+       "box": [
+        0.526,
+        0.672,
+        0.722,
+        0.701
+       ],
+       "end_sec": 61.1,
+       "frames": 4,
+       "max_score": 414,
+       "start_sec": 60.8
+      },
+      {
+       "box": [
+        0.418,
+        0.672,
+        0.672,
+        0.701
+       ],
+       "end_sec": 63.6,
+       "frames": 11,
+       "max_score": 609,
+       "start_sec": 62.6
+      },
+      {
+       "box": [
+        0.411,
+        0.672,
+        0.676,
+        0.701
+       ],
+       "end_sec": 70.2,
+       "frames": 23,
+       "max_score": 505,
+       "start_sec": 68.0
+      }
+     ],
+     "prechecked": true,
+     "request": {
+      "body": {},
+      "method": "POST",
+      "paid": false,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/f1c81b27-20f7-4264-b0d1-b743d85a96ed/fill/preview"
+     },
+     "result_kind": "model",
+     "run_segment_id": "f1c81b27-20f7-4264-b0d1-b743d85a96ed",
+     "start_sec": 60.79,
+     "state": "propose_preview",
+     "then": {
+      "body": {
+       "approved_usd": 0.1,
+       "discard_audio_patch": false
+      },
+      "executable": false,
+      "fill_id_from": "the preview response's id",
+      "method": "POST",
+      "paid": true,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/{fill_id}/start",
+      "requires": [
+       "poll GET /api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill until this job is 'ready' (or 'failed')",
+       "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+       "estimated_usd <= the approved reservation (else ask again)",
+       "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+      ],
+      "step": "start"
+     },
+     "timing": {
+      "beyond_search": false,
+      "index": 7,
+      "offset_frames": 2.0,
+      "points": 17,
+      "status": "off"
+     },
+     "why": "leftover"
+    },
+    {
+     "ambiguous": [],
+     "blockers": [],
+     "cost": {
+      "currency": "USD",
+      "expected_usd": 0.05,
+      "kie_credits": 0,
+      "reserve_usd": 0.1
+     },
+     "end_sec": 94.833,
+     "expected_mask_box": [
+      0.0885,
+      0.4988,
+      0.9096,
+      0.7388
+     ],
+     "fill_history": [],
+     "index": 10,
+     "leftovers": [
+      {
+       "box": [
+        0.118,
+        0.607,
+        0.826,
+        0.688
+       ],
+       "end_sec": 94.7,
+       "frames": 42,
+       "max_score": 284,
+       "start_sec": 90.1
+      }
+     ],
+     "prechecked": true,
+     "request": {
+      "body": {},
+      "method": "POST",
+      "paid": false,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/a93e9435-2361-42be-80b1-db74efe67965/fill/preview"
+     },
+     "result_kind": "model",
+     "run_segment_id": "a93e9435-2361-42be-80b1-db74efe67965",
+     "start_sec": 85.633,
+     "state": "propose_preview",
+     "then": {
+      "body": {
+       "approved_usd": 0.1,
+       "discard_audio_patch": false
+      },
+      "executable": false,
+      "fill_id_from": "the preview response's id",
+      "method": "POST",
+      "paid": true,
+      "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/{fill_id}/start",
+      "requires": [
+       "poll GET /api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill until this job is 'ready' (or 'failed')",
+       "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+       "estimated_usd <= the approved reservation (else ask again)",
+       "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+      ],
+      "step": "start"
+     },
+     "timing": {
+      "beyond_search": false,
+      "index": 10,
+      "offset_frames": 0.0,
+      "points": 16,
+      "status": "in_sync"
+     },
+     "why": "leftover"
+    }
+   ],
+   "sequential": true,
+   "stop": [
+    {
+     "ambiguous": [],
+     "blockers": [],
+     "end_sec": 60.79,
+     "expected_mask_box": [
+      0.1719,
+      0.6519,
+      0.7596,
+      0.7263
+     ],
+     "fill_history": [
+      {
+       "approved_usd": 0.1,
+       "basis": "model_result",
+       "block_task": "b83ec06e9410f66baad02e99ad74c650",
+       "box_source": "measured",
+       "clip_path": null,
+       "created_at": "2026-11-03T02:58:51.524163",
+       "default_prompt": true,
+       "error_code": null,
+       "error_message": null,
+       "estimated_usd": 0.1,
+       "frames_masked": 285,
+       "job_id": "027778d1-a07b-4b2e-adc1-83214c8ad62c",
+       "mask_box": [
+        0.1719,
+        0.6519,
+        0.7596,
+        0.7263
+       ],
+       "preview_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segment_fills/027778d1-a07b-4b2e-adc1-83214c8ad62c/prep-a095177592bc4e0ab8cb03ce445876f9/preview.jpg",
+       "preview_url": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/027778d1-a07b-4b2e-adc1-83214c8ad62c/preview.jpg",
+       "provider_status": "done",
+       "provider_task_id": "acc211af-7331-4a0c-962c-e6f72bc92c13",
+       "reservation_held": false,
+       "source_as_is": false,
+       "source_as_is_reason": null,
+       "stale": null,
+       "status": "applied"
+      }
+     ],
+     "fill_job_id": "027778d1-a07b-4b2e-adc1-83214c8ad62c",
+     "index": 6,
+     "leftovers": [
+      {
+       "box": [
+        0.759,
+        0.672,
+        0.802,
+        0.701
+       ],
+       "end_sec": 55.1,
+       "frames": 4,
+       "max_score": 82,
+       "start_sec": 54.7
+      }
+     ],
+     "options": [
+      {
+       "cost": {
+        "currency": "USD",
+        "expected_usd": 0.05,
+        "kie_credits": 0,
+        "reserve_usd": 0.1
+       },
+       "executable": false,
+       "mask_box": [
+        0.1419,
+        0.6319,
+        0.832,
+        0.7463
+       ],
+       "note": "a wider box does not make the glyph mask catch a ghost; only for edge letters outside the old box",
+       "option": "widen_mask",
+       "paid": true,
+       "request": {
+        "body": {
+         "mask_box": [
+          0.1419,
+          0.6319,
+          0.832,
+          0.7463
+         ]
+        },
+        "method": "POST",
+        "paid": false,
+        "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/e9168a6e-bf67-4694-b08e-f5888eb08d0d/fill/preview"
+       },
+       "second_paid_attempt": true,
+       "then": {
+        "body": {
+         "approved_usd": 0.1,
+         "discard_audio_patch": false
+        },
+        "executable": false,
+        "fill_id_from": "the preview response's id",
+        "method": "POST",
+        "paid": true,
+        "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill/{fill_id}/start",
+        "requires": [
+         "poll GET /api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/fill until this job is 'ready' (or 'failed')",
+         "inspect the preview: mask_box covers expected_mask_box, preview sheet shows the caption masked and nothing else (face, phone screen)",
+         "estimated_usd <= the approved reservation (else ask again)",
+         "run qa again: it proposes this start for the ready job (state propose_start) only while the preview still matches the run"
+        ],
+        "step": "start"
+       }
+      },
+      {
+       "available": false,
+       "endpoint": "fal-ai/ltx-2.3-quality/inpaint",
+       "note": "same mask, judged slightly cleaner by eye (AICP-354); not a platform endpoint yet: by hand",
+       "option": "ltx_inpaint",
+       "usd_estimate": [
+        0.41,
+        0.54
+       ]
+      },
+      {
+       "box": [
+        0.749,
+        0.662,
+        0.812,
+        0.711
+       ],
+       "executable": false,
+       "manual": true,
+       "note": "ffmpeg delogo over that box and time window, for a small leftover on a plain background (flow step 6); no endpoint",
+       "option": "delogo",
+       "paid": false,
+       "windows": [
+        [
+         54.7,
+         55.1
+        ]
+       ]
+      },
+      {
+       "executable": false,
+       "note": "puts back the output the fill replaced (its captions too)",
+       "option": "restore_previous_take",
+       "paid": false,
+       "request": {
+        "body": {
+         "discard_audio_patch": false,
+         "takes": [
+          "c159ff37-b4f4-47ad-bea4-31c4b3ef67ad"
+         ]
+        },
+        "method": "POST",
+        "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/restore"
+       }
+      },
+      {
+       "executable": false,
+       "option": "accept",
+       "paid": false
+      },
+      {
+       "executable": false,
+       "option": "omni_rerun",
+       "see": "operator_options.omni_rerun"
+      }
+     ],
+     "prechecked": true,
+     "reason": "the result is already a VOID composite and the detector still sees caption words: no automatic second fill",
+     "request": null,
+     "result_kind": "void_fill",
+     "run_segment_id": "e9168a6e-bf67-4694-b08e-f5888eb08d0d",
+     "start_sec": 51.319,
+     "state": "stop",
+     "timing": {
+      "beyond_search": false,
+      "index": 6,
+      "offset_frames": 0.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     "why": "leftover"
+    }
+   ]
+  },
+  "handoff": {
+   "dirty_segments": [
+    0,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    10
+   ],
+   "reason": "the final is not clean yet",
+   "request": null
+  },
+  "operator_options": {
+   "omni_rerun": {
+    "approval_required": true,
+    "cost": {
+     "credits": 1344.0,
+     "credits_per_segment": 168.0,
+     "model": "gemini-omni",
+     "other_unfinished": 0,
+     "segments_billed": 8
+    },
+    "executable": false,
+    "note": "re-stitches the run and replaces the file behind its Drive link; previous outputs are kept as takes (free restore)",
+    "operator_option": true,
+    "request": {
+     "body": {
+      "discard_audio_patch": false,
+      "segments": [
+       {
+        "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.33\u20130.68, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+        "run_segment_id": "8b366754-55cd-482f-ae0f-edbe9e4e91c3"
+       },
+       {
+        "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.26\u20130.74, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+        "run_segment_id": "53282712-fee2-455c-a265-3255ac8593da"
+       },
+       {
+        "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.34\u20130.66, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+        "run_segment_id": "e5244b94-45c2-4ef3-b0a7-afd8bbdf0bde"
+       },
+       {
+        "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.28\u20130.73, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+        "run_segment_id": "33169d73-a9d4-4da3-9d48-355c929f0266"
+       },
+       {
+        "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.24\u20130.77, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+        "run_segment_id": "3f476146-7546-471e-b91c-d3c2767b8b12"
+       },
+       {
+        "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.71\u20130.85, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+        "run_segment_id": "e9168a6e-bf67-4694-b08e-f5888eb08d0d"
+       },
+       {
+        "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.36\u20130.77, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+        "run_segment_id": "f1c81b27-20f7-4264-b0d1-b743d85a96ed"
+       },
+       {
+        "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.07\u20130.88, y 0.57\u20130.73 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+        "run_segment_id": "a93e9435-2361-42be-80b1-db74efe67965"
+       }
+      ]
+     },
+     "method": "POST",
+     "path": "/api/v2/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segments/rerun"
+    },
+    "segments": [
+     {
+      "current_prompt_override": null,
+      "index": 0,
+      "outputs_so_far": 1,
+      "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.33\u20130.68, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+      "replaces_override": false,
+      "run_segment_id": "8b366754-55cd-482f-ae0f-edbe9e4e91c3",
+      "variant": "coordinate"
+     },
+     {
+      "current_prompt_override": null,
+      "index": 2,
+      "outputs_so_far": 1,
+      "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.26\u20130.74, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+      "replaces_override": false,
+      "run_segment_id": "53282712-fee2-455c-a265-3255ac8593da",
+      "variant": "coordinate"
+     },
+     {
+      "current_prompt_override": null,
+      "index": 3,
+      "outputs_so_far": 1,
+      "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.34\u20130.66, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+      "replaces_override": false,
+      "run_segment_id": "e5244b94-45c2-4ef3-b0a7-afd8bbdf0bde",
+      "variant": "coordinate"
+     },
+     {
+      "current_prompt_override": null,
+      "index": 4,
+      "outputs_so_far": 1,
+      "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.28\u20130.73, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+      "replaces_override": false,
+      "run_segment_id": "33169d73-a9d4-4da3-9d48-355c929f0266",
+      "variant": "coordinate"
+     },
+     {
+      "current_prompt_override": null,
+      "index": 5,
+      "outputs_so_far": 1,
+      "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.24\u20130.77, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+      "replaces_override": false,
+      "run_segment_id": "3f476146-7546-471e-b91c-d3c2767b8b12",
+      "variant": "coordinate"
+     },
+     {
+      "current_prompt_override": null,
+      "index": 6,
+      "outputs_so_far": 2,
+      "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.71\u20130.85, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+      "replaces_override": false,
+      "run_segment_id": "e9168a6e-bf67-4694-b08e-f5888eb08d0d",
+      "variant": "coordinate"
+     },
+     {
+      "current_prompt_override": null,
+      "index": 7,
+      "outputs_so_far": 1,
+      "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.36\u20130.77, y 0.63\u20130.74 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+      "replaces_override": false,
+      "run_segment_id": "f1c81b27-20f7-4264-b0d1-b743d85a96ed",
+      "variant": "coordinate"
+     },
+     {
+      "current_prompt_override": null,
+      "index": 10,
+      "outputs_so_far": 1,
+      "prompt": "Remove the burned-in caption: white text with a thin black outline, in the box x 0.07\u20130.88, y 0.57\u20130.73 of the frame. Change ONLY that box: reconstruct what is behind the text. Do not touch anything outside the box, do not change the phone screen, the character, the face, the lips, the background, lighting, framing or motion. Do not add any text. Do not add any audio.",
+      "replaces_override": false,
+      "run_segment_id": "a93e9435-2361-42be-80b1-db74efe67965",
+      "variant": "coordinate"
+     }
+    ],
+    "stop": [],
+    "why_not_proposed": "flow doc rule 1 / stop rule: a dirty segment gets a VOID fill, not another Omni take; send only on the operator's explicit request"
+   }
+  },
+  "out_dir": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512",
+  "qa": {
+   "alignment": {
+    "frame_count_delta": 0,
+    "in_sync": false,
+    "length_ok": true,
+    "max_abs_window_median": 13.0,
+    "points": 188
+   },
+   "band_location": {
+    "band_y": [
+     0.5,
+     0.72
+    ],
+    "location": {
+     "candidate_band_y": [
+      0.61,
+      0.77
+     ],
+     "competing": [],
+     "detector": {
+      "glyph_height_px": [
+       12,
+       60
+      ],
+      "outline_color": "#000000",
+      "outline_style": "outline",
+      "text_color": "#ffffff",
+      "threshold": 40
+     },
+     "fps": 2.0,
+     "frames": 190,
+     "lines_outside_band": 0.0,
+     "members": [
+      0
+     ],
+     "positions": [
+      {
+       "band_y": [
+        0.61,
+        0.77
+       ],
+       "caption_like": true,
+       "nonstatic_frames": 165,
+       "static_frames": 8,
+       "support": 0.8684,
+       "windows_hit": 5,
+       "y0_p5": 0.6719,
+       "y1_p95": 0.7063,
+       "y_range": [
+        0.68,
+        0.69
+       ]
+      },
+      {
+       "band_y": [
+        0.07,
+        0.23
+       ],
+       "caption_like": false,
+       "nonstatic_frames": 3,
+       "static_frames": 8,
+       "support": 0.0158,
+       "windows_hit": 1,
+       "y0_p5": 0.1208,
+       "y1_p95": 0.1729,
+       "y_range": [
+        0.14,
+        0.15
+       ]
+      },
+      {
+       "band_y": [
+        0.0,
+        0.16
+       ],
+       "caption_like": false,
+       "nonstatic_frames": 0,
+       "static_frames": 11,
+       "support": 0.0,
+       "windows_hit": 0,
+       "y0_p5": 0.0531,
+       "y1_p95": 0.0885,
+       "y_range": [
+        0.07,
+        0.08
+       ]
+      },
+      {
+       "band_y": [
+        0.29,
+        0.45
+       ],
+       "caption_like": false,
+       "nonstatic_frames": 0,
+       "static_frames": 11,
+       "support": 0.0,
+       "windows_hit": 0,
+       "y0_p5": 0.3594,
+       "y1_p95": 0.375,
+       "y_range": [
+        0.36,
+        0.37
+       ]
+      },
+      {
+       "band_y": [
+        0.46,
+        0.62
+       ],
+       "caption_like": false,
+       "nonstatic_frames": 0,
+       "static_frames": 10,
+       "support": 0.0,
+       "windows_hit": 0,
+       "y0_p5": 0.5188,
+       "y1_p95": 0.5708,
+       "y_range": [
+        0.53,
+        0.55
+       ]
+      },
+      {
+       "band_y": [
+        0.84,
+        1.0
+       ],
+       "caption_like": false,
+       "nonstatic_frames": 0,
+       "static_frames": 2,
+       "support": 0.0,
+       "windows_hit": 0,
+       "y0_p5": 0.9365,
+       "y1_p95": 0.9615,
+       "y_range": [
+        0.94,
+        0.95
+       ]
+      }
+     ],
+     "reasons": [],
+     "state": "located"
+    },
+    "outside": [],
+    "warning": null
+   },
+   "calibration": {
+    "calibrated": true,
+    "caption_like_hits": 878,
+    "frames": 948,
+    "hit_ratio": 0.9262,
+    "hits": 916
+   },
+   "clean": false,
+   "comparison_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_compare.jpg",
+   "dirty_segments": [
+    0,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    10
+   ],
+   "duration_drift_sec": 0.0,
+   "final": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/results/final.mp4",
+   "keep_with_captions": [],
+   "segments": [
+    {
+     "action": "swap",
+     "crop_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg0.jpg",
+     "crop_times": [
+      3.4,
+      5.3
+     ],
+     "end_sec": 6.717,
+     "false_positives": [],
+     "index": 0,
+     "leftovers": [
+      {
+       "box": [
+        0.376,
+        0.672,
+        0.626,
+        0.701
+       ],
+       "end_sec": 3.7,
+       "frames": 7,
+       "max_score": 542,
+       "start_sec": 3.1
+      },
+      {
+       "box": [
+        0.459,
+        0.672,
+        0.548,
+        0.701
+       ],
+       "end_sec": 5.5,
+       "frames": 4,
+       "max_score": 204,
+       "start_sec": 5.2
+      }
+     ],
+     "mask_box": [
+      0.283,
+      0.6519,
+      0.717,
+      0.7263
+     ],
+     "needs_visual_check": false,
+     "result_hits": 11,
+     "result_kind": "model",
+     "run_segment_id": "8b366754-55cd-482f-ae0f-edbe9e4e91c3",
+     "source_hits": 58,
+     "start_sec": 0.0,
+     "timing": {
+      "beyond_search": false,
+      "index": 0,
+      "offset_frames": 0.0,
+      "points": 12,
+      "status": "in_sync"
+     },
+     "verdict": "leftover",
+     "words": null
+    },
+    {
+     "action": "swap",
+     "end_sec": 13.433,
+     "false_positives": [],
+     "index": 1,
+     "leftovers": [],
+     "mask_box": [
+      0.2663,
+      0.6519,
+      0.7152,
+      0.7263
+     ],
+     "needs_visual_check": false,
+     "result_hits": 0,
+     "result_kind": "model",
+     "run_segment_id": "5813ca9d-6904-4f29-8d22-4a9808a199f9",
+     "source_hits": 66,
+     "start_sec": 6.717,
+     "timing": {
+      "beyond_search": false,
+      "index": 1,
+      "offset_frames": 0.0,
+      "points": 12,
+      "status": "in_sync"
+     },
+     "verdict": "clean"
+    },
+    {
+     "action": "swap",
+     "crop_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg2.jpg",
+     "crop_times": [
+      18.9,
+      19.9
+     ],
+     "end_sec": 22.905,
+     "false_positives": [],
+     "index": 2,
+     "leftovers": [
+      {
+       "box": [
+        0.311,
+        0.672,
+        0.691,
+        0.701
+       ],
+       "end_sec": 20.3,
+       "frames": 19,
+       "max_score": 826,
+       "start_sec": 18.5
+      }
+     ],
+     "mask_box": [
+      0.2793,
+      0.6519,
+      0.7448,
+      0.721
+     ],
+     "needs_visual_check": false,
+     "result_hits": 19,
+     "result_kind": "model",
+     "run_segment_id": "53282712-fee2-455c-a265-3255ac8593da",
+     "source_hits": 95,
+     "start_sec": 13.433,
+     "timing": {
+      "beyond_search": false,
+      "index": 2,
+      "offset_frames": -1.0,
+      "points": 18,
+      "status": "in_sync"
+     },
+     "verdict": "leftover",
+     "words": null
+    },
+    {
+     "action": "swap",
+     "crop_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg3.jpg",
+     "crop_times": [
+      30.3,
+      30.8,
+      31.9,
+      32.2
+     ],
+     "end_sec": 32.376,
+     "false_positives": [],
+     "index": 3,
+     "leftovers": [
+      {
+       "box": [
+        0.396,
+        0.672,
+        0.594,
+        0.701
+       ],
+       "end_sec": 31.1,
+       "frames": 11,
+       "max_score": 436,
+       "start_sec": 30.1
+      },
+      {
+       "box": [
+        0.387,
+        0.672,
+        0.613,
+        0.701
+       ],
+       "end_sec": 32.3,
+       "frames": 7,
+       "max_score": 447,
+       "start_sec": 31.7
+      }
+     ],
+     "mask_box": [
+      0.257,
+      0.6519,
+      0.7467,
+      0.721
+     ],
+     "needs_visual_check": false,
+     "result_hits": 18,
+     "result_kind": "model",
+     "run_segment_id": "e5244b94-45c2-4ef3-b0a7-afd8bbdf0bde",
+     "source_hits": 94,
+     "start_sec": 22.905,
+     "timing": {
+      "beyond_search": false,
+      "index": 3,
+      "offset_frames": 1.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     "verdict": "leftover",
+     "words": null
+    },
+    {
+     "action": "swap",
+     "crop_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg4.jpg",
+     "crop_times": [
+      32.5,
+      37.1,
+      37.3,
+      37.5,
+      37.6,
+      37.8,
+      38.8,
+      39.8,
+      40.5,
+      41.5
+     ],
+     "end_sec": 41.848,
+     "false_positives": [],
+     "index": 4,
+     "leftovers": [
+      {
+       "box": [
+        0.409,
+        0.672,
+        0.587,
+        0.701
+       ],
+       "end_sec": 32.7,
+       "frames": 4,
+       "max_score": 395,
+       "start_sec": 32.4
+      },
+      {
+       "box": [
+        0.328,
+        0.67,
+        0.676,
+        0.702
+       ],
+       "end_sec": 41.7,
+       "frames": 39,
+       "max_score": 781,
+       "start_sec": 37.0
+      }
+     ],
+     "mask_box": [
+      0.2737,
+      0.6519,
+      0.7059,
+      0.7263
+     ],
+     "needs_visual_check": false,
+     "result_hits": 43,
+     "result_kind": "model",
+     "run_segment_id": "33169d73-a9d4-4da3-9d48-355c929f0266",
+     "source_hits": 95,
+     "start_sec": 32.376,
+     "timing": {
+      "beyond_search": false,
+      "index": 4,
+      "offset_frames": 0.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     "verdict": "leftover",
+     "words": null
+    },
+    {
+     "action": "swap",
+     "crop_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg5.jpg",
+     "crop_times": [
+      42.7,
+      42.9,
+      43.1,
+      43.5,
+      46.3,
+      47.1,
+      50.4,
+      50.9
+     ],
+     "end_sec": 51.319,
+     "false_positives": [],
+     "index": 5,
+     "leftovers": [
+      {
+       "box": [
+        0.287,
+        0.672,
+        0.715,
+        0.701
+       ],
+       "end_sec": 43.7,
+       "frames": 12,
+       "max_score": 915,
+       "start_sec": 42.6
+      },
+      {
+       "box": [
+        0.378,
+        0.672,
+        0.62,
+        0.701
+       ],
+       "end_sec": 47.5,
+       "frames": 16,
+       "max_score": 553,
+       "start_sec": 46.0
+      },
+      {
+       "box": [
+        0.411,
+        0.672,
+        0.589,
+        0.701
+       ],
+       "end_sec": 51.2,
+       "frames": 10,
+       "max_score": 387,
+       "start_sec": 50.3
+      }
+     ],
+     "mask_box": [
+      0.2348,
+      0.6477,
+      0.7893,
+      0.7263
+     ],
+     "needs_visual_check": false,
+     "result_hits": 38,
+     "result_kind": "model",
+     "run_segment_id": "3f476146-7546-471e-b91c-d3c2767b8b12",
+     "source_hits": 94,
+     "start_sec": 41.848,
+     "timing": {
+      "beyond_search": false,
+      "index": 5,
+      "offset_frames": 1.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     "verdict": "leftover",
+     "words": null
+    },
+    {
+     "action": "swap",
+     "crop_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg6.jpg",
+     "crop_times": [
+      54.9
+     ],
+     "end_sec": 60.79,
+     "false_positives": [],
+     "fill": {
+      "applied_at": "2026-11-03T03:17:54.384483",
+      "basis": "model_result",
+      "confirmed": false,
+      "delivery": "delivered",
+      "frames_masked": 285,
+      "job_id": "027778d1-a07b-4b2e-adc1-83214c8ad62c",
+      "mask_box": [
+       0.1719,
+       0.6519,
+       0.7596,
+       0.7263
+      ],
+      "replaced_take_id": "c159ff37-b4f4-47ad-bea4-31c4b3ef67ad",
+      "source_as_is": false
+     },
+     "fill_needs_visual_check": true,
+     "fill_note": "VOID composite: the detector result above is necessary, not sufficient (it misses grey ghosts and smears). Look at the fill sheet: a few visibly patched frames pass; many, or a smear on a face / the phone screen, go to the operator; then confirm with --confirm-fill 027778d1-a07b-4b2e-adc1-83214c8ad62c",
+     "fill_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg6_fill.jpg",
+     "fill_sheet_box": [
+      0.1719,
+      0.6519,
+      0.7596,
+      0.7263
+     ],
+     "fill_sheet_times": [
+      51.4,
+      52.7,
+      54.1,
+      55.2,
+      56.0,
+      56.6,
+      57.7,
+      58.6,
+      59.5,
+      60.1
+     ],
+     "index": 6,
+     "leftovers": [
+      {
+       "box": [
+        0.759,
+        0.672,
+        0.802,
+        0.701
+       ],
+       "end_sec": 55.1,
+       "frames": 4,
+       "max_score": 82,
+       "start_sec": 54.7
+      }
+     ],
+     "mask_box": [
+      0.1719,
+      0.6519,
+      0.7596,
+      0.7263
+     ],
+     "needs_visual_check": true,
+     "result_hits": 4,
+     "result_kind": "void_fill",
+     "run_segment_id": "e9168a6e-bf67-4694-b08e-f5888eb08d0d",
+     "source_hits": 94,
+     "start_sec": 51.319,
+     "timing": {
+      "beyond_search": false,
+      "index": 6,
+      "offset_frames": 0.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     "verdict": "leftover",
+     "words": null
+    },
+    {
+     "action": "swap",
+     "crop_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg7.jpg",
+     "crop_times": [
+      60.9,
+      63.1,
+      68.5,
+      69.5,
+      70.1
+     ],
+     "end_sec": 70.262,
+     "false_positives": [],
+     "index": 7,
+     "leftovers": [
+      {
+       "box": [
+        0.526,
+        0.672,
+        0.722,
+        0.701
+       ],
+       "end_sec": 61.1,
+       "frames": 4,
+       "max_score": 414,
+       "start_sec": 60.8
+      },
+      {
+       "box": [
+        0.418,
+        0.672,
+        0.672,
+        0.701
+       ],
+       "end_sec": 63.6,
+       "frames": 11,
+       "max_score": 609,
+       "start_sec": 62.6
+      },
+      {
+       "box": [
+        0.411,
+        0.672,
+        0.676,
+        0.701
+       ],
+       "end_sec": 70.2,
+       "frames": 23,
+       "max_score": 505,
+       "start_sec": 68.0
+      }
+     ],
+     "mask_box": [
+      0.2237,
+      0.6477,
+      0.7504,
+      0.7263
+     ],
+     "needs_visual_check": false,
+     "result_hits": 38,
+     "result_kind": "model",
+     "run_segment_id": "f1c81b27-20f7-4264-b0d1-b743d85a96ed",
+     "source_hits": 95,
+     "start_sec": 60.79,
+     "timing": {
+      "beyond_search": false,
+      "index": 7,
+      "offset_frames": 2.0,
+      "points": 17,
+      "status": "off"
+     },
+     "verdict": "leftover",
+     "words": null
+    },
+    {
+     "action": "swap",
+     "end_sec": 79.733,
+     "false_positives": [],
+     "fill": {
+      "applied_at": "2026-11-03T02:25:40.739677",
+      "basis": "model_result",
+      "confirmed": false,
+      "delivery": "delivered",
+      "frames_masked": 285,
+      "job_id": "1d5ad9a5-8bc9-48c7-b82f-3bf7b347f05d",
+      "mask_box": [
+       0.2756,
+       0.6519,
+       0.7541,
+       0.7263
+      ],
+      "replaced_take_id": "17746057-6d54-46b1-9d7f-f7e86c717035",
+      "source_as_is": false
+     },
+     "fill_needs_visual_check": true,
+     "fill_note": "VOID composite: the detector result above is necessary, not sufficient (it misses grey ghosts and smears). Look at the fill sheet: a few visibly patched frames pass; many, or a smear on a face / the phone screen, go to the operator; then confirm with --confirm-fill 1d5ad9a5-8bc9-48c7-b82f-3bf7b347f05d",
+     "fill_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg8_fill.jpg",
+     "fill_sheet_box": [
+      0.2756,
+      0.6519,
+      0.7541,
+      0.7263
+     ],
+     "fill_sheet_times": [
+      70.3,
+      70.7,
+      72.0,
+      72.9,
+      74.0,
+      75.1,
+      76.0,
+      77.5,
+      78.2,
+      79.0
+     ],
+     "index": 8,
+     "leftovers": [],
+     "mask_box": [
+      0.2756,
+      0.6519,
+      0.7541,
+      0.7263
+     ],
+     "needs_visual_check": true,
+     "result_hits": 0,
+     "result_kind": "void_fill",
+     "run_segment_id": "9fd9e7e7-2f90-4840-8fcd-b43a8b326f39",
+     "source_hits": 95,
+     "start_sec": 70.262,
+     "timing": {
+      "beyond_search": false,
+      "index": 8,
+      "offset_frames": 0.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     "verdict": "clean"
+    },
+    {
+     "action": "swap",
+     "end_sec": 85.633,
+     "false_positives": [],
+     "fill": {
+      "applied_at": "2026-11-03T02:03:17.576234",
+      "basis": "model_result",
+      "confirmed": false,
+      "delivery": "delivered",
+      "frames_masked": 126,
+      "job_id": "f8c5aef0-c960-4171-bce4-36999431748c",
+      "mask_box": [
+       0.3015,
+       0.6519,
+       0.7059,
+       0.7263
+      ],
+      "replaced_take_id": "f99094d1-1755-4fb6-9009-d25ecc976a75",
+      "source_as_is": false
+     },
+     "fill_needs_visual_check": true,
+     "fill_note": "VOID composite: the detector result above is necessary, not sufficient (it misses grey ghosts and smears). Look at the fill sheet: a few visibly patched frames pass; many, or a smear on a face / the phone screen, go to the operator; then confirm with --confirm-fill f8c5aef0-c960-4171-bce4-36999431748c",
+     "fill_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg9_fill.jpg",
+     "fill_sheet_box": [
+      0.3015,
+      0.6519,
+      0.7059,
+      0.7263
+     ],
+     "fill_sheet_times": [
+      79.8,
+      80.1,
+      80.4,
+      80.9,
+      81.5,
+      81.8,
+      82.0,
+      82.3,
+      83.2,
+      83.6
+     ],
+     "index": 9,
+     "leftovers": [],
+     "mask_box": [
+      0.3015,
+      0.6519,
+      0.7059,
+      0.7263
+     ],
+     "needs_visual_check": true,
+     "result_hits": 0,
+     "result_kind": "void_fill",
+     "run_segment_id": "028224c3-0d32-4a50-ac11-fc8e5c642a8e",
+     "source_hits": 40,
+     "start_sec": 79.733,
+     "timing": {
+      "beyond_search": false,
+      "index": 9,
+      "offset_frames": 0.0,
+      "points": 10,
+      "status": "in_sync"
+     },
+     "verdict": "clean"
+    },
+    {
+     "action": "swap",
+     "crop_sheet": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg10.jpg",
+     "crop_times": [
+      90.1,
+      90.2,
+      90.4,
+      90.5,
+      92.8
+     ],
+     "end_sec": 94.833,
+     "false_positives": [],
+     "index": 10,
+     "leftovers": [
+      {
+       "box": [
+        0.118,
+        0.607,
+        0.826,
+        0.688
+       ],
+       "end_sec": 94.7,
+       "frames": 42,
+       "max_score": 284,
+       "start_sec": 90.1
+      }
+     ],
+     "mask_box": [
+      0.0885,
+      0.4988,
+      0.9096,
+      0.7388
+     ],
+     "needs_visual_check": false,
+     "result_hits": 42,
+     "result_kind": "model",
+     "run_segment_id": "a93e9435-2361-42be-80b1-db74efe67965",
+     "source_hits": 90,
+     "start_sec": 85.633,
+     "timing": {
+      "beyond_search": false,
+      "index": 10,
+      "offset_frames": 0.0,
+      "points": 16,
+      "status": "in_sync"
+     },
+     "verdict": "leftover",
+     "words": null
+    }
+   ],
+   "source": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/source.mp4",
+   "sync_off_segments": [
+    7
+   ],
+   "timeline_verified": false,
+   "timing": {
+    "clips": [
+     {
+      "excess_frames": 4,
+      "index": 0,
+      "result_frames": 206,
+      "target_frames": 202
+     },
+     {
+      "excess_frames": 5,
+      "index": 1,
+      "result_frames": 206,
+      "target_frames": 201
+     },
+     {
+      "excess_frames": 2,
+      "index": 2,
+      "result_frames": 286,
+      "target_frames": 284
+     },
+     {
+      "excess_frames": 2,
+      "index": 3,
+      "result_frames": 286,
+      "target_frames": 284
+     },
+     {
+      "excess_frames": 2,
+      "index": 4,
+      "result_frames": 286,
+      "target_frames": 284
+     },
+     {
+      "excess_frames": 1,
+      "index": 5,
+      "result_frames": 286,
+      "target_frames": 285
+     },
+     {
+      "excess_frames": 1,
+      "index": 6,
+      "result_frames": 285,
+      "target_frames": 284
+     },
+     {
+      "excess_frames": 2,
+      "index": 7,
+      "result_frames": 286,
+      "target_frames": 284
+     },
+     {
+      "excess_frames": 1,
+      "index": 8,
+      "result_frames": 285,
+      "target_frames": 284
+     },
+     {
+      "excess_frames": 0,
+      "index": 9,
+      "result_frames": 177,
+      "target_frames": 177
+     },
+     {
+      "excess_frames": 5,
+      "index": 10,
+      "result_frames": 281,
+      "target_frames": 276
+     }
+    ],
+    "fps": 30.0,
+    "length_ok": true,
+    "search_frames": 15,
+    "segments": [
+     {
+      "beyond_search": false,
+      "index": 0,
+      "offset_frames": 0.0,
+      "points": 12,
+      "status": "in_sync"
+     },
+     {
+      "beyond_search": false,
+      "index": 1,
+      "offset_frames": 0.0,
+      "points": 12,
+      "status": "in_sync"
+     },
+     {
+      "beyond_search": false,
+      "index": 2,
+      "offset_frames": -1.0,
+      "points": 18,
+      "status": "in_sync"
+     },
+     {
+      "beyond_search": false,
+      "index": 3,
+      "offset_frames": 1.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     {
+      "beyond_search": false,
+      "index": 4,
+      "offset_frames": 0.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     {
+      "beyond_search": false,
+      "index": 5,
+      "offset_frames": 1.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     {
+      "beyond_search": false,
+      "index": 6,
+      "offset_frames": 0.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     {
+      "beyond_search": false,
+      "index": 7,
+      "offset_frames": 2.0,
+      "points": 17,
+      "status": "off"
+     },
+     {
+      "beyond_search": false,
+      "index": 8,
+      "offset_frames": 0.0,
+      "points": 17,
+      "status": "in_sync"
+     },
+     {
+      "beyond_search": false,
+      "index": 9,
+      "offset_frames": 0.0,
+      "points": 10,
+      "status": "in_sync"
+     },
+     {
+      "beyond_search": false,
+      "index": 10,
+      "offset_frames": 0.0,
+      "points": 16,
+      "status": "in_sync"
+     }
+    ],
+    "tolerance_frames": 1,
+    "verified": false
+   },
+   "unconfirmed_false_positives": [],
+   "unconfirmed_fills": [
+    {
+     "fill_job_id": "027778d1-a07b-4b2e-adc1-83214c8ad62c",
+     "index": 6
+    },
+    {
+     "fill_job_id": "1d5ad9a5-8bc9-48c7-b82f-3bf7b347f05d",
+     "index": 8
+    },
+    {
+     "fill_job_id": "f8c5aef0-c960-4171-bce4-36999431748c",
+     "index": 9
+    }
+   ],
+   "warnings": [
+    "picture is up to 13 frame(s) off the source in places (the flow doc wants +-1 at final QA): look at the comparison sheet / lip sync"
+   ]
+  },
+  "refused": null,
+  "results": {
+   "028224c3-0d32-4a50-ac11-fc8e5c642a8e": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segment_fills/f8c5aef0-c960-4171-bce4-36999431748c/comp-48ca2d0f98ef4724ad27bf060b6aae8c/composite.mp4",
+    "seedance_task_id": null
+   },
+   "33169d73-a9d4-4da3-9d48-355c929f0266": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/results/result_0004.mp4",
+    "seedance_task_id": "001da242d3057ced8e156a07d88e33a9"
+   },
+   "3f476146-7546-471e-b91c-d3c2767b8b12": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/results/result_0005.mp4",
+    "seedance_task_id": "c4d9d44c0a722b563ac59b2abe8c7cb6"
+   },
+   "53282712-fee2-455c-a265-3255ac8593da": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/results/result_0002.mp4",
+    "seedance_task_id": "2293e0c0b43e62639c5ebafa6956e539"
+   },
+   "5813ca9d-6904-4f29-8d22-4a9808a199f9": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/results/result_0001.mp4",
+    "seedance_task_id": "344c3c4f56d4cf75341136339bebde2a"
+   },
+   "8b366754-55cd-482f-ae0f-edbe9e4e91c3": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/results/result_0000.mp4",
+    "seedance_task_id": "cedf89789d2a5920f7a44b8580a2c9c9"
+   },
+   "9fd9e7e7-2f90-4840-8fcd-b43a8b326f39": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segment_fills/1d5ad9a5-8bc9-48c7-b82f-3bf7b347f05d/comp-5659b6f3234c4847a7e407aae456a2b0/composite.mp4",
+    "seedance_task_id": null
+   },
+   "a93e9435-2361-42be-80b1-db74efe67965": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/results/result_0010.mp4",
+    "seedance_task_id": "97822ee2d3b1be3fba41a7c3b8ce2be0"
+   },
+   "e5244b94-45c2-4ef3-b0a7-afd8bbdf0bde": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/results/result_0003.mp4",
+    "seedance_task_id": "0e4d5b5fc703e521051b5fa09b857745"
+   },
+   "e9168a6e-bf67-4694-b08e-f5888eb08d0d": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/segment_fills/027778d1-a07b-4b2e-adc1-83214c8ad62c/comp-9832fd71295e4a6ab207efed1f1aa086/composite.mp4",
+    "seedance_task_id": null
+   },
+   "f1c81b27-20f7-4264-b0d1-b743d85a96ed": {
+    "result_path": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/runs/d46bb1b8-a4d6-4119-ac0a-3da92045f296/results/result_0007.mp4",
+    "seedance_task_id": "145b4b1737fb8c67cd752edcbd74fe87"
+   }
+  },
+  "run_version": "b3e49575374d78b86d269fe583b6d93482794270d101d408fbfedf44d2a19a8d",
+  "segments_input": [
+   {
+    "action": "swap",
+    "end_sec": 6.716666666666667,
+    "index": 0,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "model",
+    "run_segment_id": "8b366754-55cd-482f-ae0f-edbe9e4e91c3",
+    "start_sec": 0.0,
+    "status": "completed"
+   },
+   {
+    "action": "swap",
+    "end_sec": 13.433333333333334,
+    "index": 1,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "model",
+    "run_segment_id": "5813ca9d-6904-4f29-8d22-4a9808a199f9",
+    "start_sec": 6.716666666666667,
+    "status": "completed"
+   },
+   {
+    "action": "swap",
+    "end_sec": 22.904761904761905,
+    "index": 2,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "model",
+    "run_segment_id": "53282712-fee2-455c-a265-3255ac8593da",
+    "start_sec": 13.433333333333334,
+    "status": "completed"
+   },
+   {
+    "action": "swap",
+    "end_sec": 32.37619047619047,
+    "index": 3,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "model",
+    "run_segment_id": "e5244b94-45c2-4ef3-b0a7-afd8bbdf0bde",
+    "start_sec": 22.904761904761905,
+    "status": "completed"
+   },
+   {
+    "action": "swap",
+    "end_sec": 41.84761904761905,
+    "index": 4,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "model",
+    "run_segment_id": "33169d73-a9d4-4da3-9d48-355c929f0266",
+    "start_sec": 32.37619047619047,
+    "status": "completed"
+   },
+   {
+    "action": "swap",
+    "end_sec": 51.31904761904762,
+    "index": 5,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "model",
+    "run_segment_id": "3f476146-7546-471e-b91c-d3c2767b8b12",
+    "start_sec": 41.84761904761905,
+    "status": "completed"
+   },
+   {
+    "action": "swap",
+    "end_sec": 60.7904761904762,
+    "fill": {
+     "applied_at": "2026-11-03T03:17:54.384483",
+     "basis": "model_result",
+     "delivery": "delivered",
+     "frames_masked": 285,
+     "job_id": "027778d1-a07b-4b2e-adc1-83214c8ad62c",
+     "mask_box": [
+      0.1719,
+      0.6519,
+      0.7596,
+      0.7263
+     ],
+     "replaced_take_id": "c159ff37-b4f4-47ad-bea4-31c4b3ef67ad",
+     "source_as_is": false
+    },
+    "index": 6,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "void_fill",
+    "run_segment_id": "e9168a6e-bf67-4694-b08e-f5888eb08d0d",
+    "start_sec": 51.31904761904762,
+    "status": "completed"
+   },
+   {
+    "action": "swap",
+    "end_sec": 70.26190476190476,
+    "index": 7,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "model",
+    "run_segment_id": "f1c81b27-20f7-4264-b0d1-b743d85a96ed",
+    "start_sec": 60.7904761904762,
+    "status": "completed"
+   },
+   {
+    "action": "swap",
+    "end_sec": 79.73333333333333,
+    "fill": {
+     "applied_at": "2026-11-03T02:25:40.739677",
+     "basis": "model_result",
+     "delivery": "delivered",
+     "frames_masked": 285,
+     "job_id": "1d5ad9a5-8bc9-48c7-b82f-3bf7b347f05d",
+     "mask_box": [
+      0.2756,
+      0.6519,
+      0.7541,
+      0.7263
+     ],
+     "replaced_take_id": "17746057-6d54-46b1-9d7f-f7e86c717035",
+     "source_as_is": false
+    },
+    "index": 8,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "void_fill",
+    "run_segment_id": "9fd9e7e7-2f90-4840-8fcd-b43a8b326f39",
+    "start_sec": 70.26190476190476,
+    "status": "completed"
+   },
+   {
+    "action": "swap",
+    "end_sec": 85.63333333333334,
+    "fill": {
+     "applied_at": "2026-11-03T02:03:17.576234",
+     "basis": "model_result",
+     "delivery": "delivered",
+     "frames_masked": 126,
+     "job_id": "f8c5aef0-c960-4171-bce4-36999431748c",
+     "mask_box": [
+      0.3015,
+      0.6519,
+      0.7059,
+      0.7263
+     ],
+     "replaced_take_id": "f99094d1-1755-4fb6-9009-d25ecc976a75",
+     "source_as_is": false
+    },
+    "index": 9,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "void_fill",
+    "run_segment_id": "028224c3-0d32-4a50-ac11-fc8e5c642a8e",
+    "start_sec": 79.73333333333333,
+    "status": "completed"
+   },
+   {
+    "action": "swap",
+    "end_sec": 94.833333,
+    "index": 10,
+    "post_roll_sec": 0.0,
+    "pre_roll_sec": 0.0,
+    "prompt_override": null,
+    "result_kind": "model",
+    "run_segment_id": "a93e9435-2361-42be-80b1-db74efe67965",
+    "start_sec": 85.63333333333334,
+    "status": "completed"
+   }
+  ],
+  "sheets": {
+   "fill_clip:6": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg6_fill.mp4",
+   "fill_clip:8": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg8_fill.mp4",
+   "fill_clip:9": "/app/data/projects/81d0afc0-487d-4813-912f-1947092d68ed/autopilot/compute/c858675b-9edb-42ce-b161-9be9463b6e0a/8402e0028bb24bdda54cbb9d5a198512/qa_seg9_fill.mp4"
+  },
+  "source_fps": 30.0,
+  "source_identity": [
+   64513,
+   2085917,
+   170584470,
+   1793644929114179830
+  ]
+ },
+ "run_id": "d46bb1b8-a4d6-4119-ac0a-3da92045f296"
+}

@@ -14,12 +14,20 @@ if [ -z "$BASIC_AUTH_USER" ] || [ -z "$BASIC_AUTH_PASS" ]; then
     exit 1
 fi
 
-# Create htpasswd file using openssl (busybox compatible)
-# Format: username:password_hash
-# Using 'openssl passwd -apr1' to generate Apache apr1 hash
-HASH=$(openssl passwd -apr1 "$BASIC_AUTH_PASS")
-echo "${BASIC_AUTH_USER}:${HASH}" > /etc/nginx/.htpasswd
-chmod 644 /etc/nginx/.htpasswd
+# bcrypt htpasswd (AICP-158; was openssl apr1/MD5). The password goes in on
+# stdin (-i), never on argv, so it does not show up in the process list.
+# Cost is kept moderate on purpose: nginx re-verifies the hash with crypt() on
+# EVERY request, synchronously in the worker, and the UI polls HTMX fragments
+# and streams media — a high cost would stall the event loop. Override with
+# BASIC_AUTH_BCRYPT_COST (4-17) if needed.
+BCRYPT_COST="${BASIC_AUTH_BCRYPT_COST:-6}"
+umask 077
+printf '%s' "$BASIC_AUTH_PASS" | htpasswd -niB -C "$BCRYPT_COST" "$BASIC_AUTH_USER" > /etc/nginx/.htpasswd
+# Readable by the nginx worker user only (master is root, workers are nginx).
+chown root:nginx /etc/nginx/.htpasswd
+chmod 640 /etc/nginx/.htpasswd
+unset BASIC_AUTH_PASS
+umask 022
 
 echo "htpasswd file generated for user: $BASIC_AUTH_USER"
 

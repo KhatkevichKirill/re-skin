@@ -1,0 +1,82 @@
+{# Autopilot card on the project page (AICP-363, docs/autopilot-design.md §7;
+   AICP-369, docs/autopilot-run-view.md). Before the assistant has a Run this is
+   the whole process; once it has one, the work on a run is shown on that Run's
+   page and this card keeps the project-level part: status, budget, the
+   approvals that are not about one run, links to the rest, and the runs.
+   Status line, paused banner, stepper, budget bar and the journal timeline:
+   AICP-377 (docs/autopilot-operator-ux.md §5–6). Refreshes every 10 s unless
+   the operator is in the middle of an answer; the opened journal is kept. #}
+{% import "partials/autopilot_macros.html" as m %}
+{{ m.idle_script() }}
+<div id="autopilot-card" class="card ap-card" style="margin-bottom:16px"
+     hx-get="/v2/projects/{{ project.id }}/autopilot-card"
+     hx-trigger="every 10s [apIdle(this)]" hx-swap="outerHTML">
+  <h3 style="margin-top:0">Autopilot <span class="badge">by Assistant</span>
+    {% if ap %}<span class="badge">{{ ap.status }}</span>{% endif %}</h3>
+  {{ m.ux_style() }}
+  {% if error %}<p style="color:#dc3545">{{ error }}</p>{% endif %}
+  {% if not ap %}
+    <p class="text-muted">This project has no autopilot.</p>
+  {% else %}
+    {% set has_runs = assistant_runs|length > 0 %}
+    <p class="text-muted" style="font-size:12px">
+      Flow <code>{{ ap.flow_id }}</code> v{{ ap.flow_version }}.
+      {% if has_runs %}The work on each run is shown on that run's page.{% endif %}
+      A run you start by hand is <strong>manual</strong>: the assistant does not automatically use it,
+      and a billed manual action pauses the assistant until you press Resume.
+    </p>
+    {{ m.status_block(ux) }}
+
+    {{ m.budget_line(ap.budget, ux.bar) }}
+
+    {% if has_runs %}
+    <div class="form-group">
+      <strong>The assistant's runs</strong>
+      <ul style="margin:4px 0">
+        {% for r in assistant_runs %}
+          <li><a href="/v2/runs/{{ r.run_id }}"><code>{{ r.short_id }}</code></a>
+            {% if r.name %}{{ r.name }}{% endif %}
+            <span class="badge">{{ r.label }}</span> <span class="badge badge-{{ r.status }}">{{ r.status }}</span>
+            {% if not r.this_attempt %}<span class="text-muted">(earlier attempt)</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% for a in ap.approvals %}
+      {% set pl = placement.get(a.id) or {} %}
+      {% if pl.run_id %}
+        <div id="{{ a.anchor }}" class="card" style="padding:8px; margin-bottom:8px">
+          <span class="badge">{{ a.kind }}</span>{% if a.subject %} <strong>{{ a.subject }}</strong>{% endif %}
+          — waiting on run
+          <a href="/v2/runs/{{ pl.run_id }}"><code>{{ pl.short_id or pl.run_id[:8] }}</code></a>:
+          {{ a.question }} <a class="btn btn-sm btn-primary" href="{{ pl.path }}">Answer on the run</a>
+        </div>
+      {% else %}
+        {% if pl.candidates %}<div class="hint">Concerns runs
+          {% for c in pl.candidates %}<a href="/v2/runs/{{ c }}"><code>{{ c[:8] }}</code></a>{% if not loop.last %}, {% endif %}{% endfor %}.</div>{% endif %}
+        {{ m.approval_form(a, "/v2/projects/" ~ project.id ~ "/autopilot-card/answer", "#autopilot-card", ap.id) }}
+      {% endif %}
+    {% endfor %}
+
+    {{ m.answered_list(ap.answered or [], "/v2/projects/" ~ project.id ~ "/autopilot-card/reopen", "#autopilot-card", ap.id) }}
+
+    <form hx-post="/v2/projects/{{ project.id }}/autopilot-card/switch" hx-target="#autopilot-card"
+          hx-swap="outerHTML" hx-sync="closest .ap-card:replace" hx-disabled-elt="find button"
+          style="margin:8px 0">
+      <input type="hidden" name="autopilot_id" value="{{ ap.id }}" />
+      {% if ap.status == "active" %}<button name="action" value="pause" class="btn">Pause</button>{% endif %}
+      {% if ap.status == "paused" and (not ux.banner or ux.banner.resume) %}<button name="action" value="resume" class="btn btn-primary">Resume</button>{% endif %}
+      {% if ap.status in ("active", "paused") %}
+        <button name="action" value="stop" class="btn" onclick='return confirm({{ ux.stop_confirm|tojson }})'>Stop…</button>
+      {% else %}<button name="action" value="start" class="btn">Start a new autopilot</button>{% endif %}
+    </form>
+
+    <details><summary>Step details</summary>{{ m.steps_list(ap.steps) }}</details>
+
+    {{ m.journal_box("ap-journal-" ~ ap.id, "/v2/projects/" ~ project.id ~ "/autopilot-journal?autopilot_id=" ~ ap.id,
+                     "/api/v2/projects/" ~ project.id ~ "/autopilot") }}
+  {% endif %}
+  {{ m.fragment_script("autopilot-card") }}
+  {{ m.media_script("autopilot-card") }}
+</div>

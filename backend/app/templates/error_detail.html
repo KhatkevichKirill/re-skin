@@ -1,0 +1,16 @@
+{# Long error/status text (Seedance/kie.ai failMsg, ffmpeg stderr, etc.) can run
+   well past a one-line UI. Truncating it silently (the pattern this replaces —
+   `text[:80]` plus a bare "…") threw away the useful part: kie.ai's messages
+   put the actual cause at the END ("... resource not found."), so the operator
+   saw only the boilerplate prefix with no way to read further. <details> is
+   the same expand pattern already used elsewhere in v2 (no JS, safe with
+   Jinja autoescaping) — the preview stays visible as the closed summary, click
+   reveals the full text.
+#}
+{% macro error_detail(text, preview_len=80) -%}
+{%- if text and text|length > preview_len -%}
+<details style="display:inline-block"><summary style="cursor:pointer">{{ text[:preview_len] }}&hellip;</summary><div style="white-space:pre-wrap;word-break:break-word;margin-top:4px;font-weight:normal">{{ text }}</div></details>
+{%- else -%}
+{{ text }}
+{%- endif -%}
+{%- endmacro %}

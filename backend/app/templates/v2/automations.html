@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Automations — re-skin v2{% endblock %}
+
+{% block content %}
+
+{% macro automations_table(rows, empty_msg) %}
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Template run</th>
+        <th>Sheet filter</th>
+        <th>Plan</th>
+        <th class="text-right">Daily</th>
+        <th class="text-right">Today</th>
+        <th class="text-right">In&nbsp;flight</th>
+        <th class="text-right">Launched total</th>
+        <th>First launch</th>
+        <th>Last launch</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>
+          {% if r.run_name %}<strong>{{ r.run_name }}</strong>{% else %}<em class="text-muted">unnamed run</em>{% endif %}
+          <div>
+            <code style="font-size:11px;color:var(--color-muted)">{{ r.run_short }}…</code>
+            <span class="badge badge-{{ r.run_status }}" style="margin-left:4px">{{ r.run_status }}</span>
+          </div>
+        </td>
+        <td style="max-width:240px">{{ r.filters }}</td>
+        <td>
+          {{ r.plan }}
+          {% if r.has_webhook %}<span class="text-muted" title="Batch-completion webhook configured" style="font-size:11px"> · 🔔</span>{% endif %}
+        </td>
+        <td class="text-right">{{ r.daily_count }}</td>
+        <td class="text-right">{{ r.launched_today }}</td>
+        <td class="text-right">{% if r.in_flight %}<strong>{{ r.in_flight }}</strong>{% else %}0{% endif %}</td>
+        <td class="text-right">{{ r.used_total }}</td>
+        <td class="text-muted" style="white-space:nowrap">{% if r.first_launch_at %}{{ r.first_launch_at.strftime("%Y-%m-%d %H:%M") }}{% else %}—{% endif %}</td>
+        <td class="text-muted" style="white-space:nowrap">{% if r.last_launch_at %}{{ r.last_launch_at.strftime("%Y-%m-%d %H:%M") }}{% else %}—{% endif %}</td>
+        <td class="text-right"><a class="btn btn-sm btn-secondary" href="/v2/runs/{{ r.run_id }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="card-body text-muted">{{ empty_msg }}</div>
+  {% endif %}
+{% endmacro %}
+
+<!-- ── Active automations (enabled — launching on each tick) ── -->
+<div class="card">
+  <div class="card-header">
+    <h2>Active automations</h2>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">{{ active|length }} enabled — launching batches from the persona sheet</span>
+  </div>
+  {{ automations_table(active, "No automations are currently enabled. Enable one from a run's Automation panel.") }}
+</div>
+
+<!-- ── Previously active (disabled, but launched in the past) ── -->
+<div class="card">
+  <div class="card-header">
+    <h2>Previously active</h2>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">{{ previously|length }} disabled with past launches</span>
+  </div>
+  {{ automations_table(previously, "No disabled automations have launched anything yet.") }}
+</div>
+
+{% endblock %}

@@ -1,0 +1,10 @@
+# AICP-150. Install: deploy/tls/README.md ("Renewal").
+[Unit]
+Description=Renew the re-skin Let's Encrypt certificate and reload nginx
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/re-skin/deploy/tls/renew-cert.sh

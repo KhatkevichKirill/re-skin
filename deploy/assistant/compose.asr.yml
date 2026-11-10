@@ -1,0 +1,56 @@
+# Optional offline ASR overlay, combined with root compose + compose.app.yml.
+# Build/review ASR image separately; this file never downloads a model or mounts
+# credentials. See ASR-README.md. Empty default app config keeps ASR disabled.
+services:
+  assistant-supervisor:
+    environment:
+      ASSISTANT_ASR_SOCKET: /run/reskin-asr/asr.sock
+    volumes:
+      - type: bind
+        source: ${ASSISTANT_ASR_SOCKET_DIR:?private UID10001 ASR socket directory required}
+        target: /run/reskin-asr
+        read_only: true
+        bind:
+          create_host_path: false
+
+  assistant-asr:
+    image: ${ASSISTANT_ASR_IMAGE:?reviewed immutable ASR image reference required}
+    user: '10001:10001'
+    init: true
+    restart: unless-stopped
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: '2'
+    pids_limit: 128
+    stop_grace_period: 10s
+    environment:
+      ASR_SOCKET: /socket/asr.sock
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUNBUFFERED: '1'
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777,size=64m
+    volumes:
+      - type: bind
+        source: ${ASSISTANT_ASR_MODEL_DIR:?verified pinned model directory required}
+        target: /model
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./data/assistant_artifacts
+        target: /artifacts
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ASSISTANT_ASR_SOCKET_DIR:?private UID10001 ASR socket directory required}
+        target: /socket
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options: {max-size: 1m, max-file: '2'}

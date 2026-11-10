@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% from "project_source_cell.html" import source_cell %}
+{% block title %}Overlays — re-skin{% endblock %}
+
+{% block content %}
+
+<div class="card">
+  <div class="card-body">
+    <h2>Burn an image overlay onto a finished video</h2>
+    <p class="text-muted" style="font-size:13px">
+      Pick a completed run as the source, upload one or more transparent PNGs,
+      position them on the frame, and render. Results upload to Drive automatically.
+      The original run output is untouched.
+    </p>
+  </div>
+</div>
+
+<!-- ── 1. Pick a source video (projects pivot) ── -->
+<div class="card">
+  <div class="card-header">
+    <h2>1. Pick a source video</h2>
+    <span class="text-muted" style="font-size:12px; margin-left:auto">click ▸ to see a project's finished runs</span>
+  </div>
+  {% if projects %}
+  <table>
+    <thead>
+      <tr>
+        <th style="width:28px"></th>
+        <th>Project</th>
+        <th>Source</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in projects %}
+      <tr>
+        <td>
+          <button type="button" class="btn btn-sm btn-secondary pivot-toggle"
+                  title="Show finished runs" onclick="toggleRuns('{{ p.id }}', this)"
+                  style="padding:2px 8px">▸</button>
+        </td>
+        <td>
+          {% if p.name %}<strong>{{ p.name }}</strong>{% else %}<em class="text-muted">unnamed</em>{% endif %}
+          <div><code style="font-size:11px;color:var(--color-muted)">{{ p.id[:8] }}…</code></div>
+        </td>
+        <td style="white-space:nowrap">{{ source_cell(p) }}</td>
+        <td class="text-muted" style="white-space:nowrap">{{ p.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      </tr>
+      <tr id="runs-row-{{ p.id }}" class="runs-row" style="display:none">
+        <td></td>
+        <td colspan="3" style="background:var(--color-surface,#f8f9fa)">
+          <div id="runs-cell-{{ p.id }}" data-loaded="0">
+            <span class="text-muted" style="font-size:12px">Loading…</span>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="card-body text-muted">No completed runs available yet.</div>
+  {% endif %}
+</div>
+
+<!-- ── Existing overlay jobs ── -->
+<div class="card">
+  <div class="card-header"><h2>Overlay jobs</h2></div>
+  {% if jobs %}
+  <table>
+    <thead>
+      <tr><th>Job</th><th>Status</th><th>Overlays</th><th>Created</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr id="job-row-{{ j.id }}">
+        <td><code>{{ j.id[:8] }}</code></td>
+        <td><span class="badge badge-{{ j.status }}">{{ j.status }}</span></td>
+        <td>{{ j.n_overlays }}</td>
+        <td class="text-muted" style="white-space:nowrap">{{ j.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+        <td class="text-right" style="white-space:nowrap">
+          <a class="btn btn-sm btn-secondary" href="/v2/overlays/{{ j.id }}">Open</a>
+          {% if j.gdrive_file_id %}
+          <a class="btn btn-sm btn-success" href="https://drive.google.com/file/d/{{ j.gdrive_file_id }}/view" target="_blank">Drive</a>
+          {% endif %}
+          <button type="button" class="btn btn-sm btn-danger" onclick="deleteJob('{{ j.id }}', this)">Delete</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="card-body text-muted">No overlay jobs yet.</div>
+  {% endif %}
+</div>
+
+<script>
+// Lazy-load + toggle a project's finished-runs list inline (the source pivot).
+function toggleRuns(pid, btn) {
+  var row = document.getElementById('runs-row-' + pid);
+  if (!row) return;
+  var open = row.style.display !== 'none';
+  if (open) { row.style.display = 'none'; btn.textContent = '▸'; return; }
+  row.style.display = '';
+  btn.textContent = '▾';
+  var cell = document.getElementById('runs-cell-' + pid);
+  if (cell && cell.dataset.loaded === '0' && window.htmx) {
+    htmx.ajax('GET', '/v2/overlays/projects/' + encodeURIComponent(pid) + '/sources-fragment',
+              { target: '#runs-cell-' + pid, swap: 'innerHTML' })
+      .then(function () { cell.dataset.loaded = '1'; });
+  }
+}
+
+// Called from the source fragment rows (runs + tail edits): create an
+// overlay job for the clicked row's source. Reads the source type/id off the
+// button's data attributes so one function serves every source kind.
+async function createJob(btn) {
+  const sourceType = btn.dataset.sourceType;
+  const sourceId = btn.dataset.sourceId;
+  btn.disabled = true;
+  try {
+    const body = {source_type: sourceType};
+    if (sourceType === 'run') body.source_run_id = sourceId;
+    else if (sourceType === 'tail_edit') body.source_tail_edit_id = sourceId;
+    else if (sourceType === 'caption') body.source_caption_id = sourceId;
+    const resp = await fetch('/api/v2/overlays', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) { throw new Error(await resp.text()); }
+    const data = await resp.json();
+    window.location.href = '/v2/overlays/' + data.id;
+  } catch (e) {
+    alert('Failed to create overlay job: ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+function deleteJob(jobId, btn) {
+  if (!confirm('Delete this overlay render — the rendered video + PNGs are removed from disk to free space. The record is kept so the source video stays findable. Continue?')) return;
+  btn.disabled = true;
+  fetch('/api/v2/overlays/' + encodeURIComponent(jobId), { method: 'DELETE' })
+    .then(function (r) {
+      if (r.status === 204) {
+        var tr = document.getElementById('job-row-' + jobId);
+        if (tr) tr.remove();
+      } else {
+        return r.json().then(function (b) { btn.disabled = false; alert('Could not delete: ' + (b.detail || r.status)); });
+      }
+    })
+    .catch(function (e) { btn.disabled = false; alert('Network error: ' + e); });
+}
+</script>
+
+{% endblock %}

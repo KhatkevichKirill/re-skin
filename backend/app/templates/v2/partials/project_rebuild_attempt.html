@@ -1,0 +1,10 @@
+{# One keyframe / sheet attempt in an attempts strip (variable `a`, `pid`, `rebuild_enabled`). #}
+<div class="rb-attempt" data-kf="{{ a.id }}" data-status="{{ a.status }}" style="text-align:center; font-size:11px">
+  {% if a.status == succeeded and a.image_path %}
+  <a href="/api/v2/rebuild/keyframes/{{ a.id }}/image" target="_blank"><img loading="lazy" src="/api/v2/rebuild/keyframes/{{ a.id }}/image" style="height:70px; border-radius:3px; opacity:.85" alt="attempt" /></a><br>
+  {% if rebuild_enabled %}<button type="button" class="btn btn-sm btn-secondary" onclick="rbSelect('{{ a.id }}', '{{ pid }}')">Use</button>{% endif %}
+  {% else %}
+  <span class="badge badge-{{ a.status }}" title="{{ a.error or '' }}">{{ a.status }}</span>
+  {% if a.status == "unknown" %}<br><span title="{{ a.error or '' }}">may have been billed</span>{% endif %}
+  {% endif %}
+</div>
