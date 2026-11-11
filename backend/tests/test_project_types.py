@@ -475,8 +475,26 @@ def test_derived_mute_source_localisation_is_always_on(parent):
 
 @pytest.mark.parametrize(
     "ptype",
-    [k for k, s in project_types.PROJECT_TYPES.items() if not s.default_mute_source],
+    [
+        k for k, s in project_types.PROJECT_TYPES.items()
+        if not s.default_mute_source and s.inherits_mute_source
+    ],
 )
 @pytest.mark.parametrize("parent,expected", [(False, False), (True, True), (None, False)])
 def test_derived_mute_source_default_off_types_inherit(ptype, parent, expected):
     assert project_types.derived_mute_source(ptype, parent) is expected
+
+
+@pytest.mark.parametrize("parent", [False, True, None])
+def test_derived_mute_source_face_swap_is_always_off(parent):
+    """A face-swap project made from a muted (localisation) run starts with
+    "Remove original audio" OFF — it keeps the original soundtrack."""
+    assert project_types.derived_mute_source(project_types.FACE_SWAP, parent) is False
+
+
+def test_derived_mute_source_inheriting_types_still_exist():
+    """Guard: the inherit test above must not silently parametrize to nothing."""
+    assert [
+        k for k, s in project_types.PROJECT_TYPES.items()
+        if not s.default_mute_source and s.inherits_mute_source
+    ]

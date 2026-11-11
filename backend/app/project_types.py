@@ -147,6 +147,13 @@ class ProjectTypeSpec:
     # form and create_run read it; a run stores its own copy
     # (runs.generation_mode), set at creation and never changed.
     generation_mode: str = GENERATION_V2V
+    # Whether a project DERIVED from a run (Move to new project) carries the
+    # parent lineage's mute_source over (see derived_mute_source). False for
+    # face swap: its stitch overlays the ORIGINAL soundtrack and the prompt
+    # asserts that track, so a "Remove original audio" inherited from a
+    # localisation parent was always wrong there and had to be unticked by
+    # hand (project c0cf56c2 from run 7c90f778, 2026-11-10).
+    inherits_mute_source: bool = True
 
 
 # Operator-supplied defaults — kept verbatim (including wording quirks) so the
@@ -283,6 +290,7 @@ PROJECT_TYPES: dict[str, ProjectTypeSpec] = {
         default_prompt=_FACE_SWAP_PROMPT,
         default_audio_mode="original",
         default_mute_source=False,
+        inherits_mute_source=False,
         requires_audio_model=False,
         uses_references=True,
         hint=(
@@ -409,10 +417,16 @@ def derived_mute_source(project_type: str | None, parent_mute_source: bool | Non
     form to pre-check the box, so without this a localisation project made
     from a face-swap run inherited ``False`` and Seedance heard (and mixed in)
     the original language. Types whose default is off keep inheriting exactly
-    as before, so a muted lineage is never silently un-muted. The operator can
-    still switch it off afterwards (PATCH /projects/{pid}).
+    as before, so a muted lineage is never silently un-muted — except face
+    swap (``inherits_mute_source=False``), which always starts with it off:
+    a face-swap run keeps the original soundtrack, so a muted (typically
+    localisation) parent must not leak into it. The operator can still change
+    it afterwards (PATCH /projects/{pid}).
     """
-    return spec_for(project_type).default_mute_source or bool(parent_mute_source)
+    spec = spec_for(project_type)
+    if spec.default_mute_source:
+        return True
+    return spec.inherits_mute_source and bool(parent_mute_source)
 
 
 def is_rebuild(project_type: str | None) -> bool:

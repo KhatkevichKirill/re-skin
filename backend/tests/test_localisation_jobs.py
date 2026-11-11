@@ -174,29 +174,53 @@ def test_a_live_job_is_left_alone(SF, tmp_path):
     assert row.status == "queued" and row.dispatch_gen == 1
 
 
-def test_dead_worker_is_interrupted_and_its_late_write_discarded(SF, tmp_path, monkeypatch):
+def test_dead_worker_is_retried_and_its_late_write_discarded(SF, tmp_path, monkeypatch):
+    """AICP-351 §5.2: a worker proven gone mid-call is retried automatically (a
+    new dispatch generation, its claim revoked) — no longer interrupted at once —
+    and its late answer never lands. The 3-attempt bound and the final
+    `interrupted` state are covered in tests/test_paid_attempts.py."""
     pid = _project(SF, tmp_path)
     job = _admit(SF, pid)
     state = {}
 
     def slow(path, kie=None, spend_scope=None, **kw):
-        # While "the model thinks", the worker is declared dead by the reaper.
+        # While "the model thinks", the worker is proven dead (its container
+        # restarted) and the reaper takes the job back.
         t0 = utcnow()
-        kwr = dict(session_factory=SF, is_live=lambda q, j: False, enqueue_fn=lambda j: None)
+        kwr = dict(session_factory=SF, is_live=lambda q, j: False, enqueue_fn=lambda j: None,
+                   evidence=lambda row: "sender container restarted")
         localisation_jobs.reap(now=t0, **kwr)
         state["out"] = localisation_jobs.reap(now=t0 + timedelta(seconds=121), **kwr)
         return {"schema_version": 3, "lines": [{"id": 1, "start": 0, "end": 1, "text": "late"}]}
 
     monkeypatch.setattr(localisation, "transcribe_video", slow)
     assert localisation_jobs.run_transcription_job(job.id, 1, session_factory=SF) is None
-    assert state["out"]["interrupted"] >= 1
+    assert state["out"]["retried"] >= 1
     row = _get(SF, ProjectTranscription, job.id)
-    assert row.status == "interrupted" and row.claim_token is None
+    assert (row.status, row.claim_token, row.dispatch_gen) == ("queued", None, 2)
     p = _get(SF, VideoProject, pid)
-    assert p.transcript_status == "failed" and "may already have been billed" in p.transcript_error
+    assert p.transcript_status == "pending"
     assert p.transcript is None  # the late answer never landed
-    # ...and the project can be transcribed again (the job is not live any more).
-    assert _admit(SF, pid).dispatch_gen == 1
+
+
+def test_dead_worker_without_proof_is_left_running(SF, tmp_path, monkeypatch):
+    """No proof the sender is gone and its lease has not run out: the reaper
+    waits (the job stays running and counted active)."""
+    pid = _project(SF, tmp_path)
+    job = _admit(SF, pid)
+    state = {}
+
+    def slow(path, kie=None, spend_scope=None, **kw):
+        t0 = utcnow()
+        kwr = dict(session_factory=SF, is_live=lambda q, j: False, enqueue_fn=lambda j: None,
+                   evidence=lambda row: None)
+        localisation_jobs.reap(now=t0, **kwr)
+        state["out"] = localisation_jobs.reap(now=t0 + timedelta(seconds=121), **kwr)
+        return {"schema_version": 3, "lines": [{"id": 1, "start": 0, "end": 1, "text": "ok"}]}
+
+    monkeypatch.setattr(localisation, "transcribe_video", slow)
+    assert localisation_jobs.run_transcription_job(job.id, 1, session_factory=SF) == "succeeded"
+    assert state["out"].get("waiting") >= 1
 
 
 def test_translate_job_fenced_and_reaped(SF, tmp_path, monkeypatch):
@@ -215,7 +239,7 @@ def test_translate_job_fenced_and_reaped(SF, tmp_path, monkeypatch):
     import app.api_v2 as api_v2_module
 
     monkeypatch.setattr(api_v2_module, "_compute_localisation_prompt",
-                        lambda snap, translate_budgets=None: SimpleNamespace(
+                        lambda snap, translate_budgets=None, **_kw: SimpleNamespace(
                             model_dump=lambda mode=None: {"lines": [], "warnings": [], "snap": snap}))
     assert localisation_jobs.run_translate_job(jid, 2, session_factory=SF) is None  # wrong gen
     assert localisation_jobs.run_translate_job(jid, 1, session_factory=SF) == "succeeded"
@@ -234,7 +258,7 @@ def test_translate_failure_is_a_502_record(SF, tmp_path, monkeypatch):
     db.close()
     import app.api_v2 as api_v2_module
 
-    def boom(snap, translate_budgets=None):
+    def boom(snap, translate_budgets=None, **_kw):
         raise localisation.LocalisationError("model refused")
 
     monkeypatch.setattr(api_v2_module, "_compute_localisation_prompt", boom)

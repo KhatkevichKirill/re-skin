@@ -517,7 +517,7 @@ def test_run_poll_run_reenqueues_when_still_pending(monkeypatch):
     import app.pipeline_v2 as pipeline_v2
     # poll_run_once returns non-empty → tasks still pending
     monkeypatch.setattr(pipeline_v2, "poll_run_once",
-                        lambda run_id, pending, kie=None: dict(pending))
+                        lambda run_id, pending, kie=None, **_kw: dict(pending))
 
     tasks.run_poll_run("run-still-pending",
                        lock_key="reskin:run:lock:run-still-pending",
@@ -547,7 +547,7 @@ def test_run_poll_run_enqueues_finalize_when_all_done(monkeypatch):
     import app.pipeline_v2 as pipeline_v2
     # poll_run_once returns empty → all tasks terminal
     monkeypatch.setattr(pipeline_v2, "poll_run_once",
-                        lambda run_id, pending, kie=None: {})
+                        lambda run_id, pending, kie=None, **_kw: {})
 
     tasks.run_poll_run("run-all-done",
                        lock_key="reskin:run:lock:run-all-done",
@@ -572,7 +572,7 @@ def test_run_poll_run_aborts_when_lock_lost(monkeypatch):
 
     import app.pipeline_v2 as pipeline_v2
     monkeypatch.setattr(pipeline_v2, "poll_run_once",
-                        lambda run_id, pending, kie=None: poll_calls.append(run_id))
+                        lambda run_id, pending, kie=None, **_kw: poll_calls.append(run_id))
 
     tasks.run_poll_run("run-lock-lost",
                        lock_key="reskin:run:lock:run-lock-lost",
@@ -600,7 +600,7 @@ def test_run_poll_run_refreshes_lock_ttl(monkeypatch):
 
     import app.pipeline_v2 as pipeline_v2
     monkeypatch.setattr(pipeline_v2, "poll_run_once",
-                        lambda run_id, pending, kie=None: dict(pending))
+                        lambda run_id, pending, kie=None, **_kw: dict(pending))
 
     tasks.run_poll_run("run-refresh",
                        lock_key="reskin:run:lock:run-refresh",
@@ -766,7 +766,7 @@ def test_run_preprocess_poll_reenqueues_when_still_pending(monkeypatch):
 
     import app.pipeline_v2 as pipeline_v2
     monkeypatch.setattr(pipeline_v2, "poll_preprocess_once",
-                        lambda run_id, pending, kie=None: {"pending": dict(pending), "failed": []})
+                        lambda run_id, pending, kie=None, **_kw: {"pending": dict(pending), "failed": []})
 
     tasks.run_preprocess_poll("run-pp-still",
                                lock_key="reskin:run:lock:run-pp-still",
@@ -795,7 +795,7 @@ def test_run_preprocess_poll_pauses_for_review_when_all_done(monkeypatch):
 
     import app.pipeline_v2 as pipeline_v2
     monkeypatch.setattr(pipeline_v2, "poll_preprocess_once",
-                        lambda run_id, pending, kie=None: {})
+                        lambda run_id, pending, kie=None, **_kw: {})
     # Ordinary run (not a preprocess copy) — patched rather than read from the
     # DB, like the transition helpers below.
     monkeypatch.setattr(tasks, "_preprocess_auto_approve", lambda rid: False)

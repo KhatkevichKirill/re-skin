@@ -616,7 +616,12 @@ def run_submit_run(run_id: str, *, lock_key: str | None = None, lock_token: str 
         _submit_images_only_run(conn, run_id, lock_key, lock_token)
         return
     try:
-        pending = submit_run(run_id, gdrive=GDriveClient())
+        # AICP-351: the paid-submit attempts re-check THIS lock (by token)
+        # before each paid call and record this job as their sender.
+        from .paid_attempts import run_lease
+
+        pending = submit_run(run_id, gdrive=GDriveClient(),
+                             lease=run_lease(conn, lock_key, lock_token))
 
         if pending is None:
             # submit_run returns None when the run is already done or in a
@@ -702,7 +707,10 @@ def run_preprocess_refs(
 
     log.info("run_preprocess_refs: run_id=%s (lock acquired)", run_id)
     try:
-        pending = preprocess_reference_images(run_id, gdrive=GDriveClient())
+        from .paid_attempts import run_lease
+
+        pending = preprocess_reference_images(run_id, gdrive=GDriveClient(),
+                                              lease=run_lease(conn, lock_key, lock_token))
 
         if not pending:
             # No tasks to poll (preprocessing disabled, no refs, all
@@ -726,6 +734,14 @@ def run_preprocess_refs(
         )
 
     except Exception as exc:
+        from .paid_attempts import AttemptBlocked
+
+        if isinstance(exc, AttemptBlocked):
+            # AICP-351: the lease is lost (or a recovery parked an in-flight
+            # attempt) — the run is another job's now: write nothing.
+            log.warning("run_preprocess_refs: run %s — %s; leaving it to its owner", run_id, exc)
+            _release_lock(conn, lock_key, lock_token)
+            return
         message = f"GPT Image preprocessing failed to start: {exc}"
         # Same rule as the poll phase (_should_park_failed_preprocess): don't
         # take an operator-driven run down when it already has a reference set.
@@ -957,6 +973,19 @@ def _finish_preprocessing(
     """
     _delete_preprocess_poll_state(conn, run_id)
 
+    parked = _parked_preprocess_message(run_id)
+    if parked:
+        # AICP-351 §5.1: an image whose submit outcome is unknown is parked for
+        # the operator. Never auto-approve past it (the hole would fail the
+        # submit): review, with auto-approve cleared — the operator resolves
+        # the parked attempt on the run page first.
+        log.error("_finish_preprocessing: run %s %s — pausing at preprocess_review",
+                  run_id, parked)
+        _clear_auto_approve(run_id)
+        _transition_preprocessing_to_review(run_id, error_message=parked)
+        _release_lock(conn, lock_key, lock_token)
+        return
+
     if _preprocess_auto_approve(run_id):
         if _transition_preprocessing_to_queued(run_id):
             log.info(
@@ -974,6 +1003,37 @@ def _finish_preprocessing(
 
     _transition_preprocessing_to_review(run_id)
     _release_lock(conn, lock_key, lock_token)
+
+
+def _parked_preprocess_message(run_id: str) -> Optional[str]:
+    """The review message for a run with an open (parked) preprocess attempt."""
+    try:
+        from .db import get_session
+        from .paid_attempts import run_open_attempts
+        from .paid_attempts_models import OWNER_RUN_PREPROCESS
+
+        with get_session() as session:
+            slots = sorted(int(a.owner_id.rsplit(":", 1)[1])
+                           for a in run_open_attempts(session, run_id)
+                           if a.owner_kind == OWNER_RUN_PREPROCESS)
+    except Exception:
+        log.exception("_parked_preprocess_message: could not read attempts of run %s", run_id)
+        return None
+    if not slots:
+        return None
+    return (f"GPT Image submit outcome unknown for reference(s) {slots} — parked: check "
+            "the kie.ai dashboard, then Resubmit or Abandon it on the run page")
+
+
+def _clear_auto_approve(run_id: str) -> None:
+    from .db import get_session
+    from .models import Run
+
+    with get_session() as session:
+        run = session.get(Run, run_id)
+        if run is not None and run.preprocess_auto_approve:
+            run.preprocess_auto_approve = False
+            session.commit()
 
 
 def _transition_preprocessing_to_review(
@@ -1244,7 +1304,10 @@ def run_poll_run(run_id: str, *, lock_key: str, lock_token: str) -> None:
     log.info("run_poll_run: run_id=%s pending_tasks=%d", run_id, len(pending))
 
     try:
-        still_pending = poll_run_once(run_id, pending=pending)
+        from .paid_attempts import run_lease
+
+        still_pending = poll_run_once(run_id, pending=pending,
+                                      lease=run_lease(conn, lock_key, lock_token))
     except Exception:
         # On unexpected error, release the lock and propagate.
         _release_lock(conn, lock_key, lock_token)
@@ -1575,6 +1638,14 @@ def run_reconcile_tick() -> None:
     except Exception:
         log.exception("run_reconcile_tick: localisation job reaper raised — continuing")
     try:
+        # AICP-351: paid submit attempts — release parked/superseded senders on
+        # proof, park a video/image attempt that outlived the run-lock TTL.
+        from . import paid_attempts
+
+        paid_attempts.sweep()
+    except Exception:
+        log.exception("run_reconcile_tick: paid attempt sweep raised — continuing")
+    try:
         # Rebuild paid-call rows (docs/rebuild-from-reference-design.md §7.2):
         # re-drive rows whose step job died, release a `sending` row only on a
         # proof that its sender is gone. A no-op while no rebuild row is live.
@@ -1728,17 +1799,21 @@ def _enqueue_fixed_id(queue: str, func: str, args: tuple, job_id: str, timeout: 
 
 def enqueue_transcription_job(job_id: str, dispatch_gen: int, rq_job_id: str) -> None:
     """Doorbell of a durable transcription (AICP-365, app/localisation_jobs.py)."""
+    from .localisation_jobs import transcription_job_timeout_sec
+
+    # AICP-351: room for the bounded in-process retries (§5.2).
     _enqueue_fixed_id(QUEUE_PROCESS, "app.localisation_jobs.run_transcription_job",
-                      (job_id, dispatch_gen), rq_job_id, TRANSCRIBE_JOB_TIMEOUT)
+                      (job_id, dispatch_gen), rq_job_id, transcription_job_timeout_sec())
     log.info("Enqueued transcription job %s (rq_job=%s)", job_id, rq_job_id)
 
 
 def enqueue_translate_job(job_id: str, dispatch_gen: int, rq_job_id: str) -> None:
     """Doorbell of a durable translate job, on the localise worker's queue."""
-    from .localisation_prompt_job import job_timeout_sec
+    from .localisation_jobs import translate_job_timeout_sec
 
+    # AICP-351: 3 attempts of the button job's worst case (§5.2).
     _enqueue_fixed_id(QUEUE_LOCALISE, "app.localisation_jobs.run_translate_job",
-                      (job_id, dispatch_gen), rq_job_id, job_timeout_sec())
+                      (job_id, dispatch_gen), rq_job_id, translate_job_timeout_sec())
     log.info("Enqueued translate job %s (rq_job=%s)", job_id, rq_job_id)
 
 
@@ -2092,29 +2167,36 @@ def enqueue_process_audio_patch(patch_id: str) -> None:
     )
 
 
-def run_process_caption(caption_id: str) -> None:
+def run_process_caption(caption_id: str, dispatch: Optional[str] = None) -> None:
     """
     RQ-callable wrapper for :func:`pipeline_captions.process_caption`.
 
     Creates a real :class:`GDriveClient`. Imports the pipeline lazily to match
     the other RQ target wrappers in this module.
+
+    *dispatch* (AICP-351): the nonce of a reaper's ASR re-dispatch; the job
+    runs only while the caption still carries it (a stale duplicate exits).
     """
     from .gdrive_client import GDriveClient
     from .pipeline_captions import process_caption
 
-    log.info("run_process_caption: caption_id=%s", caption_id)
-    process_caption(caption_id, gdrive=GDriveClient())
+    log.info("run_process_caption: caption_id=%s dispatch=%s", caption_id, dispatch)
+    process_caption(caption_id, gdrive=GDriveClient(), dispatch=dispatch)
 
 
-def enqueue_process_caption(caption_id: str) -> None:
+def enqueue_process_caption(caption_id: str, dispatch: Optional[str] = None) -> None:
     """Push :func:`run_process_caption` onto the RQ "process" queue.
 
     Same queue as tail editing (a transcribe + burn + stitch pass, plus a Drive
     upload — the same shape as a tail edit, so it gets the same generous timeout).
+    *dispatch*: see :func:`run_process_caption` (only the reaper passes it).
     """
     q = _get_queue(QUEUE_PROCESS)
+    # Explicit args=/kwargs= (RQ refuses extra positional args next to them).
     job = q.enqueue(
-        "app.tasks.run_process_caption", caption_id, job_timeout=CAPTION_JOB_TIMEOUT
+        "app.tasks.run_process_caption", args=(caption_id,),
+        kwargs={"dispatch": dispatch} if dispatch else {},
+        job_timeout=CAPTION_JOB_TIMEOUT,
     )
     log.info(
         "Enqueued process_caption for caption_id=%s → rq_job=%s", caption_id, job.id

@@ -489,6 +489,7 @@ def _reap_orphaned_derived_creatives(live_ids: set[str]) -> dict[str, int]:
     cutoff = datetime.utcnow() - timedelta(seconds=_DERIVED_ORPHAN_GRACE_SEC)
     reaped: dict[str, int] = {}
     to_resume: list[str] = []
+    to_requeue_captions: list[str] = []
 
     with get_session() as session:
         for spec in _DERIVED_CREATIVE_SPECS:
@@ -551,6 +552,46 @@ def _reap_orphaned_derived_creatives(live_ids: set[str]) -> dict[str, int]:
                     )
                     continue
 
+                if spec.model is RunCaption and row.status == CaptionStatus.transcribing:
+                    # AICP-351 §5.2: the caption's ASR is an LLM-only phase —
+                    # an unknown outcome is retried automatically (bounded),
+                    # once its sender is proven gone or its lease ran out.
+                    from .pipeline_captions import asr_reap_decision
+
+                    try:
+                        decision = asr_reap_decision(session, row, evidence=_attempt_evidence())
+                    except Exception as exc:
+                        log.error("reap_derived: caption %s ASR decision failed: %s", row.id, exc)
+                        decision = "wait"
+                    if decision == "requeue":
+                        to_requeue_captions.append(
+                            (row.id, row.asr_claim[len("dispatch:"):]))
+                        continue
+                    if decision == "wait":
+                        continue
+                    # "fail": the bound is spent — reaped below as before.
+
+                if spec.model is RunSegmentImageJob:
+                    # AICP-351 §5.1: its paid submit may have been accepted
+                    # without the task id committing — park the attempt (the
+                    # operator resolves it on the run page; never re-sent).
+                    from . import paid_attempts
+                    from .paid_attempts_models import OWNER_SEGMENT_IMAGE_JOB
+
+                    # Lock the job FIRST (the sender's begin() fence locks it
+                    # too): either its attempt is already committed and is
+                    # parked here, or its fence finds the job failed and it
+                    # sends nothing (Terra gate r2).
+                    session.refresh(row, with_for_update=True)
+                    if row.status not in spec.active:
+                        continue
+                    att = paid_attempts.open_attempt(session, OWNER_SEGMENT_IMAGE_JOB, row.id,
+                                                     for_update=True)
+                    if att is not None:
+                        paid_attempts.park_started(session, att,
+                                                   reason="reaped: image submit outcome unknown",
+                                                   evidence=_attempt_evidence())
+
                 # Capture BEFORE the transition: the status it was stuck in is
                 # the whole diagnostic (`transcribing` says the model call died,
                 # `delivering` says the Drive upload did). Logging row.status
@@ -583,6 +624,15 @@ def _reap_orphaned_derived_creatives(live_ids: set[str]) -> dict[str, int]:
             log.error("reap_derived: commit failed: %s", exc)
             session.rollback()
             return {}
+
+    for cid, nonce in to_requeue_captions:
+        try:
+            from .tasks import enqueue_process_caption
+
+            enqueue_process_caption(cid, dispatch=nonce)
+            log.warning("reap_derived: caption %s ASR re-dispatched (AICP-351 bounded retry)", cid)
+        except Exception as exc:  # the next tick re-decides (the row is still transcribing)
+            log.error("reap_derived: re-dispatch of caption %s failed: %s", cid, exc)
 
     if reaped:
         log.warning(
@@ -628,6 +678,13 @@ def _discard(path: str) -> None:
         log.warning("Could not remove %s: %s", path, exc)
 
 
+def _attempt_evidence():
+    """The sender proof for paid attempts (AICP-351), None without Redis."""
+    from . import paid_attempts
+
+    return paid_attempts.default_evidence()
+
+
 def _repoll_generating_segments(
     run_id: str, redis_conn: Redis, *, still_owner=None,
 ) -> None:
@@ -654,9 +711,17 @@ def _repoll_generating_segments(
             log.error("_repoll_generating_segments refused images-only run %s", run_id)
             return
 
+        # AICP-351: a segment with an open paid attempt is left to the submit
+        # phase's park rule — its `seedance_task_id` may be the PREDECESSOR of
+        # an in-poll resubmit whose outcome is unknown (a truncated-success
+        # predecessor must not be "recovered" as the segment's result).
+        from . import paid_attempts
+        from .paid_attempts_models import OWNER_RUN_SEGMENT
+
         generating_segs = [
             rs for rs in run.run_segments
             if rs.status == SegmentStatus.generating and rs.seedance_task_id
+            and not paid_attempts.owner_open(session, OWNER_RUN_SEGMENT, rs.id)
         ]
         if not generating_segs:
             return

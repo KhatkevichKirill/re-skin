@@ -1189,6 +1189,17 @@ def localise_scope(project_id: str) -> str:
     return f"localise:{project_id}"
 
 
+def transcribe_job_scope(job_id: str) -> str:
+    """One durable transcription job (AICP-351 §5.2: its 3-attempt worst case
+    is reserved and released per job, never shared with another job)."""
+    return f"transcribe-job:{job_id}"
+
+
+def localise_job_scope(job_id: str) -> str:
+    """One durable translate job (``localisation_prompt_jobs``, AICP-351)."""
+    return f"localise-job:{job_id}"
+
+
 def storyboard_scope(storyboard_id: str) -> str:
     """Scope of one storyboard build (all its LLM call rows)."""
     return f"storyboard:{storyboard_id}"

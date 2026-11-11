@@ -2122,6 +2122,17 @@ class RunCaption(Base):
         JSON(none_as_null=True), nullable=True
     )
 
+    # AICP-351 (docs/assistant-drain-check-design.md §5.2): the caption's ASR
+    # dispatch fence. `asr_claim` is set (a fresh token) by the job that moves
+    # the caption into `transcribing` and is checked by every LLM attempt,
+    # call claim and transcript write of that job; the reaper clears it when
+    # it re-dispatches the ASR, so a stale job is fenced out. `asr_epoch` is
+    # bumped by an operator Retry: the 3-attempt automatic bound is per epoch
+    # (paid_submit_attempts.owner_id = "<caption id>:<epoch>").
+    asr_claim: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    asr_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0,
+                                           server_default="0")
+
     # State
     status: Mapped[str] = mapped_column(
         Enum(CaptionStatus, name="caption_status_enum"),
@@ -2490,3 +2501,5 @@ from . import localisation_jobs_models  # noqa: E402, F401
 from . import rebuild_models  # noqa: E402, F401
 # Deploy admission gate + idempotency keys (AICP-350, app/ops_gate.py).
 from . import ops_gate  # noqa: E402, F401
+# AICP-351 (docs/assistant-drain-check-design.md §5): paid submit attempts.
+from . import paid_attempts_models  # noqa: E402, F401

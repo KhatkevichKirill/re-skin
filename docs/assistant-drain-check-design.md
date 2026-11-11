@@ -363,6 +363,31 @@ ships:
 Everything else is frozen; later edge cases become tracked issues rather than design
 revisions. Full review history: Appendix B.
 
+## 10. Stage 2 implementation notes (AICP-351, 2026-11-10)
+
+Implemented on `feat/aicp-351-paid-submit-attempts` (migration `x3b5d7f9a1c4`). Code:
+`app/paid_attempts.py` (+ `_models`), `app/api_paid_attempts.py`, the sites in
+`pipeline_v2` / `pipeline_segment_image` / `localisation_jobs` / `pipeline_captions`.
+How the frozen text was read where it left a choice (not design changes):
+
+- **§5.1 single send.** "Submitted twice blind" includes the client's own transient
+  retries, so the §5.1 sites send with ONE POST (`create_*(..., once=True)`); a 5xx /
+  timeout on createTask parks. Each attempt also commits an estimated draw
+  (`attempt:<id>`) with the `started` row, moved to the task-id draw on acceptance.
+- **§5.1 sender fence (§9 item 2 applied to video/image).** A parked attempt carries its
+  sender identity; it is resolvable, and counts `parked` rather than `active`, only once
+  the sender is released (its own post-POST write, `rebuild_paid_call.sender_proof`, or
+  host attestation `scripts/paid_attempt_release_sender.sh`). Same rule §2 states for
+  AICP-261 `unknown` intents.
+- **§5.2 recovery.** The next attempt starts as soon as the previous one's sender is
+  PROVEN gone; with no proof, only after its lease (RQ job_timeout + 300 s) — then the old
+  one is `superseded` and stays `active` until it acknowledges or is proven/attested gone
+  (§9 item 2; `paid_attempts.sweep` re-checks every superseded row, job terminal or not).
+  One send per (attempt, call_no): CAS `calls_sent = n-1 -> n` with the pre-call draw.
+- **§5.2 "parks for the operator"** = the existing `interrupted` (translate,
+  transcription) / `failed` (caption) states with the reason; no new label. The operator
+  Translate button's Redis-only job is unchanged (Linear scope: `localisation_prompt_jobs`).
+
 ## Appendix A. The incident and what is missing (formerly §1)
 
 On 2026-10-29 at ~19:01 a deploy from another session recreated `api` and the workers

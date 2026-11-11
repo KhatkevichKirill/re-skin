@@ -2908,7 +2908,7 @@ def _prepare_localisation_snapshot(
 
 
 def _compute_localisation_prompt(
-    snapshot: dict, *, translate_budgets: Optional[dict] = None
+    snapshot: dict, *, translate_budgets: Optional[dict] = None, ledger=None,
 ) -> LocalisationPromptResponse:
     """Translate a frozen request and build the prompt. No DB access.
 
@@ -2958,6 +2958,9 @@ def _compute_localisation_prompt(
         cuts=[b for b in _segment_boundaries(hook_segments, hook) if b < hook],
         hook_end=hook,
         spend_scope=spend_mod.localise_scope(pid),
+        # AICP-351: only the durable translate job passes a ledger; the button
+        # job's call is unchanged.
+        **({"ledger": ledger} if ledger is not None else {}),
         **(translate_budgets or {}),
     )
     # Timed dialogue (AICP-335): each prompt's timecodes are relative to
@@ -3842,9 +3845,13 @@ def extract_insert(
         source_type="upload",
         source_ref=f"{parent.source_ref} (insert)"[:1024],
         source_local_path=child_src_path,
-        # The child is a crop of the parent's video, same soundtrack — carry
-        # the parent's "remove original audio" choice over with it.
-        mute_source=parent.mute_source,
+        # The child is always a Face changing project (the insert is swapped
+        # on its own and merged back), and a face-swap project derived from
+        # another one starts with "remove original audio" OFF whatever the
+        # parent chose — the same rule as Move to new project
+        # (project_types.derived_mute_source, inherits_mute_source=False).
+        project_type=DEFAULT_PROJECT_TYPE,
+        mute_source=derived_mute_source(DEFAULT_PROJECT_TYPE, parent.mute_source),
         # Same reasoning for the segmentation cap: the child is analyzed
         # (enqueued below) as soon as the crop lands, and it is meant to be run
         # on the same model as the parent, so it should be cut to the same
@@ -4892,6 +4899,7 @@ def delete_run(rid: str, db: Session = Depends(get_db)) -> Response:
             status_code=409,
             detail=f"Cannot delete a run while it is {run.status.value!r}",
         )
+    _refuse_open_paid_attempts(db, rid, what="delete this run")
     if active_task_for_run(db, rid, run.project_id) is not None:
         raise HTTPException(
             status_code=409,
@@ -5106,6 +5114,9 @@ def delete_preprocess_ref(
                 "— there is no per-image result to delete. Use Regenerate."
             ),
         )
+    db.refresh(run, with_for_update=True)
+    _refuse_open_paid_attempts(db, rid, what="delete a reference",
+                               owner_kind="run_preprocess")
 
     refs = list(run.reference_image_urls or [])
     if index == 0:
@@ -5251,6 +5262,9 @@ def regenerate_preprocess_ref(
             status_code=400,
             detail=f"index {index} out of range (run has {len(refs)} references)",
         )
+    db.refresh(run, with_for_update=True)
+    _refuse_open_paid_attempts(db, rid, what="regenerate this image",
+                               owner_kind="run_preprocess", owner_ids=[f"{rid}:{index}"])
 
     # Parallel lists, padded to len(refs) so an index is always addressable.
     prompts = list(run.preprocess_image_prompts or [])
@@ -5369,6 +5383,9 @@ def regenerate_preprocess(
             ),
         )
 
+    db.refresh(run, with_for_update=True)
+    _refuse_open_paid_attempts(db, rid, what="regenerate every GPT Image reference",
+                               owner_kind="run_preprocess")
     existing_refs = list(run.reference_image_urls or [])
     if not existing_refs:
         raise HTTPException(
@@ -6148,6 +6165,30 @@ def _require_stitch_library_clips(run: Run, db: Session) -> None:
         )
 
 
+def _refuse_open_paid_attempts(db: Session, run_id: str, *, what: str,
+                               owner_kind: Optional[str] = None,
+                               owner_ids: Optional[list] = None) -> None:
+    """409 while the run has an open (started/parked) paid submit attempt for
+    the owner(s) this action would reset, replace or resubmit (AICP-351 §5.1:
+    a parked attempt is resolved by Resubmit/Abandon on the run page, never by
+    a route that would send the same work again). Call it under the Run-row
+    lock (lock order Run -> attempt, as the resolution routes)."""
+    from . import paid_attempts
+
+    rows = paid_attempts.run_open_attempts(db, run_id)
+    if owner_kind is not None:
+        rows = [r for r in rows if r.owner_kind == owner_kind]
+    if owner_ids is not None:
+        wanted = {str(i) for i in owner_ids}
+        rows = [r for r in rows if r.owner_id in wanted]
+    if rows:
+        r = rows[0]
+        raise HTTPException(status_code=409, detail=(
+            f"Cannot {what}: a paid submit of this run has an unknown outcome (attempt "
+            f"{r.id[:8]}, {r.owner_kind}, {r.status}) — check the kie.ai dashboard and "
+            "resolve it on the run page first (Resubmit / Abandon)"))
+
+
 def _admit_segment_rerun(run: Run, db: Session) -> None:
     """Run-level admission shared by every segment rerun route.
 
@@ -6462,6 +6503,8 @@ def rerun_segment(
     run = _get_run_or_404(rid, db)
     _admit_segment_rerun(run, db)
     rs = _get_run_segment_or_404(rsid, rid, db)
+    _refuse_open_paid_attempts(db, rid, what="re-run this segment",
+                               owner_kind="run_segment", owner_ids=[rs.id])
     _check_segment_rerun_conflicts(rid, db)
     _require_audio_patch_discard_ack(run, db, discard_audio_patch)
     if spend_mod.is_images_only_run(run):
@@ -6530,6 +6573,8 @@ def rerun_segments(
     run = _get_run_or_404(rid, db)
     _admit_segment_rerun(run, db)
     segments = [_get_run_segment_or_404(sid, rid, db) for sid in ids]
+    _refuse_open_paid_attempts(db, rid, what="re-run these segments",
+                               owner_kind="run_segment", owner_ids=[x.id for x in segments])
 
     # Only swap segments the run actually processes: one excluded from a
     # custom stitch plan is never submitted, so "rerunning" it would reset it
@@ -6908,6 +6953,8 @@ def create_range_rerun(
         )
 
     rs = _get_run_segment_or_404(rsid, rid, db)
+    _refuse_open_paid_attempts(db, rid, what="regenerate this segment's range",
+                               owner_kind="run_segment", owner_ids=[rs.id])
 
     if not run.segment_snapshot:
         raise HTTPException(
@@ -7544,6 +7591,11 @@ def regenerate_segment_image(
         )
 
     rs = _get_run_segment_or_404(rsid, rid, db)
+    db.refresh(run, with_for_update=True)
+    _refuse_open_paid_attempts(
+        db, rid, what="regenerate this segment's image", owner_kind="segment_image_job",
+        owner_ids=[j for (j,) in db.execute(select(RunSegmentImageJob.id).where(
+            RunSegmentImageJob.run_segment_id == rsid))])
 
     active_job = _active_segment_image_job(rsid, db)
     if active_job is not None:
@@ -8995,7 +9047,7 @@ def create_caption(
     # reused — the reservation is then simply never consumed).
     _spend_reserve(
         spend_mod.reserve, db, spend_mod.caption_scope(caption.id),
-        spend_mod.llm_credits(), kind="captions", run_id=run_id,
+        _caption_asr_reservation(), kind="captions", run_id=run_id,
     )
     if adm is not None:
         adm.record("run_caption", [caption.id])
@@ -9059,9 +9111,13 @@ def retry_caption(caption_id: str, db: Session = Depends(get_db),
         )
     transition(caption, CaptionStatus.queued)
     caption.error_message = None
+    # AICP-351 §5.2: an operator Retry starts a new epoch (a fresh 3-attempt
+    # automatic bound) and reserves its worst case.
+    caption.asr_epoch = int(caption.asr_epoch or 0) + 1
+    caption.asr_claim = None
     _spend_reserve(
         spend_mod.reserve, db, spend_mod.caption_scope(caption_id),
-        spend_mod.llm_credits(), kind="captions retry", release_unused=True,
+        _caption_asr_reservation(), kind="captions retry", release_unused=True,
         run_id=caption.run_id,
     )
     if adm is not None:
@@ -9071,6 +9127,15 @@ def retry_caption(caption_id: str, db: Session = Depends(get_db),
 
     log.info("Retrying caption %s", caption_id)
     return CaptionResponse.model_validate(caption)
+
+
+def _caption_asr_reservation() -> float:
+    """AICP-351 §5.2: the caption ASR's worst case — 3 attempts x 1 call x the
+    capped transcribe model chain (released at the caption's end)."""
+    from . import paid_attempts
+
+    return paid_attempts.llm_reservation_credits(
+        paid_attempts.TRANSCRIBE_CALLS_PER_ATTEMPT, localisation.transcribe_chain_len())
 
 
 @router.patch("/captions/{caption_id}/lines", response_model=CaptionResponse)

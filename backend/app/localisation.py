@@ -69,7 +69,17 @@ from pathlib import Path
 from app import ai_models, languages, media, project_types
 from app.config import settings
 from app import spend
-from app.kie_client import KieError, KieModelUnavailableError, get_shared_client
+from app.kie_client import (
+    LLM_ACCEPTED,
+    LLM_REFUSED,
+    LLM_UNAVAILABLE,
+    LLM_UNSUPPORTED,
+    KieChatError,
+    KieError,
+    KieModelUnavailableError,
+    chat_credits_consumed,
+    get_shared_client,
+)
 from app.media import MediaError
 
 logger = logging.getLogger(__name__)
@@ -123,6 +133,68 @@ class LocalisationError(Exception):
     same way — record the message against the project and let the operator fall
     back to pasting a translation by hand.
     """
+
+
+class LocalisationUnknownOutcome(LocalisationError):
+    """An LLM call made under an :class:`app.paid_attempts.LlmLedger` whose
+    outcome is UNKNOWN (no complete response, an unparseable answer, or every
+    fallback model unavailable with a possibly billed 5xx/429). The job may
+    retry it as a new attempt within the §5.2 bound (AICP-351); without a
+    ledger it is never raised."""
+
+
+def _model_chain(primary: str, fallbacks_csv: str, *, capped: bool) -> list[str]:
+    """The primary model then the configured fallbacks (deduplicated); capped at
+    paid_attempts.LLM_MAX_CHAIN under a ledger so the reservation is a bound."""
+    models = [primary]
+    for fallback in (fallbacks_csv or "").split(","):
+        fallback = fallback.strip()
+        if fallback and fallback not in models:
+            models.append(fallback)
+    if capped:
+        from app.paid_attempts import LLM_MAX_CHAIN
+
+        models = models[:LLM_MAX_CHAIN]
+    return models
+
+
+def transcribe_chain_len() -> int:
+    return len(_model_chain(settings.LOCALISATION_TRANSCRIBE_MODEL,
+                            settings.LOCALISATION_TRANSCRIBE_FALLBACK_MODELS, capped=True))
+
+
+def translate_chain_len() -> int:
+    return len(_model_chain(settings.LOCALISATION_TRANSLATE_MODEL,
+                            settings.LOCALISATION_TRANSLATE_FALLBACK_MODELS, capped=True))
+
+
+def _ledger_send(ledger, client, *, route: str, model: str, timeout_sec: float, **kw) -> str:
+    """ONE claimed, single-POST LLM call (AICP-351 §5.2): claim the call permit
+    (its draw keyed ``llm:<attempt>:<n>`` commits first — it REPLACES the
+    post-call draw), POST once, settle only on a contract-proven no-charge
+    refusal. Raises KieModelUnavailableError (fall back: ``retryable`` marks a
+    possibly billed 5xx/429), KieChatError (a definite refusal) or
+    :class:`LocalisationUnknownOutcome`."""
+    n = ledger.claim()
+    ledger.before_post(n)
+    if route == "chat":
+        res = client.chat_completion_send_once(model=model, timeout_sec=timeout_sec, **kw)
+    else:
+        res = client.create_response_send_once(model=model, timeout_sec=timeout_sec, **kw)
+    if res.kind == LLM_ACCEPTED:
+        if route == "chat":
+            ledger.settle(n, chat_credits_consumed(res.body))
+        return res.content
+    if res.kind == LLM_UNAVAILABLE:
+        raise KieModelUnavailableError(f"{route} {model}: {res.error}", retryable=True)
+    if res.kind == LLM_UNSUPPORTED:
+        ledger.settle(n, 0.0)
+        raise KieModelUnavailableError(f"{route} {model}: {res.error}")
+    if res.kind == LLM_REFUSED:
+        ledger.settle(n, 0.0)
+        raise KieChatError(f"{route} {model}: {res.error}")
+    raise LocalisationUnknownOutcome(f"{route} {model}: outcome unknown: {res.error}")
+
 
 
 # ---------------------------------------------------------------------------
@@ -843,9 +915,15 @@ def transcribe_video(
     kie=None,
     model: str | None = None,
     spend_scope: str | None = None,
+    ledger=None,
 ) -> dict:
     """
     Transcribe a source video into the §4.1 transcript dict.
+
+    *ledger* (AICP-351 §5.2, an :class:`app.paid_attempts.LlmLedger`): every
+    model call is claimed + drawn BEFORE its one POST (no client retries); an
+    unknown outcome raises :class:`LocalisationUnknownOutcome`. Without it the
+    behaviour is unchanged (retrying client, post-call draw).
 
     Uploads *video_path* to the kie.ai temp-file host, hands the public URL to a
     video-capable model in the ``image_url`` envelope (kie.ai uses that envelope
@@ -919,36 +997,46 @@ def transcribe_video(
     # The primary model, then the fallbacks — each tried only when the one
     # before is *unavailable*, so a bad key or an unparseable answer still
     # fails fast instead of being billed again. The upload above is reused.
-    models = [resolved_model]
-    for fallback in settings.LOCALISATION_TRANSCRIBE_FALLBACK_MODELS.split(","):
-        fallback = fallback.strip()
-        if fallback and fallback not in models:
-            models.append(fallback)
+    models = _model_chain(resolved_model, settings.LOCALISATION_TRANSCRIBE_FALLBACK_MODELS,
+                          capped=ledger is not None)
 
     unavailable: list[str] = []
+    maybe_billed = False
     for attempt, candidate in enumerate(models):
         try:
-            raw = client.chat_completion(
-                model=candidate,
-                messages=messages,
-                response_format=_TRANSCRIPT_JSON_SCHEMA,
-                timeout_sec=settings.LOCALISATION_TIMEOUT_SEC,
-            )
+            if ledger is not None:
+                raw = _ledger_send(
+                    ledger, client, route="chat", model=candidate, messages=messages,
+                    response_format=_TRANSCRIPT_JSON_SCHEMA,
+                    timeout_sec=settings.LOCALISATION_TIMEOUT_SEC,
+                )
+            else:
+                raw = client.chat_completion(
+                    model=candidate,
+                    messages=messages,
+                    response_format=_TRANSCRIPT_JSON_SCHEMA,
+                    timeout_sec=settings.LOCALISATION_TIMEOUT_SEC,
+                )
         except KieModelUnavailableError as exc:
             unavailable.append(str(exc))
+            maybe_billed = maybe_billed or bool(getattr(exc, "retryable", False))
             if attempt + 1 < len(models):
                 logger.warning(
                     "transcribe: %s unavailable (%s); falling back to %s",
                     candidate, exc, models[attempt + 1],
                 )
                 continue
+            if ledger is not None and maybe_billed:
+                raise LocalisationUnknownOutcome(
+                    "transcribe: " + "; then ".join(unavailable)) from exc
             raise LocalisationError(
                 "transcribe: " + "; then ".join(unavailable)
             ) from exc
         except KieError as exc:
             raise LocalisationError(f"transcribe: {exc}") from exc
-        # Billed: measure it against the caller's reservation (AICP-155).
-        spend.record_draw(spend_scope, spend.llm_credits(), kind="transcribe")
+        if ledger is None:
+            # Billed: measure it against the caller's reservation (AICP-155).
+            spend.record_draw(spend_scope, spend.llm_credits(), kind="transcribe")
         resolved_model = candidate
         break
 
@@ -1287,9 +1375,14 @@ def translate_lines(
     retry_budget_sec: float | None = None,
     shorten_admit_sec: float | None = None,
     shorten_timeout_sec: float | None = None,
+    ledger=None,
 ) -> list[dict]:
     """
     Translate transcript *lines* into *target_language*, 1:1 and in order.
+
+    *ledger*: as :func:`transcribe_video` (AICP-351 §5.2) — at most
+    ``paid_attempts.TRANSLATE_CALLS_PER_ATTEMPT`` logical calls (main, 1:1
+    re-ask, shorten) times the capped model chain.
 
     *retry_budget_sec*, *shorten_admit_sec* and *shorten_timeout_sec* override
     :data:`_TRANSLATE_RETRY_BUDGET_SEC`, :data:`_SHORTEN_ADMIT_SEC` and
@@ -1390,28 +1483,36 @@ def translate_lines(
     # The primary model, then the fallbacks — each tried only when the one
     # before is *unavailable* (same contract as transcribe_video), so a bad key
     # or a broken answer still fails fast instead of being billed again.
-    models = [model or settings.LOCALISATION_TRANSLATE_MODEL]
-    for fallback in settings.LOCALISATION_TRANSLATE_FALLBACK_MODELS.split(","):
-        fallback = fallback.strip()
-        if fallback and fallback not in models:
-            models.append(fallback)
+    models = _model_chain(model or settings.LOCALISATION_TRANSLATE_MODEL,
+                          settings.LOCALISATION_TRANSLATE_FALLBACK_MODELS,
+                          capped=ledger is not None)
 
     resolved_model = models[0]
     unavailable: list[str] = []
+    maybe_billed = False
     attempt = 1
     begun = time.monotonic()
     while True:
         started = time.monotonic()
         try:
-            raw = get_shared_client().create_response(
-                model=resolved_model,
-                input_text=prompt,
-                images=images,
-                reasoning_effort=settings.LOCALISATION_TRANSLATE_EFFORT,
-                timeout_sec=settings.LOCALISATION_TRANSLATE_TIMEOUT_SEC,
-            )
+            if ledger is not None:
+                raw = _ledger_send(
+                    ledger, get_shared_client(), route="responses", model=resolved_model,
+                    input_text=prompt, images=images,
+                    reasoning_effort=settings.LOCALISATION_TRANSLATE_EFFORT,
+                    timeout_sec=settings.LOCALISATION_TRANSLATE_TIMEOUT_SEC,
+                )
+            else:
+                raw = get_shared_client().create_response(
+                    model=resolved_model,
+                    input_text=prompt,
+                    images=images,
+                    reasoning_effort=settings.LOCALISATION_TRANSLATE_EFFORT,
+                    timeout_sec=settings.LOCALISATION_TRANSLATE_TIMEOUT_SEC,
+                )
         except KieModelUnavailableError as exc:
             unavailable.append(str(exc))
+            maybe_billed = maybe_billed or bool(getattr(exc, "retryable", False))
             position = models.index(resolved_model)
             # Same nginx budget as the 1:1 re-ask: a fallback stacked on a
             # model that took minutes to give up would end in an opaque 504.
@@ -1425,13 +1526,17 @@ def translate_lines(
                 )
                 resolved_model = models[position + 1]
                 continue
+            if ledger is not None and maybe_billed:
+                raise LocalisationUnknownOutcome(
+                    "translate: " + "; then ".join(unavailable)) from exc
             raise LocalisationError(
                 "translate: " + "; then ".join(unavailable)
             ) from exc
         except KieError as exc:
             raise LocalisationError(f"translate: {exc}") from exc
-        # Billed even when the answer then fails the 1:1 check (AICP-155).
-        spend.record_draw(spend_scope, spend.llm_credits(), kind="translate")
+        if ledger is None:
+            # Billed even when the answer then fails the 1:1 check (AICP-155).
+            spend.record_draw(spend_scope, spend.llm_credits(), kind="translate")
 
         try:
             translated = _rejoin_translations(raw, lines)
@@ -1468,6 +1573,7 @@ def translate_lines(
                 hook_end=hook_end,
                 spend_scope=spend_scope,
                 timeout_sec=shorten_timeout_sec,
+                ledger=ledger,
             )
         return translated
 
@@ -1552,6 +1658,7 @@ def _shorten_overruns(
     hook_end: float | None,
     spend_scope: str | None,
     timeout_sec: float | None = None,
+    ledger=None,
 ) -> list[dict]:
     """One extra call that asks the translator to shorten its overrunning lines.
 
@@ -1572,23 +1679,30 @@ def _shorten_overruns(
         f"{len(str(line.get('text') or '').strip())}: {line.get('text', '')}"
         for line, _estimate, window in over
     )
+    shorten_kw = dict(
+        input_text=_SHORTEN_PROMPT.format(
+            prompt=prompt,
+            previous=raw.strip(),
+            too_long=too_long,
+            target_language=_language_name(target_language),
+        ),
+        images=images,
+        reasoning_effort=settings.LOCALISATION_TRANSLATE_EFFORT,
+        timeout_sec=_SHORTEN_TIMEOUT_SEC if timeout_sec is None else float(timeout_sec),
+    )
     try:
-        retry_raw = get_shared_client().create_response(
-            model=model,
-            input_text=_SHORTEN_PROMPT.format(
-                prompt=prompt,
-                previous=raw.strip(),
-                too_long=too_long,
-                target_language=_language_name(target_language),
-            ),
-            images=images,
-            reasoning_effort=settings.LOCALISATION_TRANSLATE_EFFORT,
-            timeout_sec=_SHORTEN_TIMEOUT_SEC if timeout_sec is None else float(timeout_sec),
-        )
-    except KieError as exc:
+        if ledger is not None:
+            retry_raw = _ledger_send(ledger, get_shared_client(), route="responses",
+                                     model=model, **shorten_kw)
+        else:
+            retry_raw = get_shared_client().create_response(model=model, **shorten_kw)
+    except (KieError, LocalisationUnknownOutcome) as exc:
+        # Best effort: an unknown outcome here keeps the first answer (its
+        # estimate stays drawn) — never a retry of the whole attempt.
         logger.warning("translate: shorten pass failed (%s) — keeping the first answer", exc)
         return translated
-    spend.record_draw(spend_scope, spend.llm_credits(), kind="translate")
+    if ledger is None:
+        spend.record_draw(spend_scope, spend.llm_credits(), kind="translate")
     try:
         rewritten = {line["id"]: line for line in _rejoin_translations(retry_raw, translated)}
     except LocalisationError as exc:

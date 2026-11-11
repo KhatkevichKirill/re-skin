@@ -85,6 +85,20 @@ class KieTaskError(KieError):
     """Raised when task creation, polling, or timeout occurs."""
 
 
+class KieTaskRefused(KieTaskError):
+    """A single-send createTask (``once=True``) was REFUSED: an HTTP 4xx or
+    kie.ai's HTTP-200 error envelope (``code != 200``, no taskId) on the one and
+    only POST. Nothing was created, so nothing was billed (AICP-351 §5.1:
+    ``failed_unbilled``)."""
+
+
+class KieTaskUnknown(KieTaskError):
+    """A single-send createTask (``once=True``) whose outcome is UNKNOWN: a 5xx,
+    a transport error or timeout, an unparseable body, or a 2xx without a
+    taskId. The request may have been accepted and billed, so it must never be
+    resent blind (AICP-351 §5.1: the attempt is ``parked``)."""
+
+
 class KieTaskFailed(KieTaskError):
     """Raised when the Seedance task itself reports a failure state."""
 
@@ -139,6 +153,10 @@ class KieModelUnavailableError(KieChatError):
 # Outcome kinds of create_task_once / chat_completion_once. NOT exceptions: the
 # caller records each one as a row state, and only "refused" proves that
 # nothing was billed.
+# Timeout of the one createTask POST of a ``once=True`` create (AICP-351);
+# the same 60 s the client and the rebuild single-send protocol use.
+CREATE_ONCE_TIMEOUT_SEC = 60.0
+
 OUTCOME_ACCEPTED = "accepted"   # the provider took the request (task id / answer)
 OUTCOME_REFUSED = "refused"     # a complete, definite refusal: nothing billed
 OUTCOME_UNKNOWN = "unknown"     # the request may have been taken and billed
@@ -176,6 +194,71 @@ class SendOutcome:
     @property
     def unknown(self) -> bool:
         return self.kind == OUTCOME_UNKNOWN
+
+
+# LLM single-send classification (AICP-351 §5.2). ``kind``:
+#   accepted     -> ``content`` is the answer (billed)
+#   unavailable  -> 5xx / 429 / a 5xx-or-429 envelope: this model is down right
+#                   now; the next fallback model may answer; the call MAY have
+#                   billed (keep the estimate)
+#   unsupported  -> 404/422 (HTTP or envelope) "model not supported/invalid":
+#                   refused before acceptance (settle 0), next fallback model
+#   refused      -> any other 4xx / error envelope: refused before acceptance
+#                   (settle 0), a definite failure (another model will not fix it)
+#   unknown      -> no complete response, unparseable body, 2xx without content
+LLM_ACCEPTED = "accepted"
+LLM_UNAVAILABLE = "unavailable"
+LLM_UNSUPPORTED = "unsupported"
+LLM_REFUSED = "refused"
+LLM_UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class LlmSend:
+    kind: str
+    content: Optional[str] = None
+    body: Optional[dict] = None
+    http_status: Optional[int] = None
+    error: Optional[str] = None
+    file_unavailable: bool = False
+
+
+def classify_llm_response(status_code: int, body_text: str, extract) -> LlmSend:
+    """Classify ONE complete LLM response (chat or responses route); *extract*
+    pulls the answer text out of a 2xx body. Pure."""
+    try:
+        data = json.loads(body_text) if body_text else None
+    except ValueError:
+        data = None
+    body = data if isinstance(data, dict) else None
+    snippet = (body_text or "")[:300]
+    if status_code >= 500 or status_code == 429:
+        return LlmSend(LLM_UNAVAILABLE, body=body, http_status=status_code,
+                       error=f"LLM HTTP {status_code}: {snippet}")
+    if status_code in (404, 422):
+        return LlmSend(LLM_UNSUPPORTED, body=body, http_status=status_code,
+                       error=f"LLM HTTP {status_code}: {snippet}")
+    if 400 <= status_code < 500:
+        return LlmSend(LLM_REFUSED, body=body, http_status=status_code,
+                       error=f"LLM HTTP {status_code}: {snippet}",
+                       file_unavailable=_is_file_unavailable(body_text))
+    if not (200 <= status_code < 300) or body is None:
+        return LlmSend(LLM_UNKNOWN, body=body, http_status=status_code,
+                       error=f"LLM HTTP {status_code}, unparseable body: {snippet}")
+    code = body.get("code")
+    if isinstance(code, int) and not (200 <= code < 300):
+        err = _envelope_error(body) or snippet
+        if code >= 500 or code == 429:
+            return LlmSend(LLM_UNAVAILABLE, body=body, http_status=status_code, error=err[:500])
+        if code in (404, 422):
+            return LlmSend(LLM_UNSUPPORTED, body=body, http_status=status_code, error=err[:500])
+        return LlmSend(LLM_REFUSED, body=body, http_status=status_code, error=err[:500],
+                       file_unavailable=_is_file_unavailable(str(body.get("msg"))))
+    content = extract(body)
+    if not content:
+        return LlmSend(LLM_UNKNOWN, body=body, http_status=status_code,
+                       error=f"LLM response without content: {snippet}")
+    return LlmSend(LLM_ACCEPTED, content=content, body=body, http_status=status_code)
 
 
 _FILE_UNAVAILABLE_MARKER = "failed to get the file information"
@@ -544,9 +627,15 @@ class KieClient:
         model: str = "bytedance/seedance-2",
         generate_audio: bool | None = None,
         reference_audio_urls: list[str] | None = None,
+        once: bool = False,
     ) -> str:
         """
         Create a Seedance task on the jobs API.
+
+        ``once=True`` (AICP-351): the same validation and payload, sent with ONE
+        POST (:meth:`create_task_once`, no tenacity) and classified — raises
+        :class:`KieTaskRefused` (nothing billed) or :class:`KieTaskUnknown`
+        (maybe billed) instead of retrying.
 
         Args:
             prompt: Text prompt for the generation.
@@ -643,6 +732,8 @@ class KieClient:
             len(reference_audio_urls or []),
         )
 
+        if once:
+            return self._create_once(payload, what="create_task")
         try:
             data = self._create_task_with_retry(url, payload)
         except KieTaskError:
@@ -669,6 +760,7 @@ class KieClient:
         aspect_ratio: str = "9:16",
         duration: int,
         seed: int | None = None,
+        once: bool = False,
     ) -> str:
         """
         Create a Gemini Omni Video task on the (shared) jobs API.
@@ -712,6 +804,8 @@ class KieClient:
             resolution, duration,
         )
 
+        if once:
+            return self._create_once(payload, what="create_omni_task")
         try:
             data = self._create_task_with_retry(url, payload)
         except KieTaskError:
@@ -734,6 +828,7 @@ class KieClient:
         aspect_ratio: str = "auto",
         resolution: str | None = None,
         model: str | None = None,
+        once: bool = False,
     ) -> str:
         """
         Create a GPT Image (image-to-image) task on the shared jobs API.
@@ -796,6 +891,8 @@ class KieClient:
             "inputs=%d)", model, aspect_ratio, resolution, len(input_urls),
         )
 
+        if once:
+            return self._create_once(payload, what="create_image_task")
         try:
             data = self._create_task_with_retry(url, payload)
         except KieTaskError:
@@ -1000,6 +1097,18 @@ class KieClient:
                     payload["model"], outcome.kind, outcome.task_id, outcome.http_status)
         return outcome
 
+    def _create_once(self, payload: dict, *, what: str) -> str:
+        """One createTask POST for the ``once=True`` path of the create methods
+        (AICP-351 §5.1): the task id, or :class:`KieTaskRefused` /
+        :class:`KieTaskUnknown`."""
+        outcome = self.create_task_once(payload, timeout=CREATE_ONCE_TIMEOUT_SEC)
+        if outcome.accepted and outcome.task_id:
+            logger.info("%s (once): taskId=%s", what, outcome.task_id)
+            return outcome.task_id
+        if outcome.refused:
+            raise KieTaskRefused(f"{what} refused: {outcome.error}")
+        raise KieTaskUnknown(f"{what} outcome unknown: {outcome.error}")
+
     def chat_completion_once(
         self,
         model: str,
@@ -1031,6 +1140,58 @@ class KieClient:
         logger.info("chat_completion_once (model=%s): %s http=%s",
                     model, outcome.kind, outcome.http_status)
         return outcome
+
+    def _llm_post_once(self, url: str, payload: dict, timeout: float, extract) -> LlmSend:
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = self._client.post(url, headers=headers, json=payload, timeout=timeout)
+        except Exception as exc:  # transport error / timeout: may have been sent
+            return LlmSend(LLM_UNKNOWN, error=f"no complete response: {exc!r}"[:500])
+        return classify_llm_response(resp.status_code, resp.text, extract)
+
+    def chat_completion_send_once(
+        self, *, model: str, messages: list[dict], response_format: dict | None = None,
+        timeout_sec: float,
+    ) -> LlmSend:
+        """:meth:`chat_completion` with ONE POST and no retry (AICP-351 §5.2):
+        the caller claimed this call's permit and draw first."""
+        url = f"{self._jobs_base}/{model}/v1/chat/completions"
+        payload: dict = {"messages": messages, "stream": False}
+        if response_format is not None:
+            payload["response_format"] = response_format
+        out = self._llm_post_once(url, payload, timeout_sec, _extract_chat_content)
+        logger.info("chat_completion_send_once (model=%s): %s http=%s", model, out.kind,
+                    out.http_status)
+        return out
+
+    def create_response_send_once(
+        self, *, model: str, input_text: str,
+        images: Sequence[tuple[str, bytes]] | None = None,
+        reasoning_effort: str = "medium", timeout_sec: float,
+    ) -> LlmSend:
+        """:meth:`create_response` with ONE POST and no retry (AICP-351 §5.2)."""
+        url = f"{self._jobs_base}/codex/v1/responses"
+        content: list[dict] = [{"type": "input_text", "text": input_text}]
+        for caption, jpeg in images or ():
+            content.append({"type": "input_text", "text": caption})
+            content.append({
+                "type": "input_image",
+                "image_url": "data:image/jpeg;base64,"
+                + base64.b64encode(jpeg).decode("ascii"),
+            })
+        payload = {
+            "model": model,
+            "input": [{"role": "user", "content": content}],
+            "reasoning": {"effort": reasoning_effort},
+            "stream": False,
+        }
+        out = self._llm_post_once(url, payload, timeout_sec, _extract_response_output_text)
+        logger.info("create_response_send_once (model=%s): %s http=%s", model, out.kind,
+                    out.http_status)
+        return out
 
     def get_task(self, task_id: str) -> dict:
         """

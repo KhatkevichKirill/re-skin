@@ -45,7 +45,7 @@ from . import localisation_plan as lp
 
 log = logging.getLogger(__name__)
 
-FLOW_VERSION = 1
+FLOW_VERSION = 2  # v2: AICP-390 (v1 stays registered: LocalisationFlow(1))
 CREATE_RUN = "localisation_create_run"
 _RUN_FIELDS = set(localisation_handlers.LocalisationCreateRun._FIELDS)
 
@@ -365,10 +365,19 @@ def _transcribe(ctx):
 # ---------------------------------------------------------------------------
 
 
-def _segments_step(ctx):
+def _segments_step_v2(ctx):
+    return _segments_step(ctx, end_card=True)
+
+
+def _segments_step(ctx, end_card: bool = False):
     p = ctx.project
     recut = ctx.effect("recut")
     first_generation = not ctx.previous_outputs()
+    if end_card:
+        # v2 waits on the operator inside this step, so it can be reopened
+        # before it ever completed (no previous output): only generation 1
+        # re-cuts, never over the operator's edits (Terra §1 gate R1).
+        first_generation = ctx.step_generation <= 1
     if recut is None and first_generation:
         return Launch("recut", "recut_at_pauses", {},
                       "move segment boundaries off spoken lines (AICP-347)")
@@ -379,7 +388,8 @@ def _segments_step(ctx):
     chk = lp.check_partition(segs, duration_sec=float(p.duration_sec or 0), target_sec=target)
     if not chk.ok:
         return Fail("the segments are not a usable whole-video cut: " + "; ".join(chk.problems)
-                    + " — fix them in the Segment Editor and start a new autopilot")
+                    + " — fix them in the Segment Editor and start a new autopilot",
+                    consumes=_open_answers(ctx) if end_card else ())
     res = dict((recut.result if recut else None) or {})
     out = {
         "segments": [[s["id"], round(s["start_sec"], 3), round(s["end_sec"], 3), s["action"]]
@@ -391,10 +401,173 @@ def _segments_step(ctx):
     if not first_generation:
         out["note"] = "segments edited by the operator: kept as they are (no re-cut)"
     moved = len(res.get("boundaries") or [])
-    return Complete(
-        out, depends_on={f"project_segments:{p.id}": ctx.segments_version()},
-        reason=f"{len(segs)} segments, {moved} boundary(ies) moved off spoken lines",
-    )
+    reason = f"{len(segs)} segments, {moved} boundary(ies) moved off spoken lines"
+    if not end_card:  # flow v1: unchanged
+        return Complete(
+            out, depends_on={f"project_segments:{p.id}": ctx.segments_version()}, reason=reason)
+    decided = _end_card(ctx, segs)
+    if not isinstance(decided, dict):
+        return decided  # a Decision: ask, wait, cut
+    out["end_card"] = decided["end_card"]
+    ec = decided["end_card"] or {}
+    if ec.get("choice") == "replace":
+        reason += f"; the source's end card from {ec['start_sec']:.2f} s is cut"
+    elif ec.get("choice") == "generate":
+        reason += "; the source's end card is localised like the rest (operator)"
+    return Complete(out, depends_on=_keys(ctx), reason=reason,
+                    consumes=decided.get("consumes") or [])
+
+
+# ---------------------------------------------------------------------------
+# The source's own CTA end card (AICP-390, flow v2)
+# ---------------------------------------------------------------------------
+
+
+def _scene_cuts(ctx):
+    from ...config import settings
+    from ...scene import read_scene_cuts
+    from ...storage import scene_cuts_cache_path
+
+    p = ctx.project
+    return read_scene_cuts(scene_cuts_cache_path(p.id), source_path=p.source_local_path,
+                           min_scene_len_sec=settings.SCENE_MIN_LEN_SECONDS)
+
+
+def _pending_names(ctx, prefix: str) -> list[str]:
+    from ...models_autopilot import AutopilotApproval, ProjectAutopilot
+
+    rows = ctx.db.execute(
+        select(AutopilotApproval.name).join(
+            ProjectAutopilot, ProjectAutopilot.id == AutopilotApproval.autopilot_id).where(
+            ProjectAutopilot.project_id == ctx.project.id,
+            ProjectAutopilot.status.in_(("active", "paused")),
+            AutopilotApproval.step_id == ctx.step_id,
+            AutopilotApproval.step_generation == ctx.step_generation,
+            AutopilotApproval.status == "pending",
+        )
+    ).all()
+    return sorted({n for (n,) in rows if n.startswith(prefix)})
+
+
+def _tail_names(ctx) -> dict:
+    out = {}
+    for lang, cid in (ctx.params.get("tails") or {}).items():
+        clip = ctx.db.get(LibraryClip, cid) if cid else None
+        out[lang] = (clip.name if clip is not None else cid) if cid else None
+    return out
+
+
+def _end_card(ctx, segs):
+    """The end-card decision of this generation: ``{"end_card": ..., "consumes": [...]}``
+    or a Decision (ask / wait / the cut).
+
+    ``end_card`` is None (no candidate), ``{"choice": "replace", "start_sec",
+    "segment_ids", ...}`` (cut: the languages with a tail leave these segments
+    out of their run, the others keep them as source footage) or ``{"choice":
+    "generate", ...}`` (the operator said it is not an end card). A reject or
+    the ``stop`` option fails the attempt, as every localisation hand-off does
+    (the approval card words its "no" control that way).
+
+    The question is tagged with the segments version, so an edit made while it
+    is open (the operator moving the boundary in the Segment Editor) retires it
+    and asks again about the new state. A cut is never assumed from the
+    segments alone: an existing trailing keep is asked about like any other
+    candidate (Terra §2: it may be source footage the operator meant to keep).
+    """
+    p = ctx.project
+    tr = p.transcript or {}
+    tver = ctx.transcript_version()
+
+    # 1. this generation's cut, while the segments still show it
+    cuts = ctx.effects("cut:")
+    if cuts and cuts[-1].state == "launching":
+        return Wait("bookkeeping of the end-card cut")
+    launched = [e for e in cuts if e.state == "launched"]
+    if launched:
+        e = launched[-1]
+        start = (e.result or {}).get("start_sec", (e.params or {}).get("start_sec"))
+        ids = lp.end_card_segment_ids(segs, start) if start is not None else None
+        if ids:
+            return {"end_card": {"choice": "replace", "start_sec": float(start), "segment_ids": ids,
+                                 "transcript_version": tver, "effect": e.name}}
+    # 2. a reopened step: an earlier generation's cut, if the segments and the
+    # transcript still show it exactly (anything else is decided again)
+    for prev in reversed(ctx.previous_outputs()):
+        ec = (prev.get("output") or {}).get("end_card") or {}
+        if ec.get("choice") == "replace" and ec.get("transcript_version") == tver:
+            ids = lp.end_card_segment_ids(segs, ec.get("start_sec"))
+            if ids:
+                return {"end_card": dict(ec, segment_ids=ids,
+                                         note=f"kept from generation {prev.get('generation')}")}
+        break
+
+    det = lp.detect_end_card(tr, scene_cuts=_scene_cuts(ctx), duration_sec=p.duration_sec)
+    if det is None:
+        return {"end_card": None}
+    plan = lp.end_card_plan(segs, det, lines=tr.get("lines") or [],
+                            duration_sec=float(p.duration_sec or 0),
+                            target_sec=lp.whole_video_target_sec(p.max_segment_sec))
+    tag = ctx.segments_version()[:12]
+    name = f"endcard:{tag}"
+    obsolete = [n for n in _pending_names(ctx, "endcard:") if n != name]
+    clear = _clear_stale(ctx)  # an answer about segments that have changed since
+    if clear is not None:
+        return clear
+    summary = {k: det[k] for k in ("start_sec", "end_sec", "first_line_sec", "prev_line_end_sec",
+                                   "scene_cut", "speakers", "on_screen_text", "notes")}
+    a = ctx.approval(name)
+    if a is None:
+        tails = _tail_names(ctx)
+        per_language = {lang: (f"cut; {tails[lang]} is appended in its place" if tails.get(lang)
+                               else "no CTA tail: the source's end card stays as original footage")
+                        for lang in _languages(ctx)}
+        cut_params = {"start_sec": det["start_sec"], "patch": plan["patch"], "result": plan["result"]}
+        options = []
+        if plan["feasible"]:
+            options.append(Option(
+                "replace", f"Cut it from {det['start_sec']:.2f} s", handler="localisation_cut_end_card",
+                params=cut_params,
+                consequence="it is never generated; each language with a CTA tail ends with that tail instead"))
+        already_keep = any(seg["action"] == "keep" and seg["end_sec"] > det["start_sec"] + 1e-3
+                           for seg in segs)
+        options.append(Option(
+            "generate", "It is not an end card: leave the segments as they are",
+            consequence=("its keep segments stay source footage; swap segments are generated (paid)"
+                         if already_keep else "it is generated like the rest of the video (paid)")))
+        options.append(Option(
+            "stop", "Stop the autopilot", consequence="ends this attempt (failed); nothing more is spent"))
+        why = ("" if plan["feasible"] else
+               " It cannot be cut at this boundary: " + "; ".join(plan["problems"])
+               + ". Move the boundary in the Segment Editor to be asked again.")
+        return Ask(
+            name, "handoff",
+            f"The source seems to end with its own CTA end card from {det['start_sec']:.2f} s "
+            f"(\"{det['lines'][0]['text'][:80]}\"): cut it?" + why,
+            {**summary, "lines": det["lines"], "per_language": per_language,
+             "segments_after": plan["result"], "problems": plan["problems"],
+             "hint": "the end card is never sent to the model; a wrong boundary can be fixed "
+                     "in the Segment Editor while this question is open"},
+            title="Cut the source's own end card?", options=options, about=_keys(ctx),
+            retire=obsolete,
+        )
+    if a.status == "pending":
+        return Wait("waiting for the operator: is this the source's own end card?", retire=obsolete)
+    consumes = _with_open(ctx, name)
+    if a.decision == "reject" or a.chosen_option == "stop":
+        return Fail(f"stopped by the operator at the end-card question: {a.answer_comment or ''}".strip(),
+                    consumes=consumes)
+    if a.decision == "approve" and a.chosen_option == "replace" and plan["feasible"]:
+        if not plan["changed"]:  # the segments already are the cut
+            ids = lp.end_card_segment_ids(segs, det["start_sec"]) or []
+            return {"end_card": {"choice": "replace", "start_sec": det["start_sec"],
+                                 "segment_ids": ids, "transcript_version": tver, **summary},
+                    "consumes": consumes}
+        return Launch(f"cut:{tag}", "localisation_cut_end_card",
+                      {"start_sec": det["start_sec"], "patch": plan["patch"], "result": plan["result"]},
+                      f"cut the source's end card from {det['start_sec']:.2f} s (operator approved)",
+                      expect=_keys(ctx), consumes=consumes)
+    return {"end_card": {"choice": "generate", **summary,
+                         "comment": (a.answer_comment or "")[:500]}, "consumes": consumes}
 
 
 def _compact(breakdown: dict) -> dict:
@@ -711,6 +884,17 @@ def _probe(lang, first_lang):
 # ---------------------------------------------------------------------------
 
 
+def _end_card_excluded(ctx, lang) -> list[str]:
+    """The source end card's segments when it was cut AND *lang* has a CTA
+    tail (AICP-390): its final ends before the card and ``tail:L`` appends the
+    CTA in its place. Without a tail they stay in as keep (original footage).
+    Flow v1 outputs have no ``end_card``: nothing is excluded."""
+    ec = (ctx.output("segments") or {}).get("end_card") or {}
+    if ec.get("choice") != "replace" or not (ctx.params.get("tails") or {}).get(lang):
+        return []
+    return list(ec.get("segment_ids") or [])
+
+
 def _rest(lang):
     def advance(ctx):
         p = ctx.project
@@ -739,7 +923,8 @@ def _rest(lang):
                 project_id=p.id, language=lang, prompts=prompts, segments=_segments(ctx),
                 probe_run_id=prid, temp_clip_id=clip_id,
                 model=ctx.params.get("model") or lp.DEFAULT_MODEL,
-                resolution=ctx.params.get("resolution") or lp.DEFAULT_RESOLUTION)
+                resolution=ctx.params.get("resolution") or lp.DEFAULT_RESOLUTION,
+                exclude_segment_ids=_end_card_excluded(ctx, lang))
             return Launch("launch", CREATE_RUN, _run_params(spec),
                           f"generate the remaining {lang} segments with the probe's voice",
                           regeneration=_bought_before(ctx), expect=_keys(ctx))
@@ -792,10 +977,18 @@ def _clip_lookup(clip_id: str):
 
 
 class LocalisationFlow:
+    """Flow v1 (AICP-365/366) and v2 (AICP-390: the source's own end card is
+    proposed at ``segments`` and, when cut, left out of every language that has
+    a CTA tail). v1 stays registered for the attempts created under it
+    (docs/autopilot-design.md §4.7); new attempts take the newest version."""
+
     id = "localisation"
-    version = FLOW_VERSION
     label = "Localisation"
     project_types = frozenset({"localisation"})
+
+    def __init__(self, version: int = FLOW_VERSION):
+        self.version = int(version)
+        self.end_card = self.version >= 2
     handlers = {
         CREATE_RUN: 1, "rerun_segments": 1, "transcribe_project": 1, "localisation_prompt": 1,
         "recut_at_pauses": 1, "set_mute_source": 1, "create_temp_library_clip": 1,
@@ -807,6 +1000,8 @@ class LocalisationFlow:
         "localisation_rederive_placement": 1,
         # AICP-389 (brand trailing-sibilant fix, localisation_brandfix.py)
         "localisation_apply_brand_audio_patch": 1,
+        # AICP-390 (flow v2: the source's own end card)
+        "localisation_cut_end_card": 1,
     }
 
     def validate_params(self, project, params):
@@ -830,7 +1025,9 @@ class LocalisationFlow:
                      needs=("intake",), paid=True, approvals=("regeneration",),
                      estimate=_transcribe_estimate),
             StepSpec("segments", "Segments re-cut at speech pauses", advance=_segments_step,
-                     needs=("transcribe",)),
+                     needs=("transcribe",)) if not self.end_card else
+            StepSpec("segments", "Segments re-cut at speech pauses; the source's own end card",
+                     advance=_segments_step_v2, needs=("transcribe",), approvals=("handoff",)),
             StepSpec("breakdown", "Source breakdown per segment", advance=_breakdown,
                      needs=("segments",)),
         ]
@@ -862,5 +1059,7 @@ class LocalisationFlow:
         return []
 
 
-FLOW = LocalisationFlow()
+FLOW_V1 = LocalisationFlow(1)
+FLOW = LocalisationFlow(FLOW_VERSION)
+registry.register(FLOW_V1)
 registry.register(FLOW)

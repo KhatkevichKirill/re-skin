@@ -591,6 +591,9 @@ UNGATED: dict[str, str] = {
     "api_v2.update_caption_lines": _EDIT,
     "api_v2.delete_caption": _DELETE,
     "api_v2.put_run_automation": "automation settings; its launches are gated in the automation tick",
+    # AICP-351: abandon closes a parked paid attempt (no job); it must stay
+    # usable while draining (design §6 rollback barrier).
+    "api_paid_attempts.abandon_paid_attempt": _RESOLVE,
     # api_assistant (AICP-261 run chat)
     "api_assistant.cancel_turn": _RESOLVE,
     "api_assistant.choose_version": _EDIT,

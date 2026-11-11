@@ -1,6 +1,78 @@
 {% from "error_detail.html" import error_detail %}
 {% set sv = status_val %}
 
+{% if paid_attempts %}
+<!-- __ Paid submits with an unknown outcome (AICP-351, design §5.1) __ -->
+<div class="card" id="paid-attempts-card" style="margin-bottom:16px;border:1px solid #d93025">
+  <div class="card-header"><h2>Paid submit outcome unknown</h2></div>
+  <div class="card-body" style="font-size:13px">
+    <p style="margin:0 0 8px">A worker stopped between sending a paid kie.ai request and recording
+      its answer. It is <strong>never resubmitted automatically</strong>: the request may be running
+      and billed. Check the kie.ai dashboard (time and predecessor below), then
+      <em>Resubmit</em> (a new paid attempt — may be charged a second time) or <em>Abandon</em>.
+      The run does not finalize while one is open.</p>
+    {% for pa in paid_attempts %}
+    <div class="paid-attempt" data-attempt-id="{{ pa.id }}" style="border-top:1px solid #eee;padding:6px 0">
+      <code>{{ pa.id[:8] }}</code>
+      &middot; {{ {"run_segment": "segment", "run_preprocess": "GPT Image reference", "segment_image_job": "segment image"}.get(pa.owner_kind, pa.owner_kind) }}
+      {% if pa.owner_label %}{{ pa.owner_label }}{% endif %}
+      &middot; attempt {{ pa.attempt_no }} &middot; <strong>{{ pa.status }}</strong>
+      &middot; started {{ pa.started_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC
+      {% if pa.predecessor_task_id %}&middot; predecessor task <code>{{ pa.predecessor_task_id }}</code>{% endif %}
+      {% if pa.provider_task_id %}&middot; late task <code>{{ pa.provider_task_id }}</code>{% endif %}
+      {% if pa.error %}<div style="color:#8a1c14">{{ error_detail(pa.error, 200) }}</div>{% endif %}
+      {% if pa.status == "parked" and pa.sender_released %}
+      <div style="margin-top:4px">
+        <label style="font-size:12px"><input type="checkbox" class="paid-attempt-confirm" /> I checked the kie.ai dashboard</label>
+        <button type="button" class="btn paid-attempt-resubmit" style="font-size:11px;padding:2px 8px"
+                data-run-id="{{ run.id }}" data-attempt-id="{{ pa.id }}">Resubmit</button>
+        <button type="button" class="btn paid-attempt-abandon" style="font-size:11px;padding:2px 8px"
+                data-run-id="{{ run.id }}" data-attempt-id="{{ pa.id }}">Abandon</button>
+        <span class="paid-attempt-status" style="font-size:12px"></span>
+      </div>
+      {% else %}
+      <div style="font-size:12px;color:var(--color-muted)">The original sender is not proven stopped yet
+        ({{ pa.sender_note or "waiting for its worker" }}) — it may still send. If its container is gone, run
+        <code>scripts/paid_attempt_release_sender.sh {{ pa.id }}</code> on the host.</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+<script>
+(function () {
+  function act(btn, verb) {
+    var row = btn.closest('.paid-attempt');
+    var st = row.querySelector('.paid-attempt-status');
+    var fd = new FormData();
+    fd.append('actor', 'dashboard');
+    if (verb === 'resubmit') {
+      var cb = row.querySelector('.paid-attempt-confirm');
+      if (!cb || !cb.checked) { if (st) st.textContent = 'Tick "I checked the kie.ai dashboard" first.'; return; }
+      fd.append('confirm_checked_provider', 'true');
+    } else if (!window.confirm('Abandon this attempt? Nothing is resubmitted; the call may still have been billed.')) {
+      return;
+    }
+    if (st) st.textContent = verb === 'resubmit' ? 'Resubmitting…' : 'Abandoning…';
+    fetch('/api/v2/runs/' + encodeURIComponent(btn.dataset.runId) + '/paid-attempts/' +
+          encodeURIComponent(btn.dataset.attemptId) + '/' + verb, { method: 'POST', body: fd })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+      .then(function (res) {
+        if (res.ok) { location.reload(); }
+        else if (st) { st.textContent = 'Error: ' + ((res.body && res.body.detail) || 'request failed'); }
+      })
+      .catch(function (err) { if (st) st.textContent = 'Network error: ' + err; });
+  }
+  document.querySelectorAll('.paid-attempt-resubmit').forEach(function (b) {
+    b.addEventListener('click', function () { act(b, 'resubmit'); });
+  });
+  document.querySelectorAll('.paid-attempt-abandon').forEach(function (b) {
+    b.addEventListener('click', function () { act(b, 'abandon'); });
+  });
+})();
+</script>
+{% endif %}
+
 {% if run.reference_image_urls %}
 <!-- __ Reference images (originals + GPT Image results) __ -->
 <div class="card" style="margin-bottom:16px">

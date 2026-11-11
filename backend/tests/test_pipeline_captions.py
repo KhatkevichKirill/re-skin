@@ -206,7 +206,7 @@ def _fake_transcribe(*, lines=None, source_language="en"):
     """Build a fake localisation.transcribe_video replacement."""
     calls: list[str] = []
 
-    def _transcribe(video_path, *, kie=None, model=None, spend_scope=None):
+    def _transcribe(video_path, *, kie=None, model=None, spend_scope=None, **_kw):
         calls.append(video_path)
         return {
             "schema_version": 1,
@@ -1288,3 +1288,53 @@ class TestProcessCaptionPlacement:
         ass = self._burn(db_session, monkeypatch, width=1920, height=1080, placement={
             "mode": "band", "center_y": 0.6219, "frame_aspect": 0.5625})
         assert "\\pos" not in ass
+
+
+class TestCaptionAsrDispatchFence:
+    """AICP-351 §5.2: the reaper re-dispatches a caption's ASR with a nonce; a
+    stale or overtaken delivery exits without touching the caption, and a
+    superseded worker's transcript is discarded (its attempt acknowledged)."""
+
+    def test_stale_redispatch_exits_untouched(self, db_session, monkeypatch):
+        from app.pipeline_captions import process_caption
+
+        monkeypatch.setattr(localisation_mod, "transcribe_video", _boom_transcribe)
+        run = _make_done_run(db_session)
+        caption = _make_caption(db_session, run, status=CaptionStatus.transcribing,
+                                asr_claim="dispatch:newer")
+        process_caption(caption.id, gdrive=FakeGDriveClient(), dispatch="older")
+        db_session.expire_all()
+        cap = db_session.get(RunCaption, caption.id)
+        assert cap.status == CaptionStatus.transcribing and cap.asr_claim == "dispatch:newer"
+
+    def test_superseded_worker_discards_its_transcript_and_acks(self, db_session, monkeypatch):
+        from app import paid_attempts
+        from app.paid_attempts_models import PaidSubmitAttempt
+        from app.pipeline_captions import process_caption
+
+        _patch_probe(monkeypatch)
+        _patch_burn_subtitles(monkeypatch)
+        run = _make_done_run(db_session)
+        caption = _make_caption(db_session, run)
+
+        def transcribe(path, *, ledger=None, **kw):
+            ledger.claim()
+            # Meanwhile the reaper took the ASR back (lease ran out, no proof):
+            # the attempt is superseded and the dispatch claim replaced.
+            s = db_session
+            s.expire_all()
+            s.get(PaidSubmitAttempt, ledger.attempt_id).status = "superseded"
+            s.get(RunCaption, caption.id).asr_claim = "dispatch:reaper"
+            s.commit()
+            return {"lines": [{"id": 1, "start": 0, "end": 1, "text": "late"}],
+                    "source_language": "en"}
+
+        monkeypatch.setattr(localisation_mod, "transcribe_video", transcribe)
+        process_caption(caption.id, gdrive=FakeGDriveClient())
+        db_session.expire_all()
+        cap = db_session.get(RunCaption, caption.id)
+        assert cap.lines in (None, []) and cap.asr_claim == "dispatch:reaper"
+        assert cap.status == CaptionStatus.transcribing
+        (att,) = db_session.query(PaidSubmitAttempt).filter(
+            PaidSubmitAttempt.owner_id == paid_attempts.caption_owner_id(caption.id, 0)).all()
+        assert att.status == "stopped" and att.sender_released_at is not None

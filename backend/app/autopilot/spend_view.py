@@ -45,6 +45,19 @@ def in_autopilot_admission() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def job_scopes(db: Session, project_id: str) -> set[str]:
+    """The per-job scopes of the project's durable transcription / translate
+    jobs (AICP-351: each job reserves its own §5.2 worst case)."""
+    from ..localisation_jobs_models import LocalisationPromptJob, ProjectTranscription
+    from ..spend import localise_job_scope, transcribe_job_scope
+
+    out = {transcribe_job_scope(i) for (i,) in db.execute(
+        select(ProjectTranscription.id).where(ProjectTranscription.project_id == project_id))}
+    out |= {localise_job_scope(i) for (i,) in db.execute(
+        select(LocalisationPromptJob.id).where(LocalisationPromptJob.project_id == project_id))}
+    return out
+
+
 def project_scopes(db: Session, project_id: str) -> set[str]:
     """Every ledger scope that belongs to the project's CURRENT rows."""
     from ..models import RunCaption, RunSegmentImageJob, RunSegmentRangeAttempt
@@ -53,6 +66,7 @@ def project_scopes(db: Session, project_id: str) -> set[str]:
     run_ids = [r for (r,) in db.execute(select(Run.id).where(Run.project_id == project_id))]
     scopes = {f"run:{rid}" for rid in run_ids}
     scopes |= {f"transcribe:{project_id}", f"localise:{project_id}"}
+    scopes |= job_scopes(db, project_id)
     if run_ids:
         for model, prefix in ((RunCaption, "caption"), (RunSegmentRangeAttempt, "range"),
                               (RunSegmentImageJob, "segimg")):

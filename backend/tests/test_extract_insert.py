@@ -264,11 +264,17 @@ class TestExtractInsertHappyPath:
         assert extraction.end_sec == 5.0
         assert extraction.corner_radius_px == 8
 
-    def test_child_inherits_mute_source(self, client, db_session):
-        """The child is a crop of the same video — it carries the parent's
-        "remove original audio" choice rather than re-enabling audio input."""
+    @pytest.mark.parametrize("parent_type", ["face_swap", "localisation"])
+    @pytest.mark.parametrize("parent_muted", [False, True])
+    def test_child_starts_with_mute_source_off(
+        self, client, db_session, parent_type, parent_muted
+    ):
+        """The child is a Face changing project, so it starts with "remove
+        original audio" OFF even when the parent had it on — the same rule as
+        a face-swap project made from a run (derived_mute_source)."""
         parent = _make_analyzed_project(db_session)
-        parent.mute_source = True
+        parent.project_type = parent_type
+        parent.mute_source = parent_muted
         db_session.commit()
 
         response = client.post(
@@ -276,7 +282,8 @@ class TestExtractInsertHappyPath:
         )
         assert response.status_code == 201
         child = db_session.get(VideoProject, response.json()["child_project_id"])
-        assert child.mute_source is True
+        assert child.project_type == "face_swap"
+        assert child.mute_source is False
 
     def test_enqueues_analyze_for_child(self, client, db_session):
         parent = _make_analyzed_project(db_session)

@@ -9688,6 +9688,28 @@ class TestPromoteRunToProject:
         session.close()
         assert new_project.mute_source is True
 
+    def test_face_swap_project_from_muted_run_is_not_muted(
+        self, spy_client, SessionFactory, db_session, tmp_path
+    ):
+        """A Face changing project made from a muted (e.g. localisation) run
+        starts with "Remove original audio" OFF: face swap keeps the original
+        soundtrack, so the lineage's mute must not carry over (c0cf56c2)."""
+        client, _ = spy_client
+        project, run, _ = self._done_run(db_session, tmp_path)
+        project.project_type = "localisation"
+        project.mute_source = True
+        db_session.commit()
+
+        response = client.post(
+            f"/api/v2/runs/{run.id}/to-project", data={"project_type": "face_swap"}
+        )
+        assert response.status_code == 201
+
+        session = SessionFactory()
+        new_project = session.get(VideoProject, response.json()["project_id"])
+        session.close()
+        assert new_project.mute_source is False
+
     @pytest.mark.parametrize(
         "project_type", ["face_swap", "subtitle_removal", "cover_change"]
     )
@@ -9970,10 +9992,12 @@ class TestExtractInsertInheritsProjectSettings:
         db_session.expire_all()
         assert db_session.get(VideoProject, parent.id).max_segment_sec == bad_cap
 
-    def test_child_inherits_mute_source(
+    def test_child_does_not_inherit_mute_source(
         self, client, db_session, SessionFactory, monkeypatch
     ):
-        """Same soundtrack as the parent → same "remove original audio" choice."""
+        """The child is a Face changing project, which always starts with
+        "remove original audio" OFF — the parent's choice is not carried over
+        (project_types.derived_mute_source)."""
         self._stub_crop_clip(monkeypatch)
         parent = self._analyzed_parent(db_session, mute_source=True)
 
@@ -9982,7 +10006,8 @@ class TestExtractInsertInheritsProjectSettings:
         session = SessionFactory()
         child = session.get(VideoProject, child_id)
         session.close()
-        assert child.mute_source is True
+        assert child.project_type == "face_swap"
+        assert child.mute_source is False
 
 
 # ---------------------------------------------------------------------------
@@ -14313,7 +14338,12 @@ class TestDailyBudget:
         assert s.get(VideoProject, project.id).transcript_status is None
         s.close()
 
-        _set_headroom(monkeypatch, SessionFactory, 20)
+        # AICP-351 §5.2: a transcription reserves its bounded-retry worst case
+        # (3 attempts x the capped model chain), released at the job's end.
+        from app import localisation as _loc, paid_attempts as _pa
+
+        _set_headroom(monkeypatch, SessionFactory, 1 + _pa.llm_reservation_credits(
+            _pa.TRANSCRIBE_CALLS_PER_ATTEMPT, _loc.transcribe_chain_len()))
         resp = client.post(f"/api/v2/projects/{project.id}/transcribe")
         assert resp.status_code == 202, resp.text
 

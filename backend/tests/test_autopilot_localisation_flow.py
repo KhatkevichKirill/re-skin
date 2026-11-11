@@ -508,22 +508,30 @@ def test_failed_transcription_asks_a_regeneration(env, monkeypatch):
 
 
 def test_interrupted_translation_is_never_replayed(env):
+    """AICP-351 §5.2: a worker that dies mid-job is retried automatically (a new
+    dispatch, nothing re-sent blind: its call permits are per attempt), at most
+    3 dispatches; then the job ends `interrupted` and the autopilot asks a
+    regeneration."""
     prj = make_project(env, transcript=transcript_v3(), mute_source=True)
     answer(env, prj, drive_to_budget(env, prj))
     settle(env, prj, rounds=10, until=lambda: bool(env.rang), jobs=False)
-    job = env.rang.pop(0)  # the worker never runs it: claim it, then "die"
-    db = env.SF()
-    row = db.get(LocalisationPromptJob, job.id)
-    row.status, row.claim_token = "running", "dead-worker"
-    db.commit()
-    db.close()
     clock = env.hooks.now
-    localisation_jobs.reap(session_factory=env.SF, is_live=lambda q_, j: False,
-                           enqueue_fn=env.rang.append, now=clock())
-    clock.advance(localisation_jobs.NOT_LIVE_GRACE_SEC + 1)
-    out = localisation_jobs.reap(session_factory=env.SF, is_live=lambda q_, j: False,
-                                 enqueue_fn=env.rang.append, now=clock())
-    assert out["interrupted"] == 1 and env.rang == []
+    outs = []
+    for _ in range(localisation_jobs.paid_attempts.LLM_MAX_ATTEMPTS):
+        job = env.rang.pop(0)  # the worker never runs it: claim it, then "die"
+        db = env.SF()
+        row = db.get(LocalisationPromptJob, job.id)
+        row.status, row.claim_token = "running", "dead-worker"
+        row.attempts = (row.attempts or 0) + 1
+        db.commit()
+        db.close()
+        localisation_jobs.reap(session_factory=env.SF, is_live=lambda q_, j: False,
+                               enqueue_fn=env.rang.append, now=clock())
+        clock.advance(localisation_jobs.NOT_LIVE_GRACE_SEC + 1)
+        outs.append(localisation_jobs.reap(session_factory=env.SF, is_live=lambda q_, j: False,
+                                           enqueue_fn=env.rang.append, now=clock()))
+    assert [o.get("retried", 0) for o in outs[:-1]] == [1, 1]
+    assert outs[-1]["interrupted"] == 1 and env.rang == []
     settle(env, prj, rounds=5, until=lambda: bool(pending(env, prj, "regeneration")))
     retry = pending(env, prj, "regeneration")[0]
     assert retry.proposal["status"] == "interrupted"

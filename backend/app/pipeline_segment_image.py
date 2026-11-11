@@ -34,7 +34,9 @@ import os
 import shutil
 from typing import Optional
 
+from . import paid_attempts
 from . import spend as spend_mod
+from .paid_attempts_models import OWNER_SEGMENT_IMAGE_JOB, STARTED as ATTEMPT_STARTED
 from .knowledge import capture as kcap
 from .db import get_session
 from .gdrive_client import GDriveClient
@@ -62,6 +64,14 @@ def _truncate_error(exc: Exception) -> str:
 
 def _default_gdrive() -> GDriveClient:
     return GDriveClient()
+
+
+_PARKED_MESSAGE = ("image submit outcome unknown — parked: check the kie.ai dashboard, then "
+                   "Resubmit or Abandon it on the run page")
+
+
+class SegmentImageParked(RuntimeError):
+    """The job's paid submit has an unknown outcome (its attempt is parked)."""
 
 
 def submit_segment_image_job(
@@ -106,6 +116,27 @@ def submit_segment_image_job(
                 transition(job, SegmentImageStatus.generating)
                 session.commit()
             return job.kie_task_id
+
+        # AICP-351 §5.1: an open paid attempt of this job without its own task
+        # id (a worker died between the POST and the commit, or a duplicate
+        # delivery) is PARKED — never recreated blind. The job fails with a
+        # message; the operator resolves the parked attempt on the run page.
+        open_att = paid_attempts.open_attempt(session, OWNER_SEGMENT_IMAGE_JOB, job.id,
+                                              for_update=True)
+        if open_att is not None:
+            if open_att.status == ATTEMPT_STARTED:
+                paid_attempts.park_started(session, open_att,
+                                           reason="recovered: image submit outcome unknown",
+                                           evidence=paid_attempts.default_evidence())
+            job.error_message = _PARKED_MESSAGE
+            try:
+                transition(job, SegmentImageStatus.failed)
+            except Exception:
+                job.status = SegmentImageStatus.failed
+            session.commit()
+            log.error("submit_segment_image_job: job %s has a parked paid attempt %s — "
+                      "not recreated", job_id, open_att.id)
+            return None
 
         # Everything below can fail (missing rows, ffmpeg, network, kie.ai).
         # Unlike the poll phase's task-level failures (handled explicitly
@@ -153,16 +184,45 @@ def submit_segment_image_job(
                 attempt_kind="segment_image", origin="operator", prompt=job.prompt, input_urls=input_urls,
                 locators=list(job.input_paths), recipe_context={"frame_sec": job.frame_sec}, site="A6",
             )
+            # AICP-351 §5.1: a committed attempt + estimated draw BEFORE the
+            # one POST; the receipt commits with job.kie_task_id.
+            scope = spend_mod.segment_image_scope(job_id)
+            session.commit()
+            def _job_fence(db) -> bool:
+                # The job, locked, is still waiting for this submit: a reaper
+                # that failed it first wins and nothing is sent.
+                j = db.get(RunSegmentImageJob, job_id, with_for_update=True,
+                           populate_existing=True)
+                return (j is not None and j.status == SegmentImageStatus.queued
+                        and not j.kie_task_id)
+
+            attempt_id = paid_attempts.begin(
+                OWNER_SEGMENT_IMAGE_JOB, job.id, kind="image", run_id=job.run_id,
+                request={"prompt": job.prompt, "input_urls": list(input_urls)},
+                credits=spend_mod.image_credits(), scope_key=scope, draw_kind="segment image",
+                lease=None, fence=_job_fence, sessions=get_session,
+            )
+            paid_attempts.pre_send_check(attempt_id, None, scope_key=scope,
+                                         kind="segment image", sessions=get_session)
             try:
-                task_id = kie.create_image_task(prompt=job.prompt, input_urls=input_urls)
+                task_id = kie.create_image_task(prompt=job.prompt, input_urls=input_urls,
+                                                once=True)
             except Exception as exc:
                 kcap.dispatch_error(kb_attempt, exc, site="A6")
+                outcome = paid_attempts.close_after_error(
+                    attempt_id, exc, scope_key=scope, kind="segment image", sessions=get_session)
+                if outcome == "unknown":
+                    raise SegmentImageParked(f"{_PARKED_MESSAGE} ({exc})") from exc
                 raise
-            # Measured before anything else can fail (AICP-155).
-            spend_mod.record_draw(
-                spend_mod.segment_image_scope(job_id), spend_mod.image_credits(),
-                kind="segment image", call_key=task_id, sessions=get_session,
+            owner_ok = paid_attempts.record_outcome(
+                session, attempt_id, outcome="accepted", task_id=task_id,
+                credits=spend_mod.image_credits(), scope_key=scope, draw_kind="segment image",
             )
+            if not owner_ok:
+                session.commit()
+                log.error("submit_segment_image_job: job %s attempt %s was parked while in "
+                          "flight (late task %s) — not applied", job_id, attempt_id, task_id)
+                return None
             job.kie_task_id = task_id
             transition(job, SegmentImageStatus.generating)
             session.commit()

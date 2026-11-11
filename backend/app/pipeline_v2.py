@@ -76,6 +76,13 @@ from . import project_types
 from . import rebuild as rebuild_mod
 from . import scene as scene_mod
 from . import spend as spend_mod
+from . import paid_attempts
+from .paid_attempts_models import (
+    OWNER_RUN_PREPROCESS,
+    OWNER_RUN_SEGMENT,
+    PARKED as ATTEMPT_PARKED,
+    STARTED as ATTEMPT_STARTED,
+)
 from .config import settings
 from .db import get_session
 from .gdrive_client import GDriveClient
@@ -1263,6 +1270,8 @@ def _submit_swap_segment_isolated(
     # Fix #9 (crash-resume): pre-existing clip checkpoints — skip cut/upload when set.
     resume_clip_url: Optional[str] = None,
     resume_local_clip_path: Optional[str] = None,
+    # AICP-351: the run phase's lease (run-lock refresh + sender identity).
+    lease: Optional["paid_attempts.SubmitLease"] = None,
 ) -> Optional[dict]:
     """Cut, upload, then create_task for one swap segment.
 
@@ -1521,25 +1530,37 @@ def _submit_swap_segment_isolated(
     }
     with get_session() as session:
         run_id = getattr(session.get(RunSegment, rs_id), "run_id", None)
+        predecessor = paid_attempts.last_task_id(session, OWNER_RUN_SEGMENT, rs_id)
 
     # Knowledge capture A1 (AICP-299): the intent, before the paid call. A no-op
     # unless capture is enabled for this project; never raises.
     kb_attempt = kcap.swap_intent(
         rs_id=rs_id, recipe=recipe, include_audio=not is_omni and not mute_audio, site="A1",
     )
+    # AICP-351 §5.1: a committed attempt (+ its estimated draw) BEFORE the one
+    # POST; the receipt and the task id commit together below.
     try:
-        task_id = _create_swap_task(kie=thread_kie, **recipe)
+        attempt_id, task_id = _paid_swap_send(
+            rs_id=rs_id, run_id=run_id, recipe=recipe, kie=thread_kie, lease=lease,
+            predecessor_task_id=predecessor,
+        )
     except Exception as exc:
         kcap.dispatch_error(kb_attempt, exc, site="A1")
         raise
-    # Measured the moment kie.ai accepted it, before anything else can fail.
-    _record_swap_draw(run_id, task_id, recipe)
 
     with get_session() as session:
         rs = session.get(RunSegment, rs_id)
-        rs.seedance_task_id = task_id
-        transition(rs, SegmentStatus.generating)
+        owner_ok = _record_swap_receipt(session, attempt_id, task_id, run_id, recipe)
+        if owner_ok:
+            rs.seedance_task_id = task_id
+            transition(rs, SegmentStatus.generating)
         session.commit()
+    if not owner_ok:
+        # A recovery parked this attempt while the POST was in flight: the run
+        # is no longer ours. The task id is kept on the parked attempt.
+        raise paid_attempts.AttemptBlocked(
+            f"segment {rs_id}: attempt {attempt_id} was parked by recovery while its "
+            f"submit was in flight (late task {task_id})")
     kcap.submitted(kb_attempt, task_id, site="A1")  # after the commit (P1)
 
     t_done = time.monotonic()
@@ -1720,6 +1741,7 @@ def _swap_task_call(
 def _create_swap_task(
     *,
     kie: KieClient,
+    once: bool = False,
     **recipe,
 ) -> str:
     """Create a Seedance/Omni task for an already-uploaded swap clip.
@@ -1728,9 +1750,97 @@ def _create_swap_task(
     identical request parameters; the parameters come from
     :func:`_swap_task_call` (unknown recipe keys are dropped there, with one
     WARNING — the rolling-deploy armour).
+
+    *once* (AICP-351): ONE POST, classified (``KieTaskRefused`` /
+    ``KieTaskUnknown``) instead of the client's transient retries — the
+    attempt protocol below (:func:`_paid_swap_send`) needs it. The range
+    attempt keeps its own ``submit_billed_at`` protocol and the default.
     """
     method, kwargs = _swap_task_call(**recipe)
+    if once:
+        kwargs["once"] = True
     return getattr(kie, method)(**kwargs)
+
+
+def _swap_credits(recipe: dict) -> float:
+    return spend_mod.video_credits(
+        recipe.get("run_model"), recipe.get("run_resolution"),
+        float(recipe.get("clip_end") or 0.0) - float(recipe.get("clip_start") or 0.0),
+    )
+
+
+class PaidSubmitParked(RuntimeError):
+    """A paid submit's outcome is unknown: its attempt is parked for the
+    operator (never resubmitted blind, AICP-351 §5.1)."""
+
+
+def _paid_swap_send(
+    *,
+    rs_id: str,
+    run_id: Optional[str],
+    recipe: dict,
+    kie: KieClient,
+    lease: Optional["paid_attempts.SubmitLease"],
+    predecessor_task_id: Optional[str],
+    in_poll_predecessor: Optional[str] = None,
+) -> tuple[str, str]:
+    """One paid swap createTask under the attempt protocol (AICP-351 §5.1):
+    commit a ``started`` attempt + estimated draw, re-check the lease, ONE
+    POST. Returns ``(attempt_id, task_id)``; the caller records the outcome
+    together with the owner row (:func:`paid_attempts.record_outcome`).
+
+    Raises ``paid_attempts.AttemptBlocked`` (nothing sent), the refusal
+    (attempt ``failed_unbilled``) or :class:`PaidSubmitParked` (attempt
+    ``parked``: the outcome is unknown)."""
+    scope = spend_mod.run_scope(run_id) if run_id else "unscoped"
+    attempt_id = paid_attempts.begin(
+        OWNER_RUN_SEGMENT, rs_id, kind="video", run_id=run_id, request=recipe,
+        credits=_swap_credits(recipe), scope_key=scope, draw_kind="video",
+        predecessor_task_id=predecessor_task_id, lease=lease,
+        fence=_segment_fence(rs_id, in_poll_predecessor), sessions=get_session,
+    )
+    paid_attempts.pre_send_check(attempt_id, lease, scope_key=scope, kind="video",
+                                 sessions=get_session)
+    try:
+        task_id = _create_swap_task(kie=kie, once=True, **recipe)
+    except Exception as exc:
+        outcome = paid_attempts.close_after_error(attempt_id, exc, scope_key=scope,
+                                                  kind="video", sessions=get_session)
+        if outcome == "unknown":
+            raise PaidSubmitParked(
+                f"submit outcome unknown — parked for the operator (attempt {attempt_id}): {exc}"
+            ) from exc
+        raise
+    return attempt_id, task_id
+
+
+def _segment_fence(rs_id: str, in_poll_predecessor: Optional[str]):
+    """The owner fence of a swap submit (AICP-351): the segment row, locked, is
+    still waiting for THIS submit — ``submitted`` with no task id (initial
+    submit) or ``generating`` with the failed predecessor as its task
+    (in-poll resubmit)."""
+
+    def fence(db) -> bool:
+        rs = db.get(RunSegment, rs_id, with_for_update=True, populate_existing=True)
+        if rs is None:
+            return False
+        if in_poll_predecessor is not None:
+            return (rs.status == SegmentStatus.generating
+                    and rs.seedance_task_id == in_poll_predecessor)
+        return rs.status == SegmentStatus.submitted and not rs.seedance_task_id
+
+    return fence
+
+
+def _record_swap_receipt(session, attempt_id: str, task_id: str, run_id: Optional[str],
+                         recipe: dict) -> bool:
+    """The accepted outcome in *session* (committed by the caller with the
+    owner row); True when the owner row may take the task id."""
+    return paid_attempts.record_outcome(
+        session, attempt_id, outcome="accepted", task_id=task_id,
+        credits=_swap_credits(recipe),
+        scope_key=spend_mod.run_scope(run_id) if run_id else "unscoped", draw_kind="video",
+    )
 
 
 def _deliver_with_retry(gdrive: GDriveClient, path: str, folder_id: str, run_id: str) -> dict:
@@ -1939,6 +2049,7 @@ def _resubmit_segment_task(
     pending: dict[str, dict],
     kie: KieClient,
     reason: str,
+    lease: Optional["paid_attempts.SubmitLease"] = None,
 ) -> bool:
     """Re-run a segment's recipe as a fresh task; True if a retry was queued.
 
@@ -2011,27 +2122,41 @@ def _resubmit_segment_task(
         run_id = getattr(poll_session.get(RunSegment, meta["rs_id"]), "run_id", None)
     # Knowledge capture A2 (AICP-299): the resubmit's intent; never raises.
     kb_attempt = kcap.swap_intent(rs_id=meta["rs_id"], recipe=recipe, resubmit_of=task_id, site="A2")
+    # AICP-351 §5.1: the resubmit gets its OWN attempt; `rs.seedance_task_id`
+    # still holds the predecessor until the receipt below commits, so recovery
+    # judges this window by the attempt row, never by the owner row.
     try:
-        new_task_id = _create_swap_task(kie=kie, **recipe)
+        attempt_id, new_task_id = _paid_swap_send(
+            rs_id=meta["rs_id"], run_id=run_id, recipe=recipe, kie=kie, lease=lease,
+            predecessor_task_id=task_id, in_poll_predecessor=task_id,
+        )
+    except paid_attempts.AttemptBlocked:
+        kcap.dispatch_error(kb_attempt, RuntimeError("attempt blocked"), site="A2")
+        raise
     except Exception as exc:
         kcap.dispatch_error(kb_attempt, exc, site="A2")
         log.warning(
             "resubmit failed for seg %d (attempt %d): %s",
             meta["index"], attempt, exc,
         )
+        if isinstance(exc, PaidSubmitParked):
+            meta["parked"] = str(exc)
         return False
-    # An in-poll resubmit is part of the already-admitted run: measured
-    # (overdraft beyond the launch estimate), never refused.
-    _record_swap_draw(run_id, new_task_id, recipe)
 
     with get_session() as poll_session:
         rs = poll_session.get(RunSegment, meta["rs_id"])
-        rs.seedance_task_id = new_task_id
-        rs.error_message = (
-            f"attempt {attempt}/{RUN_TASK_MAX_ATTEMPTS} "
-            f"failed ({reason}); retrying"
-        )
+        owner_ok = _record_swap_receipt(poll_session, attempt_id, new_task_id, run_id, recipe)
+        if owner_ok:
+            rs.seedance_task_id = new_task_id
+            rs.error_message = (
+                f"attempt {attempt}/{RUN_TASK_MAX_ATTEMPTS} "
+                f"failed ({reason}); retrying"
+            )
         poll_session.commit()
+    if not owner_ok:
+        raise paid_attempts.AttemptBlocked(
+            f"segment {meta['rs_id']}: resubmit attempt {attempt_id} was parked by recovery "
+            f"while in flight (late task {new_task_id})")
     # After the commit (P1): the new submission, and T2 — the predecessor failed.
     kcap.submitted(kb_attempt, new_task_id, site="A2", predecessor_failed={
         "task_id": task_id, "error_class": str(reason), "payload": {"failMsg": str(reason)[:500]}})
@@ -2059,6 +2184,7 @@ def poll_run_once_internal(
     pending: dict[str, dict],
     kie: KieClient,
     results_dir: str,
+    lease: Optional["paid_attempts.SubmitLease"] = None,
 ) -> dict[str, dict]:
     """Perform ONE round of status checks on all pending AI tasks.
 
@@ -2127,17 +2253,22 @@ def poll_run_once_internal(
             # RUN_TASK_MAX_ATTEMPTS total attempts before giving up.
             if _resubmit_segment_task(
                 task_id=task_id, meta=meta, pending=pending, kie=kie, reason=msg,
+                lease=lease,
             ):
                 continue
 
             # No recipe (resumed orphan) or attempts exhausted → mark failed.
             # The run will be marked `incomplete` (not stitched) so this
-            # segment can be re-run manually.
+            # segment can be re-run manually. A resubmit whose outcome is
+            # unknown is PARKED (AICP-351): the segment fails here and the
+            # parked attempt waits for the operator on the run page.
             with get_session() as poll_session:
                 rs = poll_session.get(RunSegment, meta["rs_id"])
                 _skip_segment(
                     rs,
-                    f"failed after {attempt} attempt(s): {msg}",
+                    (f"resubmit outcome unknown — parked for the operator (see the run page)"
+                     if meta.get("parked") else
+                     f"failed after {attempt} attempt(s): {msg}"),
                     poll_session,
                 )
             log.warning(
@@ -2242,6 +2373,7 @@ def _build_submit_state(
     kie: KieClient,
     gdrive: Optional[GDriveClient],
     session,
+    lease: Optional["paid_attempts.SubmitLease"] = None,
 ) -> Tuple[dict, bool, str]:
     """
     Internal: transition the run to processing, build and execute the submit
@@ -2480,6 +2612,30 @@ def _build_submit_state(
         if sd.action != "swap" or sd.id not in active_swap_ids:
             continue
         rs = rs_map[sd.id]
+
+        # AICP-351 §5.1 — FIRST, before the owner row is read: an open paid
+        # attempt for this segment. A `started` one without its own task id
+        # belongs to a sender that is gone (this job owns the run lock that
+        # recovery took over by CAS) or that will find its attempt parked: it
+        # is PARKED, whatever `rs.seedance_task_id` holds (an in-poll resubmit
+        # keeps the predecessor there). A `parked` one waits for the operator.
+        # Either way the segment is neither submitted nor polled; the run ends
+        # `incomplete` through the completeness gate.
+        open_att = paid_attempts.open_attempt(session, OWNER_RUN_SEGMENT, rs.id, for_update=True)
+        if open_att is not None:
+            if open_att.status == ATTEMPT_STARTED:
+                paid_attempts.park_started(
+                    session, open_att, reason="recovered: submit outcome unknown",
+                    evidence=paid_attempts.default_evidence(),
+                )
+            if rs.status != SegmentStatus.completed:
+                rs.error_message = (
+                    "paid submit outcome unknown — parked: check kie.ai, then Resubmit or "
+                    "Abandon on the run page")[:250]
+            session.flush()
+            log.error("RunSegment %s (idx %d) has an open paid attempt %s (%s) — not "
+                      "submitted, not polled", rs.id, rs.index, open_att.id, open_att.status)
+            continue
 
         # Resume: already completed with a real result → don't resubmit.
         if (
@@ -2720,6 +2876,7 @@ def _build_submit_state(
             # the cut and/or upload when a prior attempt already did them.
             "resume_clip_url": resume_clip_url,
             "resume_local_clip_path": resume_local_clip_path,
+            "lease": lease,
         })
 
     # Commit so that newly created RunSegment rows are visible to the
@@ -2751,10 +2908,30 @@ def _build_submit_state(
                 )
                 for work in submit_work
             ]
-        # Collect results; re-raise on first failure (preserves existing
-        # serial semantics: any submit failure fails the whole run).
+        # Collect EVERY result first. A segment whose createTask outcome is
+        # unknown is PARKED (AICP-351 §5.1): like a skipped segment it gets no
+        # pending entry, its siblings keep going and the completeness gate
+        # ends the run `incomplete` (the run page shows the parked card). Any
+        # other submit failure still fails the whole run (re-raised after the
+        # loop: the existing semantics).
+        first_error: Optional[BaseException] = None
         for work, fut in submit_futures:
-            result = fut.result()
+            try:
+                result = fut.result()
+            except PaidSubmitParked as exc:
+                log.error("run_id=%s segment idx=%d parked: %s", run_id, work["sd_index"], exc)
+                with get_session() as psession:
+                    prs = psession.get(RunSegment, work["rs_id"])
+                    if prs is not None:
+                        prs.error_message = (
+                            "paid submit outcome unknown — parked: check kie.ai, then "
+                            "Resubmit or Abandon on the run page")
+                        psession.commit()
+                continue
+            except BaseException as exc:  # noqa: BLE001 — re-raised below
+                if first_error is None:
+                    first_error = exc
+                continue
             if result is None:
                 # Segment skipped at submit time (longer than the selected
                 # model's per-clip ceiling). It was already marked failed; the
@@ -2768,6 +2945,9 @@ def _build_submit_state(
                 "attempt": 1,
                 "recipe": result["recipe"],
             }
+
+        if first_error is not None:
+            raise first_error
 
     log.info(
         "run_id=%s submit_phase_total=%.1fs segments_submitted=%d",
@@ -3604,12 +3784,89 @@ def _record_image_draw(run_id: str, task_id: str) -> None:
     )
 
 
+def _preprocess_owner(run_id: str, index: int) -> str:
+    return f"{run_id}:{int(index)}"
+
+
+def _preprocess_slot_open(session, run_id: str, index: int) -> Optional[str]:
+    """AICP-351: the status of slot *index*'s open paid attempt after recovery's
+    rule ran (a ``started`` one without its own task id is PARKED), or None.
+    A slot with an open attempt is never submitted again here."""
+    att = paid_attempts.open_attempt(session, OWNER_RUN_PREPROCESS,
+                                     _preprocess_owner(run_id, index), for_update=True)
+    if att is None:
+        return None
+    if att.status == ATTEMPT_STARTED:
+        paid_attempts.park_started(session, att, reason="recovered: image submit outcome unknown",
+                                   evidence=paid_attempts.default_evidence())
+    session.commit()
+    return ATTEMPT_PARKED
+
+
+def _paid_image_send(
+    session, *, run_id: str, index: int, prompt: str, input_urls: list,
+    kie: KieClient, lease: Optional["paid_attempts.SubmitLease"],
+) -> Optional[str]:
+    """One GPT Image createTask for preprocess slot *index* under the attempt
+    protocol (AICP-351 §5.1). Commits the outer *session* first (the attempt
+    is written in its own session). Returns the task id with the receipt
+    committed on the attempt AND in ``run.preprocess_task_ids[index]``
+    (the caller's session, committed here), or None when the outcome is
+    unknown (the slot's attempt is parked; the loop goes on)."""
+    session.commit()
+    owner = _preprocess_owner(run_id, index)
+    scope = spend_mod.run_scope(run_id)
+    request = {"prompt": prompt, "input_urls": list(input_urls), "index": index}
+    def fence(db) -> bool:
+        # The run, locked, is still in this phase and the slot still empty.
+        run = db.get(Run, run_id, with_for_update=True, populate_existing=True)
+        ids = list(getattr(run, "preprocess_task_ids", None) or [])
+        return (run is not None and run.status == RunStatus.preprocessing
+                and (index >= len(ids) or not ids[index]))
+
+    attempt_id = paid_attempts.begin(
+        OWNER_RUN_PREPROCESS, owner, kind="image", run_id=run_id, request=request,
+        credits=spend_mod.image_credits(), scope_key=scope, draw_kind="image",
+        predecessor_task_id=paid_attempts.last_task_id(session, OWNER_RUN_PREPROCESS, owner),
+        lease=lease, fence=fence, sessions=get_session,
+    )
+    paid_attempts.pre_send_check(attempt_id, lease, scope_key=scope, kind="image",
+                                 sessions=get_session)
+    try:
+        task_id = kie.create_image_task(prompt=prompt, input_urls=list(input_urls), once=True)
+    except Exception as exc:
+        outcome = paid_attempts.close_after_error(attempt_id, exc, scope_key=scope,
+                                                  kind="image", sessions=get_session)
+        if outcome == "unknown":
+            log.error("preprocess_reference_images: run %s slot %d — image submit outcome "
+                      "unknown, PARKED (attempt %s): %s", run_id, index, attempt_id, exc)
+            return None
+        raise
+    owner_ok = paid_attempts.record_outcome(
+        session, attempt_id, outcome="accepted", task_id=task_id,
+        credits=spend_mod.image_credits(), scope_key=scope, draw_kind="image",
+    )
+    if not owner_ok:
+        session.commit()
+        raise paid_attempts.AttemptBlocked(
+            f"run {run_id} slot {index}: attempt {attempt_id} was parked by recovery while "
+            f"its submit was in flight (late task {task_id})")
+    run = session.get(Run, run_id)
+    ids = list(run.preprocess_task_ids or [])
+    ids.extend([None] * max(0, index + 1 - len(ids)))
+    ids[index] = task_id
+    run.preprocess_task_ids = ids
+    session.commit()
+    return task_id
+
+
 def preprocess_reference_images(
     run_id: str,
     *,
     kie: Optional[KieClient] = None,
     gdrive: Optional[GDriveClient] = None,
     session=None,
+    lease: Optional["paid_attempts.SubmitLease"] = None,
 ) -> dict:
     """
     Create GPT Image 2 (image-to-image) task(s) for the run's reference images.
@@ -3723,6 +3980,11 @@ def preprocess_reference_images(
 
             # Resume / no-rebill: a single task already exists.
             existing = task_ids[0] if task_ids else None
+            if not existing and _preprocess_slot_open(session, run_id, 0):
+                # AICP-351: an unknown-outcome submit of this image is parked.
+                log.error("preprocess_reference_images: run %s all_as_refs has a parked "
+                          "paid attempt — not resubmitted", run_id)
+                return {}
             if existing:
                 pending[existing] = 0
                 log.info(
@@ -3741,15 +4003,19 @@ def preprocess_reference_images(
                 input_urls=input_urls, locators=refs,
                 recipe_context={"ref_index": 0, "mode": "all_as_refs"}, site="A4",
             )
+            run.preprocess_task_ids = [None] * len(refs)
             try:
-                task_id = kie.create_image_task(
-                    prompt=single_prompt, input_urls=input_urls,
+                task_id = _paid_image_send(
+                    session, run_id=run_id, index=0, prompt=single_prompt,
+                    input_urls=input_urls, kie=kie, lease=lease,
                 )
             except Exception as exc:
                 kcap.dispatch_error(kb_attempt, exc, site="A4")
                 raise
-            _record_image_draw(run_id, task_id)
-            run.preprocess_task_ids = [task_id] + [None] * (len(refs) - 1)
+            if task_id is None:
+                kcap.dispatch_error(kb_attempt, RuntimeError("outcome unknown (parked)"), site="A4")
+                return {}
+            run = session.get(Run, run_id)
             pending[task_id] = 0
             log.info(
                 "preprocess_reference_images: run %s all_as_refs → task %s "
@@ -3813,13 +4079,27 @@ def preprocess_reference_images(
                     "%s (resume)", run_id, i, task_ids[i],
                 )
                 continue
+            if _preprocess_slot_open(session, run_id, i):
+                # AICP-351: this slot's last submit has an unknown outcome — it
+                # is parked for the operator, never resubmitted here.
+                log.error("preprocess_reference_images: run %s trim %d has a parked paid "
+                          "attempt — not resubmitted", run_id, i)
+                continue
             # R1-new: input_urls = [user_ref, this_trim] — the user ref (index
             # 0) is sent as character context, the trim is what gets transformed.
             task_input_urls = [input_urls[0], input_urls[i]]
-            task_id = kie.create_image_task(
-                prompt=prompt, input_urls=task_input_urls,
+            # AICP-351: one attempt and ONE commit per image (it used to be one
+            # commit after the whole loop: N billed calls per commit).
+            run.preprocess_task_ids = task_ids
+            task_id = _paid_image_send(
+                session, run_id=run_id, index=i, prompt=prompt,
+                input_urls=task_input_urls, kie=kie, lease=lease,
             )
-            _record_image_draw(run_id, task_id)
+            run = session.get(Run, run_id)
+            task_ids = list(run.preprocess_task_ids or [])
+            task_ids.extend([None] * max(0, len(refs) - len(task_ids)))
+            if task_id is None:
+                continue
             task_ids[i] = task_id
             pending[task_id] = i
             kb_batch.append({"index": i, "task_id": task_id, "prompt": prompt,
@@ -4108,6 +4388,7 @@ def submit_run(
     *,
     kie: Optional[KieClient] = None,
     gdrive: Optional[GDriveClient] = None,
+    lease: Optional["paid_attempts.SubmitLease"] = None,
 ) -> Optional[dict]:
     """
     Submit phase: transition the run to processing, cut + upload + create AI
@@ -4146,9 +4427,15 @@ def submit_run(
 
         try:
             pending, _did_submit, _r_dir = _build_submit_state(
-                run_id, kie=kie, gdrive=gdrive, session=session
+                run_id, kie=kie, gdrive=gdrive, session=session, lease=lease,
             )
             return pending
+        except paid_attempts.AttemptBlocked as exc:
+            # The lease is lost (or a recovery parked an in-flight attempt):
+            # the run belongs to another job now — write nothing (AICP-351).
+            session.rollback()
+            log.warning("submit_run: run %s — %s; leaving the run to its owner", run_id, exc)
+            raise
         except Exception as exc:
             run = session.get(Run, run_id)
             if run and run.status not in (RunStatus.done, RunStatus.failed):
@@ -4170,6 +4457,7 @@ def poll_run_once(
     *,
     pending: dict,
     kie: Optional[KieClient] = None,
+    lease: Optional["paid_attempts.SubmitLease"] = None,
 ) -> dict:
     """
     Poll phase: perform ONE round of status checks on the pending-task map.
@@ -4203,7 +4491,7 @@ def poll_run_once(
         r_dir = run_results_dir(run_id, run.project_id)
 
     log.info("poll_run_once: run_id=%s pending=%d", run_id, len(pending))
-    return poll_run_once_internal(pending=pending, kie=kie, results_dir=r_dir)
+    return poll_run_once_internal(pending=pending, kie=kie, results_dir=r_dir, lease=lease)
 
 
 def finalize_run(

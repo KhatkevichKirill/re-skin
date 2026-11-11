@@ -60,10 +60,16 @@ ACTIVE: tuple[tuple[str, str], ...] = (
     ("assistant_turns", "FROM assistant_turns WHERE status IN ('queued', 'running', 'cancel_requested')"),
     ("assistant_jobs", "FROM assistant_jobs WHERE status IN ('queued', 'running', 'cancel_requested')"),
     ("assistant_paid_intents", "FROM assistant_paid_call_intents WHERE status IN ('submitting', 'unknown')"),
+    # AICP-351 (design §5, §9 item 2): a paid submit attempt whose sender may
+    # still send — `started`, a `superseded` LLM attempt (even after its job
+    # turned terminal), or a `parked` one whose sender is not yet released
+    # (acknowledged / proven gone / host-attested).
+    ("paid_submit_attempts", "FROM paid_submit_attempts WHERE status IN ('started', 'superseded') OR (status = 'parked' AND sender_released_at IS NULL)"),
 )
 
 PARKED: tuple[tuple[str, str], ...] = (
     ("provider_tasks", "FROM provider_tasks WHERE status IN ('needs_reconciliation', 'submit_unknown')"),
+    ("paid_submit_attempts", "FROM paid_submit_attempts WHERE status = 'parked' AND sender_released_at IS NOT NULL"),
 )
 
 # Restart-sensitive RQ queues (diagnostic). The ticks reschedule themselves and

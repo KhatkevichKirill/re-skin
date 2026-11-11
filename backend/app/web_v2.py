@@ -3113,6 +3113,29 @@ def project_status_fragment(
 # ---------------------------------------------------------------------------
 
 
+def _paid_attempts_view(run, run_segments, db) -> list:
+    """Open paid submit attempts of the run for its "outcome unknown" card
+    (AICP-351, design §5.1). Never raises: the run page must render."""
+    try:
+        from . import paid_attempts
+
+        idx = {rs.id: rs.index for rs in run_segments}
+        out = []
+        for row in paid_attempts.run_open_attempts(db, run.id):
+            d = paid_attempts.describe(row)
+            if row.owner_kind == "run_segment" and row.owner_id in idx:
+                d["owner_label"] = f"#{idx[row.owner_id]}"
+            elif row.owner_kind == "run_preprocess":
+                d["owner_label"] = f"#{row.owner_id.rsplit(':', 1)[-1]}"
+            else:
+                d["owner_label"] = ""
+            out.append(d)
+        return out
+    except Exception:
+        log.exception("run %s: paid attempts view failed", run.id)
+        return []
+
+
 @router.get("/runs/{rid}", response_class=HTMLResponse)
 def run_detail(
     rid: str, request: Request, db: Session = Depends(get_db)
@@ -3188,6 +3211,7 @@ def run_detail(
     context.update(_get_caption_context(run, db))
     context.update(_get_overlay_context(run, db))
     context.update(_rebuild_run_context(run, db))
+    context["paid_attempts"] = _paid_attempts_view(run, run_segments, db)
     return templates.TemplateResponse(request,"run_detail.html", context)
 
 
@@ -3250,6 +3274,7 @@ def run_status_fragment(
     context.update(_get_caption_context(run, db))
     context.update(_get_overlay_context(run, db))
     context.update(_rebuild_run_context(run, db))
+    context["paid_attempts"] = _paid_attempts_view(run, run_segments, db)
     return templates.TemplateResponse(request,"partials/run_status_content.html", context)
 
 
