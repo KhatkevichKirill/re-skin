@@ -14,6 +14,7 @@ Registered on import of ``app.autopilot.flows.localisation``.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -175,6 +176,65 @@ class RecutAtPauses(ActionHandler):
         }
         effect.result = result
         return result
+
+
+class CutEndCard(ActionHandler):
+    """The operator-approved end-card cut (AICP-390): one PATCH /segments.
+
+    *patch* and *result* come from ``localisation_plan.end_card_plan`` over the
+    segments the step saw; the launch's ``expect`` fences that version under
+    the project lock, so the patch applies to exactly those rows. Goes through
+    ``api_v2.update_project_segments`` (its own ready / active-run 409s, the
+    partition normalisation and the commit). The planned outcome is written to
+    ``effect.result`` BEFORE that commit, so it lands with the segments or not
+    at all; ``matches`` says whether the normalised segments are the plan (the
+    step re-reads the segments either way and never trusts this alone)."""
+
+    name = "localisation_cut_end_card"
+    version = 1
+    paid = False
+
+    def validate(self, db, project, params):
+        from ...schemas_v2 import SegmentsUpdateRequest
+
+        unknown = set(params) - {"start_sec", "patch", "result"}
+        if unknown:
+            raise ActionInvalid(f"{self.name}: unknown params {sorted(unknown)}")
+        try:
+            start = float(params.get("start_sec"))
+        except (TypeError, ValueError):
+            raise ActionInvalid(f"{self.name}: start_sec must be a number") from None
+        try:
+            patch = SegmentsUpdateRequest.model_validate(dict(params.get("patch") or {}))
+        except Exception as exc:
+            raise ActionInvalid(f"{self.name}: patch: {exc}") from None
+        result = params.get("result")
+        if not isinstance(result, list) or not all(
+                isinstance(r, (list, tuple)) and len(r) == 3 for r in result):
+            raise ActionInvalid(f"{self.name}: result must be [[start, end, action], ...]")
+        return {"start_sec": start, "patch": json.loads(patch.model_dump_json()),
+                "result": [[float(r[0]), float(r[1]), str(r[2])] for r in result]}
+
+    def spend_scopes(self, params, targets):
+        return []
+
+    def execute(self, db, project, params, effect):
+        from sqlalchemy import select
+
+        from ... import api_v2
+        from ...models import SegmentDef
+        from ...schemas_v2 import SegmentsUpdateRequest
+        from . import localisation_plan as lp
+
+        effect.result = {"start_sec": params["start_sec"], "planned": params["result"]}
+        api_v2.update_project_segments(
+            project.id, SegmentsUpdateRequest.model_validate(params["patch"]), db=db)
+        rows = db.execute(select(SegmentDef).where(SegmentDef.project_id == project.id)
+                          .order_by(SegmentDef.index)).scalars().all()
+        segs = lp.segment_dicts(rows)
+        return {"start_sec": params["start_sec"], "planned": params["result"],
+                "matches": lp.end_card_results(segs, params["result"]),
+                "segment_ids": lp.end_card_segment_ids(segs, params["start_sec"]) or []}
 
 
 class SetMuteSource(ActionHandler):
@@ -361,7 +421,8 @@ def probe_sheet(args: dict, out_dir: str) -> dict:
 
 
 HANDLERS = (TranscribeProject(), LocalisationPrompt(), LocalisationCreateRun(), RecutAtPauses(),
-            SetMuteSource(), CreateTempLibraryClip(), ProbeFeedback(), AcknowledgeStale())
+            SetMuteSource(), CreateTempLibraryClip(), ProbeFeedback(), AcknowledgeStale(),
+            CutEndCard())
 for _h in HANDLERS:
     registry.register_handler(_h)
 registry.register_compute("localisation_source_captions", source_captions, version=1)

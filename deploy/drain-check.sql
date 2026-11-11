@@ -44,6 +44,13 @@
 -- app/rebuild_models.py). A row in 'sending' clears only when its sender finished or is
 -- proven gone (reaper / scripts/rebuild_release_sender.sh) — wait for it, never force it.
 -- The tables exist from migration t4d9f2b7c315 on (apply it before running this check).
+-- paid_submit_attempts (AICP-351, migration x3b5d7f9a1c4 — apply it BEFORE running this
+-- check): one row per paid kie.ai video/image submit or LLM-job attempt, committed before the
+-- call. ACTIVE = a sender may still send: `started`, a `superseded` LLM attempt (lease ran out
+-- without proof; counted even after its job ended — design §9 item 2), or a `parked` one whose
+-- sender is not released. PARKED = an unknown-outcome submit whose sender is gone: it waits for
+-- the operator (Resubmit / Abandon on the run page, `python -m app.paid_attempts`). An
+-- unreleased sender whose container was recreated: scripts/paid_attempt_release_sender.sh <id>.
 SELECT 'active' AS state, 'projects', count(*) FROM video_projects WHERE status = 'analyzing' OR transcript_status IN ('pending', 'running')
 UNION ALL SELECT 'active', 'runs', count(*) FROM runs WHERE status IN ('queued', 'processing', 'stitching', 'delivering', 'preprocessing')
 UNION ALL SELECT 'active', 'range_attempts', count(*) FROM run_segment_range_attempts WHERE status IN ('queued', 'generating', 'stitching', 'delivering')
@@ -67,4 +74,6 @@ UNION ALL SELECT 'active', 'rebuild_llm_calls', count(*) FROM rebuild_llm_calls 
 UNION ALL SELECT 'active', 'assistant_turns', count(*) FROM assistant_turns WHERE status IN ('queued', 'running', 'cancel_requested')
 UNION ALL SELECT 'active', 'assistant_jobs', count(*) FROM assistant_jobs WHERE status IN ('queued', 'running', 'cancel_requested')
 UNION ALL SELECT 'active', 'assistant_paid_intents', count(*) FROM assistant_paid_call_intents WHERE status IN ('submitting', 'unknown')
-UNION ALL SELECT 'parked', 'provider_tasks', count(*) FROM provider_tasks WHERE status IN ('needs_reconciliation', 'submit_unknown');
+UNION ALL SELECT 'active', 'paid_submit_attempts', count(*) FROM paid_submit_attempts WHERE status IN ('started', 'superseded') OR (status = 'parked' AND sender_released_at IS NULL)
+UNION ALL SELECT 'parked', 'provider_tasks', count(*) FROM provider_tasks WHERE status IN ('needs_reconciliation', 'submit_unknown')
+UNION ALL SELECT 'parked', 'paid_submit_attempts', count(*) FROM paid_submit_attempts WHERE status = 'parked' AND sender_released_at IS NOT NULL;

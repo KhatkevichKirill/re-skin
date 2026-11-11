@@ -38,7 +38,7 @@ exists (`transcribe` step). Tails are consumed by C2.
 |---|---|---|---|---|
 | `intake` | — | no | `handoff` | 0 |
 | `transcribe` | intake | yes | `regeneration` | `llm_credits` unless a ready v3 transcript exists |
-| `segments` | transcribe | no | — | 0 |
+| `segments` | transcribe | no | `handoff` (v2: the source's end card, §10) | 0 |
 | `breakdown` | segments | no | — | 0 |
 | `translate:L` | breakdown | yes | `regeneration` | 3 × `llm_credits` (= the admission's reservation) |
 | `prompts:L` | translate:L | no | — | 0 |
@@ -100,6 +100,8 @@ already paid for (§7 #2; needs a ctx accessor for the step's generation / previ
   (only a hand edit can produce it; the operator fixes the segments and starts a new
   autopilot — the transcript is reused, nothing is re-billed).
 * `Complete({segments, recut}, depends_on={project_segments:<pid>: …})`.
+* **Flow v2 (AICP-390)** asks about the source's own CTA end card before completing, and
+  completes with `end_card` and `depends_on` segments + transcript — §10.
 
 ### 2.4 `breakdown` (free)
 
@@ -185,6 +187,9 @@ approval is superseded by the new run version (core §2.5) and asked again.
 * run not terminal → `Wait`; failed/incomplete → `Ask rerun:rN regeneration` [rerun the
   failed segments | stop] (consumed as in §2.7); done → `Complete({run_id, temp_clip_id, probe_run_id},
   depends_on={run:<rest>: …})`. C2 deletes the TEMP clip at the end (step 17).
+* **Flow v2 (AICP-390):** a language with a CTA tail leaves the cut end card's segments out of
+  its stitch plan (`rest_run_spec(exclude_segment_ids=…)`); a language without one keeps them
+  as keep segments (source footage, source audio).
 
 Both launches rely on the core's implicit expectation `run:<probe>` (transitive
 `depends_on` of `probe:L`): a manual change to the accepted probe reopens `probe:L` and
@@ -431,3 +436,59 @@ BLOCKER or MAJOR; its one MINOR was fixed as well.
 | R3 | MAJOR: stale rejection unconsumed while waiting on B (core grace stop) · MAJOR: `rest:L` completion ignored an answered failure approval | `_clear_stale()`: answers whose bound rows changed are consumed by a no-op launch the core supersedes and discards; `rest:L`'s `Complete` consumes open answers |
 | R4 | MAJOR: clearing ran only after the run was terminal · MAJOR: the acknowledgement listed only stale answers (`_check_unconsumed`) · MINOR: pending failure approval reused after a failing manual rerun | clearing runs before any wait; it lists every open answer (a stale one guarantees the discard, so nothing current is consumed); `fail:rN` tagged with the run version |
 | R5 | MINOR: a manual transcription after our failed job was ignored | any ready v3 transcript completes `transcribe` |
+
+## 10. The source's own CTA end card (AICP-390, flow v2)
+
+Project ecb9ac03 (2026-11-05) ended with the source's own CTA: an off-screen narrator, "Listen
+to anything. Download Listenify now.", over a promo graphic (49.07–54.47 s). Flow v1 sent it to
+Seedance with the rest (it re-voiced it wrongly and pasted the woman onto the graphic, 380 cr)
+and `tail:L` would have appended the language CTA after it: two CTAs. Flow **v2** proposes the
+card to the operator at `segments`; v1 stays registered unchanged for the attempts created under
+it (§4.7 of docs/autopilot-design.md), new attempts get v2.
+
+**Detection** (`localisation_plan.detect_end_card`, a candidate, never a verdict): the trailing
+lines that are all off screen (`on_screen` false, `face_visible` not true), spoken by voices heard
+nowhere before them and not a device. The interviewer's closing "Thank you" is not one (the
+interviewer speaks earlier), nor a phone voice. The card starts at the scene cut between the last
+line before it and its first line (≤ 0.5 s into that line — transcript times are coarse); without
+one at its first line, with a note to check the boundary. Only a card of 1–15 s with a line before
+it is proposed; a silent end card is not found. Over the 18 localisation transcripts in prod
+(2026-11-05) it fired on ecb9ac03 and 5eb99ba8 (the same source) and on b8d5b3c2, a v2 transcript
+whose phone voice has no `kind` (the autopilot re-transcribes v2 to v3 first).
+
+**The question** `endcard:<segments version[:12]>` (kind `handoff`, `about` segments + transcript):
+start, lines, frame descriptions, on-screen text, per language what happens (a tail replaces it /
+no tail: source footage kept), the segments after the cut. Options `replace` ("Cut it from X s",
+pre-authorising `localisation_cut_end_card` with the planned patch) and `generate` ("It is not an
+end card: localise it" = v1 behaviour) and `stop`; a reject or `stop` fails the attempt, like
+every localisation hand-off (the approval card words its "no" control "End this attempt"). While it is open the operator may
+move the boundary in the Segment Editor: the segments version changes, the open question is
+retired and a new one is asked about the new state; an answer about segments that changed since is
+cleared by `_clear_stale` before anything else.
+
+**The cut** (`end_card_plan` + handler `localisation_cut_end_card`, free): one PATCH /segments
+through `api_v2.update_project_segments` (ready / active-run 409s, partition normalisation, its
+commit), fenced by `expect` = segments + transcript and consuming the answer. Segments wholly
+before the card stay; the one the card starts inside ends at the card (a swap piece under the
+model floor joins the swap before it); everything after becomes ONE keep segment (the id of a
+segment already starting there is reused); the swap ending at the card loses its post-roll. Not
+offered (only `generate`, with the reasons) when a spoken line other than the card's runs past
+the cut, a card line starts before it, or the result breaks the partition (a swap over the
+14.72 s target). The planned result is written to the effect before the commit; the step then
+re-reads the segments (`end_card_segment_ids`) and completes with `end_card: {choice: replace,
+start_sec, segment_ids, transcript_version}`. A reopened step reuses an earlier generation's cut
+only when the segments and the transcript still show it exactly; anything else is asked again.
+
+**Downstream** nothing new: keep segments get no lines, no prompt and no estimate; the translate
+window ends at the last swap segment, so the card's line is not translated; `rest:L` leaves the
+card out when the language has a tail (`tail:L` then appends the CTA to the shortened captioned
+final at `duration − 0.01` as before) and keeps it as source footage when it has none — its
+captions then come from the ASR only (the script fallback has no lines for a keep piece).
+
+**Deploy**: no migration, no new worker. Attempts already past `segments` stay on v1 (ecb9ac03,
+paused at `qa:es`, must be finished by hand: its `tail:es` would append a second CTA).
+
+**Tests**: `tests/test_autopilot_localisation_end_card.py` — detection and the plan on ecb9ac03's
+real inputs (`tests/fixtures/localisation_ecb9ac03_end_card.json`), the flow on the real core
+(cut → the tail language's run has no card, the no-tail language keeps it; generate; edit while
+open → asked again; infeasible boundary → generate only; v1 never asks; no card → no question).

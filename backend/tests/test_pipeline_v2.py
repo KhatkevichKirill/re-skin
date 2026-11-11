@@ -272,6 +272,7 @@ class FakeKieClient:
         Seedance 2.5 does accept). ``**kw`` swallows anything else so a new
         model's kwarg surfaces as a failed assertion, not a TypeError.
         """
+        kw.pop("once", None)  # AICP-351 transport flag, not part of the payload
         task_id = f"fake-task-{uuid.uuid4().hex[:8]}"
         self.create_task_calls.append(task_id)
         self.create_task_records.append({
@@ -305,6 +306,7 @@ class FakeKieClient:
         seed=None,
         **kw,
     ) -> str:
+        kw.pop("once", None)  # AICP-351 transport flag, not part of the payload
         task_id = f"fake-omni-{uuid.uuid4().hex[:8]}"
         self.create_task_calls.append(task_id)
         self.create_omni_records.append({
@@ -330,6 +332,7 @@ class FakeKieClient:
         input_urls,
         aspect_ratio="auto",
         resolution="1K",
+        once=False,  # AICP-351: the single-send flag of the real client
     ) -> str:
         task_id = f"fake-img-{uuid.uuid4().hex[:8]}"
         self.create_task_calls.append(task_id)
@@ -727,6 +730,11 @@ def test_stale_recipe_retry_does_not_permanently_fail_the_segment(
     monkeypatch.setattr(
         pv2, "transition", lambda obj, status: setattr(obj, "status", status)
     )
+    # AICP-351: the attempt receipt needs a real DB; this test is about the
+    # recipe the resubmit sends, so the protocol is stubbed to the bare send.
+    monkeypatch.setattr(pv2, "_paid_swap_send", lambda *, recipe, kie, **_kw: (
+        "attempt-x", pv2._create_swap_task(kie=kie, once=True, **recipe)))
+    monkeypatch.setattr(pv2, "_record_swap_receipt", lambda *a, **kw: True)
 
     kie = _FailThenSucceedKie()
     pending = {
@@ -7429,3 +7437,301 @@ class TestInPlaceRedelivery:
             run = s.get(Run, run_id)
             assert run.status == RunStatus.failed
             assert run.result_gdrive_file_id == file_id
+
+
+# ---------------------------------------------------------------------------
+# AICP-351 §5.1: a restart test per paid submit intent site — a worker that
+# dies after the provider accepted the POST and before the receipt committed
+# must leave a PARKED attempt, never a second submit on recovery.
+# ---------------------------------------------------------------------------
+
+
+class _Crash(BaseException):
+    """Simulates the worker dying right after the POST was accepted (nothing
+    after it runs: not an Exception, so no handler records an outcome)."""
+
+
+class _AcceptThenDie(FakeKieClient):
+    """createTask is accepted by "kie.ai" (recorded), then the worker dies."""
+
+    def __init__(self, src, *, die_on=None):
+        super().__init__(src)
+        self.die_on = die_on   # None = every create; else the n-th create (1-based)
+        self.n = 0
+
+    def _maybe_die(self):
+        self.n += 1
+        if self.die_on is None or self.n == self.die_on:
+            raise _Crash()
+
+    def create_task(self, **kw):
+        tid = super().create_task(**kw)
+        self._maybe_die()
+        return tid
+
+    def create_image_task(self, **kw):
+        tid = super().create_image_task(**kw)
+        self._maybe_die()
+        return tid
+
+
+@pytest.fixture()
+def no_evidence(monkeypatch):
+    from app import paid_attempts
+
+    monkeypatch.setattr(paid_attempts, "default_evidence", lambda: (lambda row: "boot changed"))
+
+
+def _attempt_rows(db_engine, **where):
+    from sqlalchemy.orm import sessionmaker as _sm
+
+    from app.paid_attempts_models import PaidSubmitAttempt
+
+    with _sm(bind=db_engine)() as s:
+        q = s.query(PaidSubmitAttempt)
+        for k, v in where.items():
+            q = q.filter(getattr(PaidSubmitAttempt, k) == v)
+        return q.order_by(PaidSubmitAttempt.started_at).all()
+
+
+class TestPaidSubmitAttemptsRestart:
+    def _setup(self, db_session, synthetic_video, patch_propose):
+        from app.pipeline_v2 import analyze_project
+
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+        return project_id, _create_run(db_session, project_id)
+
+    def test_initial_submit_crash_parks_and_recovery_never_resubmits(
+        self, db_engine, db_session, synthetic_video, patch_propose, no_evidence
+    ):
+        from app.pipeline_v2 import finalize_run, submit_run
+
+        project_id, run_id = self._setup(db_session, synthetic_video, patch_propose)
+        dying = _AcceptThenDie(synthetic_video)
+        with pytest.raises(_Crash):
+            submit_run(run_id, kie=dying, gdrive=FakeGDriveClient())
+        assert len(dying.create_task_calls) >= 1          # kie.ai accepted (and billed)
+        rows = _attempt_rows(db_engine, run_id=run_id)
+        assert rows and all(r.status == "started" and r.provider_task_id is None for r in rows)
+
+        # Recovery re-enqueues the run (it is still `processing`).
+        fresh = FakeKieClient(synthetic_video)
+        pending = submit_run(run_id, kie=fresh, gdrive=FakeGDriveClient())
+        parked = {r.owner_id for r in _attempt_rows(db_engine, run_id=run_id, status="parked")}
+        assert parked == {r.owner_id for r in rows}
+        assert all(r.sender_released_at is not None for r in _attempt_rows(db_engine, run_id=run_id))
+        assert not ({m["rs_id"] for m in (pending or {}).values()} & parked)
+        # The parked segments were NOT sent again.
+        sent_again = [r for r in fresh.create_task_records]
+        assert len(sent_again) == 2 - len(parked)
+
+        # Other segments keep going; the run does not finalize.
+        from app.pipeline_v2 import poll_run_once
+
+        while pending:
+            pending = poll_run_once(run_id, pending=pending, kie=fresh)
+        finalize_run(run_id, gdrive=FakeGDriveClient())
+        db_session.expire_all()
+        assert db_session.get(Run, run_id).status == RunStatus.incomplete
+
+    def test_in_poll_resubmit_crash_parks_with_the_predecessor(
+        self, db_engine, db_session, synthetic_video, patch_propose, no_evidence
+    ):
+        from app.pipeline_v2 import poll_run_once, submit_run
+
+        project_id, run_id = self._setup(db_session, synthetic_video, patch_propose)
+        first = FakeKieClient(synthetic_video)
+        pending = submit_run(run_id, kie=first, gdrive=FakeGDriveClient())
+        victim_tid = next(iter(pending))
+        victim_rs = pending[victim_tid]["rs_id"]
+
+        class FailThenDie(_AcceptThenDie):
+            def get_task(self, task_id, **kw):
+                if task_id == victim_tid:
+                    return {"state": "fail", "failMsg": "Internal Error, Please try again later."}
+                return {"state": "generating"}
+
+        dying = FailThenDie(synthetic_video)
+        with pytest.raises(_Crash):
+            poll_run_once(run_id, pending=dict(pending), kie=dying)
+        (row,) = _attempt_rows(db_engine, owner_id=victim_rs, status="started")
+        assert row.predecessor_task_id == victim_tid and row.provider_task_id is None
+        db_session.expire_all()
+        assert db_session.get(RunSegment, victim_rs).seedance_task_id == victim_tid
+
+        # Recovery: the predecessor even reports success (a truncated one) —
+        # the segment must NOT be recovered from it, nor resubmitted.
+        class PredecessorSucceeded(FakeKieClient):
+            def get_task(self, task_id, **kw):
+                return super().get_task(task_id)
+
+        fresh = PredecessorSucceeded(synthetic_video)
+        pending2 = submit_run(run_id, kie=fresh, gdrive=FakeGDriveClient())
+        (parked,) = _attempt_rows(db_engine, owner_id=victim_rs)[-1:]
+        assert parked.status == "parked" and parked.predecessor_task_id == victim_tid
+        assert victim_rs not in {m["rs_id"] for m in (pending2 or {}).values()}
+        assert fresh.create_task_records == []
+        db_session.expire_all()
+        rs = db_session.get(RunSegment, victim_rs)
+        assert rs.status != SegmentStatus.completed and "parked" in (rs.error_message or "")
+
+    def test_unknown_create_outcome_parks_instead_of_resending(
+        self, db_engine, db_session, synthetic_video, patch_propose, no_evidence
+    ):
+        from app.kie_client import KieTaskUnknown
+        from app.pipeline_v2 import submit_run
+
+        project_id, run_id = self._setup(db_session, synthetic_video, patch_propose)
+
+        class Unknown(FakeKieClient):
+            def create_task(self, **kw):
+                super().create_task(**kw)
+                raise KieTaskUnknown("createTask HTTP 502")
+
+        k = Unknown(synthetic_video)
+        # Every segment parks; the run is NOT failed (it finalizes incomplete).
+        assert submit_run(run_id, kie=k, gdrive=FakeGDriveClient()) == {}
+        db_session.expire_all()
+        assert db_session.get(Run, run_id).status == RunStatus.processing
+        rows = _attempt_rows(db_engine, run_id=run_id)
+        assert rows and {r.status for r in rows} == {"parked"}
+        assert len(k.create_task_records) == len(rows)      # one POST each, no client retry
+
+    def test_preprocess_per_image_crash_mid_loop(
+        self, db_engine, db_session, synthetic_video, no_evidence
+    ):
+        from app.pipeline_v2 import preprocess_reference_images
+
+        project_id = _create_project(db_session, synthetic_video)
+        run = Run(id=str(uuid.uuid4()), project_id=project_id, prompt="swap",
+                  reference_image_urls=["https://x.test/a.jpg", "https://x.test/b.jpg",
+                                        "https://x.test/c.jpg"],
+                  resolution="480p", status=RunStatus.preprocessing, preprocess_enabled=True,
+                  preprocess_image_prompts=["", "p1", "p2"])
+        db_session.add(run)
+        db_session.commit()
+        dying = _AcceptThenDie(synthetic_video, die_on=2)
+        with pytest.raises(_Crash):
+            preprocess_reference_images(run.id, kie=dying)
+        db_session.expire_all()
+        ids = db_session.get(Run, run.id).preprocess_task_ids
+        assert ids[1] == dying.create_image_records[0]["task_id"]   # committed per image
+        assert ids[2] is None
+
+        fresh = FakeKieClient(synthetic_video)
+        pending = preprocess_reference_images(run.id, kie=fresh)
+        assert pending == {ids[1]: 1}                     # slot 1 re-polled, slot 2 parked
+        assert fresh.create_image_records == []
+        (parked,) = _attempt_rows(db_engine, owner_id=f"{run.id}:2")
+        assert parked.status == "parked"
+
+    def test_preprocess_all_as_refs_crash(
+        self, db_engine, db_session, synthetic_video, no_evidence
+    ):
+        from app.pipeline_v2 import preprocess_reference_images
+
+        project_id = _create_project(db_session, synthetic_video)
+        run = Run(id=str(uuid.uuid4()), project_id=project_id, prompt="swap",
+                  reference_image_urls=["https://x.test/a.jpg", "https://x.test/b.jpg"],
+                  resolution="480p", status=RunStatus.preprocessing, preprocess_enabled=True,
+                  preprocess_mode="all_as_refs", preprocess_image_prompts=["one prompt"])
+        db_session.add(run)
+        db_session.commit()
+        with pytest.raises(_Crash):
+            preprocess_reference_images(run.id, kie=_AcceptThenDie(synthetic_video))
+        fresh = FakeKieClient(synthetic_video)
+        assert preprocess_reference_images(run.id, kie=fresh) == {}
+        assert fresh.create_image_records == []
+        (parked,) = _attempt_rows(db_engine, owner_id=f"{run.id}:0")
+        assert parked.status == "parked"
+
+
+class TestParkedSegmentDoesNotStopItsSiblings:
+    """AICP-351 §5.1 (independent review): one segment's createTask outcome is
+    unknown -> that segment parks, the other segments are submitted, polled and
+    completed, the run ends `incomplete` (not `failed`), the parked segment is
+    never resubmitted by the pipeline, and Resubmit from the run page card
+    completes it."""
+
+    _SEGS = [
+        _PS(start_sec=0.0, end_sec=6.0, has_face=True, action="swap"),
+        _PS(start_sec=6.0, end_sec=8.0, has_face=False, action="keep"),
+        _PS(start_sec=8.0, end_sec=14.0, has_face=True, action="swap"),
+        _PS(start_sec=14.0, end_sec=16.0, has_face=False, action="keep"),
+        _PS(start_sec=16.0, end_sec=25.0, has_face=True, action="swap"),
+    ]
+
+    def test_middle_segment_parks_siblings_complete_then_resubmit(
+        self, db_engine, db_session, synthetic_video, monkeypatch, no_evidence
+    ):
+        import app.api_v2 as api_v2
+        import app.face as face_mod
+        import app.pipeline_v2 as pv2
+        from app import paid_attempts
+        from app.api_paid_attempts import relaunch
+        from app.kie_client import KieTaskUnknown
+        from app.pipeline_v2 import analyze_project, finalize_run, poll_run_once, submit_run
+
+        monkeypatch.setattr(face_mod, "propose_segments", lambda *a, **kw: self._SEGS)
+        monkeypatch.setattr(pv2.face_mod, "propose_segments", lambda *a, **kw: self._SEGS)
+        project_id = _create_project(db_session, synthetic_video)
+        analyze_project(project_id)
+        run_id = _create_run(db_session, project_id)
+
+        class MiddleUnknown(FakeKieClient):
+            def create_task(self, **kw):
+                tid = super().create_task(**kw)
+                if any("clip_0002" in u for u in kw["reference_video_urls"]):
+                    raise KieTaskUnknown("createTask HTTP 502")
+                return tid
+
+        kie = MiddleUnknown(synthetic_video)
+        pending = submit_run(run_id, kie=kie, gdrive=FakeGDriveClient())
+        assert len(kie.create_task_records) == 3      # one POST each
+        assert len(pending) == 2                       # the siblings keep going
+        db_session.expire_all()
+        middle = next(rs for rs in db_session.get(Run, run_id).run_segments if rs.index == 2)
+        (att,) = _attempt_rows(db_engine, owner_id=middle.id)
+        assert att.status == "parked" and att.sender_released_at is not None
+        assert db_session.get(Run, run_id).status == RunStatus.processing
+
+        while pending:
+            pending = poll_run_once(run_id, pending=pending, kie=kie)
+        finalize_run(run_id, gdrive=FakeGDriveClient())
+        db_session.expire_all()
+        run = db_session.get(Run, run_id)
+        assert run.status == RunStatus.incomplete
+        done = {rs.index: rs.status for rs in run.run_segments}
+        assert done[0] == SegmentStatus.completed and done[4] == SegmentStatus.completed
+        assert done[2] != SegmentStatus.completed
+        assert len(kie.create_task_records) == 3       # never resubmitted by the pipeline
+
+        # A Retry Run (the run re-queued) does not resubmit it either.
+        run.status = RunStatus.queued
+        db_session.commit()
+        retry_kie = FakeKieClient(synthetic_video)
+        assert submit_run(run_id, kie=retry_kie, gdrive=FakeGDriveClient()) == {}
+        assert retry_kie.create_task_records == []
+        finalize_run(run_id, gdrive=FakeGDriveClient())
+        db_session.expire_all()
+        assert db_session.get(Run, run_id).status == RunStatus.incomplete
+
+        # Resubmit from the card (the operator checked kie.ai): CAS + relaunch.
+        enq = []
+        monkeypatch.setattr(api_v2, "enqueue_process_run", lambda rid, **kw: enq.append(rid))
+        db = db_session
+        row = paid_attempts.resubmit(db, att.id, actor="op", note="nothing on kie.ai")
+        relaunch(db, row)
+        db.commit()
+        assert enq == [run_id]
+        fresh = FakeKieClient(synthetic_video)
+        pending = submit_run(run_id, kie=fresh, gdrive=FakeGDriveClient())
+        assert len(fresh.create_task_records) == 1 and len(pending) == 1
+        while pending:
+            pending = poll_run_once(run_id, pending=pending, kie=fresh)
+        finalize_run(run_id, gdrive=FakeGDriveClient())
+        db_session.expire_all()
+        assert db_session.get(Run, run_id).status == RunStatus.done
+        rows = _attempt_rows(db_engine, owner_id=middle.id)
+        assert [r.status for r in rows] == ["resubmitted", "accepted"]

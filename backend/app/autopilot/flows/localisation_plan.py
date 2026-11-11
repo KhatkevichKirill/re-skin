@@ -902,6 +902,259 @@ def estimate_probe_regeneration(
 
 
 # ---------------------------------------------------------------------------
+# 6b. The source's own CTA end card (AICP-390)
+# ---------------------------------------------------------------------------
+
+# An end card shorter or longer than this is not proposed (a 1 s sting is not
+# worth a question; 15 s of off-screen talk at the end is content).
+END_CARD_MIN_SEC = 1.0
+END_CARD_MAX_SEC = 15.0
+# Transcript times are coarse (~0.5 s): a scene cut this long after the card's
+# first line still starts the card (ecb9ac03: line 49.0, scene cut 49.067).
+END_CARD_CUT_AFTER_LINE_SEC = 0.5
+# A spoken line may overhang the boundary by this much (timestamp noise) before
+# it counts as cut in two.
+END_CARD_CROSS_TOL_SEC = 0.25
+# A keep piece left before the card shorter than this is merged into its
+# neighbour instead of being kept as a sliver.
+_SLIVER_SEC = 0.05
+
+
+def _speaker_kinds(transcript: Mapping) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for spk in transcript.get("speakers") or []:
+        if isinstance(spk, Mapping) and spk.get("label"):
+            out[str(spk["label"])] = str(spk.get("kind") or "")
+    return out
+
+
+def _off_screen(line: Mapping) -> bool:
+    """Explicitly off screen; ``face_visible`` may be absent (an older transcript)."""
+    return line.get("on_screen") is False and line.get("face_visible") is not True
+
+
+def _line_key(line: Mapping) -> tuple:
+    return (line.get("id"), _round(_f(line.get("start"))), _round(_f(line.get("end"))),
+            str(line.get("text") or ""))
+
+
+def detect_end_card(
+    transcript: Optional[Mapping], *, scene_cuts: Optional[Sequence[float]],
+    duration_sec: Optional[float],
+) -> Optional[dict]:
+    """A CANDIDATE for the source's own CTA end card, or None (AICP-390).
+
+    Never a verdict: the flow only ever proposes it to the operator, who
+    decides. The signal is the transcript's: the video ends with lines that are
+    all off screen, spoken by voices that are heard nowhere before them and are
+    not a device (a narrator over a promo graphic: "Listen to anything.
+    Download Listenify now."). An interviewer's closing "Thank you" is not one
+    (the interviewer speaks earlier), nor is a phone voice. A silent end card is
+    not found (no line to find it by).
+
+    The card starts at the scene cut between the last line before it and its
+    first line (up to :data:`END_CARD_CUT_AFTER_LINE_SEC` into that line);
+    without one, at its first line, with a note asking to check the boundary.
+    Only a card of :data:`END_CARD_MIN_SEC`..:data:`END_CARD_MAX_SEC` that
+    leaves at least one line before it is proposed.
+    """
+    tr = transcript if isinstance(transcript, Mapping) else {}
+    duration = _f(duration_sec)
+    lines = sorted((ln for ln in tr.get("lines") or [] if isinstance(ln, Mapping)),
+                   key=lambda ln: (_f(ln.get("start")), _f(ln.get("end"))))
+    if not lines or duration <= 0:
+        return None
+    kinds = _speaker_kinds(tr)
+
+    def speaker(ln) -> str:
+        return str(ln.get("speaker") or "").strip()
+
+    start_idx = None
+    for j in range(len(lines) - 1, 0, -1):  # index 0 never: a line must precede the card
+        block = lines[j:]
+        if not all(_off_screen(ln) and speaker(ln) and kinds.get(speaker(ln)) != "device"
+                   for ln in block):
+            break
+        if {speaker(ln) for ln in block} & {speaker(ln) for ln in lines[:j]}:
+            break
+        start_idx = j
+    if start_idx is None:
+        return None
+    card = lines[start_idx:]
+    first = _f(card[0].get("start"))
+    prev_end = max(_f(ln.get("end")) for ln in lines[:start_idx])
+    notes: list[str] = []
+    window = sorted(c for c in (scene_cuts or [])
+                    if prev_end - _EPS <= float(c) <= first + END_CARD_CUT_AFTER_LINE_SEC)
+    if window:
+        start, scene_cut = min(window, key=lambda c: abs(float(c) - first)), True
+    else:
+        start, scene_cut = first, False
+        notes.append("the scene cuts of this source are not on record" if scene_cuts is None
+                     else "no scene cut between the last line before it and its first line")
+        notes.append("it is cut where its first line starts: check where the card really starts")
+    length = duration - float(start)
+    if not (END_CARD_MIN_SEC - _EPS <= length <= END_CARD_MAX_SEC + _EPS):
+        return None
+    texts = [str(o.get("text") or "") for o in tr.get("on_screen_text") or []
+             if isinstance(o, Mapping) and _f(o.get("end"), duration) > float(start) + _EPS]
+    return {
+        "start_sec": float(start),  # unrounded: the boundary sits ON the scene cut
+        "end_sec": duration,
+        "first_line_sec": _round(first),
+        "prev_line_end_sec": _round(prev_end),
+        "scene_cut": scene_cut,
+        "speakers": sorted({speaker(ln) for ln in card}),
+        "lines": [{"id": ln.get("id"), "start": _round(_f(ln.get("start"))),
+                   "end": _round(_f(ln.get("end"))), "speaker": speaker(ln),
+                   "text": str(ln.get("text") or ""), "frame": str(ln.get("frame") or "")}
+                  for ln in card],
+        "on_screen_text": [t for t in texts if t],
+        "notes": notes,
+    }
+
+
+def end_card_plan(
+    segments: Sequence, card: Mapping, *, lines: Iterable, duration_sec: float,
+    target_sec: float, floor_sec: Optional[float] = None,
+) -> dict:
+    """The segment edit that makes ``[card.start_sec, duration]`` one keep segment.
+
+    Segments wholly before the card stay as they are; the one the card starts
+    inside ends at the card; every segment after it goes and the card becomes
+    ONE keep segment (the id of a segment that already starts there is reused).
+    A swap piece left shorter than the model's floor is merged into the swap
+    before it; the swap that ends at the card loses its post-roll (its clip
+    must not run into the card). Infeasible — with the reasons — when a spoken
+    line other than the card's crosses the boundary, a card line starts before
+    it, or the result breaks the whole-video partition (a swap over the target,
+    nothing to probe).
+
+    Returns ``{feasible, problems, changed, card: {start_sec, end_sec},
+    patch: PATCH /segments body, result: [[start, end, action], ...]}``; the
+    patch keeps ``api_v2._normalize_partition`` a no-op on the result.
+    """
+    segs = segment_dicts(segments)
+    start = float(card["start_sec"])
+    duration = float(duration_sec)
+    floor = float(whole_video_floor_sec() if floor_sec is None else floor_sec)
+    problems: list[str] = []
+
+    card_keys = {_line_key(ln) for ln in card.get("lines") or []}
+    for ln in lines or []:
+        if not isinstance(ln, Mapping):
+            continue
+        s, e = _f(ln.get("start")), _f(ln.get("end"))
+        text = str(ln.get("text") or "")[:60]
+        # Lines go to segments by their midpoint (assign_lines, the translate
+        # split): a card line must land in the card, every other line before it.
+        mid = _line_midpoint(ln)
+        if _line_key(ln) in card_keys:
+            if s < start - END_CARD_CROSS_TOL_SEC or mid < start:
+                problems.append(f"the card's line \"{text}\" starts at {s:.2f} s, before the cut at {start:.2f} s")
+        elif e > start + END_CARD_CROSS_TOL_SEC or mid >= start:
+            problems.append(f"the line \"{text}\" ({s:.2f}-{e:.2f} s) runs past the cut at {start:.2f} s")
+
+    kept: list[dict] = []
+    for seg in segs:
+        if seg["end_sec"] <= start + _EPS:
+            kept.append(dict(seg))
+        elif seg["start_sec"] < start - _EPS:
+            kept.append(dict(seg, end_sec=start))
+    # The swap that ends at the card loses its post-roll FIRST: the floor below
+    # is checked on the clip that will really be sent (Terra §1 gate R1: a
+    # short clip is padded forward at submit, i.e. into the card).
+    for seg in kept:
+        if seg["action"] == "swap" and seg["end_sec"] + seg["post_roll_sec"] > start + _EPS:
+            seg["post_roll_sec"] = 0.0
+    def sent_sec(seg) -> float:
+        """The clip the worker really cuts: rolls clamped to the video (gate R2)."""
+        return (min(duration, seg["end_sec"] + max(0.0, seg["post_roll_sec"]))
+                - max(0.0, seg["start_sec"] - max(0.0, seg["pre_roll_sec"])))
+
+    if kept and abs(kept[-1]["end_sec"] - start) <= _EPS:
+        last = kept[-1]
+        sliver = (sent_sec(last) < floor - _EPS) if last["action"] == "swap" else (
+            last["end_sec"] - last["start_sec"] < _SLIVER_SEC)
+        # A swap sliver joins the swap before it (re-checked against the target
+        # below); a keep sliver joins whatever precedes it.
+        if sliver and len(kept) >= 2 and (last["action"] == "keep" or kept[-2]["action"] == "swap"):
+            kept.pop()
+            kept[-1]["end_sec"] = start
+        elif sliver and last["action"] == "swap":
+            problems.append(
+                f"segment {last['index'] + 1} would keep only {last['end_sec'] - last['start_sec']:.2f} s "
+                f"before the card, under the {floor:.2f} s the model accepts")
+    for seg in kept:
+        if seg["action"] == "swap" and seg["end_sec"] + seg["post_roll_sec"] > start + _EPS:
+            seg["post_roll_sec"] = 0.0
+    if kept and kept[-1]["action"] == "swap" and sent_sec(kept[-1]) < floor - _EPS:
+        problem = (f"segment {kept[-1]['index'] + 1} would be {sent_sec(kept[-1]):.2f} s before the card, "
+                   f"under the {floor:.2f} s the model accepts")
+        if problem not in problems and not any("under the" in p for p in problems):
+            problems.append(problem)
+    reuse = next((s for s in segs if abs(s["start_sec"] - start) <= _EPS), None)
+    card_seg = {"id": reuse["id"] if reuse else None, "index": len(kept), "start_sec": start,
+                "end_sec": duration, "action": "keep", "pre_roll_sec": 0.0, "post_roll_sec": 0.0}
+    result = kept + [card_seg]
+
+    chk = check_partition(
+        [dict(s, id=s["id"] or "new", index=i) for i, s in enumerate(result)],
+        duration_sec=duration, target_sec=target_sec)
+    problems += [p for p in chk.problems if p not in problems]
+    if not kept:
+        problems.append("the card would be the whole video")
+
+    before = {s["id"]: s for s in segs}
+    fields = ("start_sec", "end_sec", "action", "pre_roll_sec", "post_roll_sec")
+    updates, creates = [], []
+    for s in result:
+        if s["id"] is None:
+            creates.append({k: s[k] for k in fields})
+            continue
+        old = before[s["id"]]
+        if any(abs(_f(old[k]) - _f(s[k])) > _EPS if k != "action" else old[k] != s[k]
+               for k in fields):
+            updates.append({"id": s["id"], **{k: s[k] for k in fields}})
+    kept_ids = {s["id"] for s in result if s["id"]}
+    deletes = [s["id"] for s in segs if s["id"] not in kept_ids]
+    return {
+        "feasible": not problems,
+        "problems": problems,
+        "changed": bool(updates or creates or deletes),
+        "card": {"start_sec": start, "end_sec": duration},
+        "patch": {"updates": updates, "deletes": deletes, "creates": creates},
+        "result": [[_round(s["start_sec"]), _round(s["end_sec"]), s["action"]] for s in result],
+    }
+
+
+def end_card_segment_ids(segments: Sequence, start_sec: float) -> Optional[list[str]]:
+    """The segment ids of an end card cut at *start_sec*, or None when the
+    segments no longer show that cut (a boundary at *start_sec*, every segment
+    from it a keep, no swap clip running into it)."""
+    segs = segment_dicts(segments)
+    start = float(start_sec)
+    tail = [s for s in segs if s["start_sec"] >= start - _EPS]
+    if not tail or abs(tail[0]["start_sec"] - start) > _EPS:
+        return None
+    if any(s["action"] != "keep" for s in tail):
+        return None
+    if any(s["action"] == "swap" and s["end_sec"] + s["post_roll_sec"] > start + _EPS
+           for s in segs if s["start_sec"] < start - _EPS):
+        return None
+    return [s["id"] for s in tail]
+
+
+def end_card_results(segments: Sequence, result: Sequence) -> bool:
+    """Do *segments* match an :func:`end_card_plan` ``result`` (bounds + actions)?"""
+    segs = segment_dicts(segments)
+    if len(segs) != len(result):
+        return False
+    return all(abs(s["start_sec"] - float(r[0])) <= _EPS and abs(s["end_sec"] - float(r[1])) <= _EPS
+               and s["action"] == r[2] for s, r in zip(segs, result))
+
+
+# ---------------------------------------------------------------------------
 # 7. Run specs (create_run parameters)
 # ---------------------------------------------------------------------------
 
@@ -954,7 +1207,7 @@ def temp_clip_spec(*, project_id: str, language: str, probe_run_id: str) -> dict
 def rest_run_spec(
     *, project_id: str, language: str, prompts: Mapping, segments: Sequence,
     probe_run_id: str, temp_clip_id: str, model: str = DEFAULT_MODEL,
-    resolution: str = DEFAULT_RESOLUTION,
+    resolution: str = DEFAULT_RESOLUTION, exclude_segment_ids: Iterable[str] = (),
 ) -> dict:
     """``create_run`` parameters of the run that generates every other segment.
 
@@ -967,10 +1220,17 @@ def rest_run_spec(
     final means the reused picture and the voice can never come from two
     different takes (Terra §2 round 1, finding 12). The probe segment is not
     in the plan as a segment, so it is never regenerated.
+
+    *exclude_segment_ids*: the source's own end card when the language has a
+    CTA tail (AICP-390) -- left out, so the final ends before it and the tail
+    step appends the language's CTA in its place.
     """
     probe_id = prompts["probe_segment_id"]
+    excluded = {str(x) for x in exclude_segment_ids or ()}
     plan = []
     for seg in segment_dicts(segments):
+        if seg["id"] in excluded:
+            continue
         if seg["id"] == probe_id:
             plan.append({"kind": "library", "clip_id": temp_clip_id})
         else:

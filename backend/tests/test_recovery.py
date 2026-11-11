@@ -1163,11 +1163,54 @@ class TestReapOrphanedDerivedCreatives:
             self._age(db_session, cap, 600)
         return cap
 
-    def test_orphaned_caption_is_failed_with_a_readable_reason(self, db_session):
+    def test_orphaned_caption_in_transcribing_is_retried(self, db_session, monkeypatch):
+        """AICP-351 §5.2: the ASR of an orphaned caption is re-dispatched (bounded)
+        instead of failed; its dispatch fence is revoked."""
+        import app.recovery as rec
+        import app.tasks as tasks_mod
+        from app.state_machine import CaptionStatus
+
+        from app.paid_attempts_models import PaidSubmitAttempt
+
+        sent = []
+        monkeypatch.setattr(tasks_mod, "enqueue_process_caption",
+                            lambda cid, dispatch=None: sent.append((cid, dispatch)))
+        cap = self._caption(db_session, CaptionStatus.transcribing)
+        cap.asr_claim = "old-token"
+        # Its first ASR attempt ended with an unknown outcome.
+        db_session.add(PaidSubmitAttempt(owner_kind="llm_caption_asr", owner_id=f"{cap.id}:0",
+                                         attempt_no=1, kind="llm", status="unknown"))
+        db_session.commit()
+        self._age(db_session, cap, 600)
+
+        reaped = rec._reap_orphaned_derived_creatives(set())
+
+        db_session.refresh(cap)
+        assert reaped == {} and len(sent) == 1 and sent[0][0] == cap.id
+        assert cap.status == CaptionStatus.transcribing
+        assert cap.asr_claim == f"dispatch:{sent[0][1]}"      # the old worker is fenced out
+
+    def test_caption_that_died_before_any_asr_call_is_failed(self, db_session):
         import app.recovery as rec
         from app.state_machine import CaptionStatus
 
         cap = self._caption(db_session, CaptionStatus.transcribing)
+        assert rec._reap_orphaned_derived_creatives(set()) == {"caption": 1}
+        db_session.refresh(cap)
+        assert cap.status == CaptionStatus.failed
+
+    def test_orphaned_caption_is_failed_with_a_readable_reason(self, db_session):
+        import app.recovery as rec
+        from app.paid_attempts_models import PaidSubmitAttempt
+        from app.state_machine import CaptionStatus
+
+        cap = self._caption(db_session, CaptionStatus.transcribing)
+        # The automatic bound of this epoch is spent (AICP-351): reaped as before.
+        for n in (1, 2, 3):
+            db_session.add(PaidSubmitAttempt(owner_kind="llm_caption_asr",
+                                             owner_id=f"{cap.id}:0", attempt_no=n,
+                                             kind="llm", status="unknown"))
+        db_session.commit()
 
         reaped = rec._reap_orphaned_derived_creatives(set())
 
@@ -1874,6 +1917,84 @@ class TestSegmentImageJobResumeSafeRetry:
         db_session.add(job)
         db_session.commit()
         return job.id
+
+    def test_crash_after_accept_parks_and_never_recreates(
+        self, db_session, tmp_path, monkeypatch
+    ):
+        """AICP-351 §5.1 restart test: kie.ai accepted the image task, the worker
+        died before kie_task_id committed. The next delivery of the same job
+        PARKS the attempt (job failed with the parked message) and makes no
+        second createTask."""
+        import app.pipeline_segment_image as psi
+        from app import paid_attempts
+        from app.models import RunSegmentImageJob
+        from app.paid_attempts_models import PaidSubmitAttempt
+        from app.state_machine import SegmentImageStatus
+
+        class _Crash(BaseException):
+            pass
+
+        job_id = self._job_with_segment(db_session, tmp_path=tmp_path)
+        fake_kie = MagicMock()
+        fake_kie.create_image_task.side_effect = _Crash()
+
+        def _fake_extract(project, t):
+            f = os.path.join(str(tmp_path), "frame.jpg")
+            with open(f, "wb") as fh:
+                fh.write(b"\x00")
+            return f, t
+
+        monkeypatch.setattr(psi, "extract_project_frame", _fake_extract)
+        monkeypatch.setattr(psi, "resolve_reference_urls", lambda paths, kie, gdrive=None: list(paths))
+        monkeypatch.setattr(paid_attempts, "default_evidence", lambda: (lambda row: None))
+
+        with pytest.raises(_Crash):
+            psi.submit_segment_image_job(job_id, kie=fake_kie)
+        assert fake_kie.create_image_task.call_count == 1
+        assert fake_kie.create_image_task.call_args.kwargs.get("once") is True
+
+        fresh = MagicMock()
+        assert psi.submit_segment_image_job(job_id, kie=fresh) is None
+        assert fresh.create_image_task.call_count == 0
+        db_session.expire_all()
+        job = db_session.get(RunSegmentImageJob, job_id)
+        assert job.status == SegmentImageStatus.failed and "parked" in job.error_message
+        row = db_session.query(PaidSubmitAttempt).filter_by(owner_id=job_id).one()
+        # No proof the dead worker is gone: parked but NOT released (counted
+        # active, the operator cannot resolve it until proof/attestation).
+        assert row.status == "parked" and row.sender_released_at is None
+
+    def test_reaped_before_the_receipt_sends_nothing(self, db_session, tmp_path, monkeypatch):
+        """AICP-351 (Terra gate r1): a worker that paused before committing its
+        attempt finds the job reaped (failed) and sends NOTHING — so an operator
+        regeneration started meanwhile is the only image submit."""
+        import app.pipeline_segment_image as psi
+        from app.models import RunSegmentImageJob
+        from app.paid_attempts_models import PaidSubmitAttempt
+        from app.state_machine import SegmentImageStatus
+
+        job_id = self._job_with_segment(db_session, tmp_path=tmp_path)
+        fake_kie = MagicMock()
+
+        def _fake_extract(project, t):
+            f = os.path.join(str(tmp_path), "frame.jpg")
+            with open(f, "wb") as fh:
+                fh.write(b"\x00")
+            return f, t
+
+        def _reaped_during_the_pause(paths, kie, gdrive=None):
+            job = db_session.get(RunSegmentImageJob, job_id)
+            job.status = SegmentImageStatus.failed
+            job.error_message = "worker was killed"
+            db_session.commit()
+            return list(paths)
+
+        monkeypatch.setattr(psi, "extract_project_frame", _fake_extract)
+        monkeypatch.setattr(psi, "resolve_reference_urls", _reaped_during_the_pause)
+        with pytest.raises(Exception):
+            psi.submit_segment_image_job(job_id, kie=fake_kie)
+        assert fake_kie.create_image_task.call_count == 0
+        assert db_session.query(PaidSubmitAttempt).filter_by(owner_id=job_id).count() == 0
 
     def test_retry_resumes_existing_task_and_creates_no_second_one(
         self, db_session, tmp_path, monkeypatch

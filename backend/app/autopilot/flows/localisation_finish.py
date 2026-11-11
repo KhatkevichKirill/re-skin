@@ -785,7 +785,10 @@ def language_spend(ctx, lang) -> dict:
 
     own = {"runs": total([spend_mod.run_scope(r) for r in runs]),
            "captions": total([spend_mod.caption_scope(c) for c in caps])}
-    shared = total([spend_mod.transcribe_scope(ctx.project.id), spend_mod.localise_scope(ctx.project.id)])
+    from ..spend_view import job_scopes
+
+    shared = total([spend_mod.transcribe_scope(ctx.project.id), spend_mod.localise_scope(ctx.project.id),
+                    *sorted(job_scopes(db, ctx.project.id))])
     credits = round(own["runs"] + own["captions"], 1)
     return {"language": lang, "credits": credits, "usd": round(spend_mod.usd(credits), 2),
             "breakdown": own, "shared_project_credits": shared, "runs": runs}

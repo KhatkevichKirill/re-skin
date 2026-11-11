@@ -29,7 +29,7 @@ approves, **O** = operator only (the assistant cannot hear).
 |---|---|---|---|---|
 | 0 | Intake | A | source clean? (else flow 1); duration (> 1 min → warn about regeneration); `mute_source=true` on the project (not applied by project-from-run); transcript ready | free |
 | 1 | Languages + tails | O | order of languages, CTA clip per language or none | — |
-| 2 | Segments | Ap | swap segments at scene cuts, each ≤ 14.72 s (Seedance 2.5 truncation) | free |
+| 2 | Segments | Ap | swap segments at scene cuts, each ≤ 14.72 s (Seedance 2.5 truncation); the source's own CTA end card is proposed and, when the operator confirms, cut — never generated (AICP-390) | free |
 | 3 | Source breakdown | A | per segment from frames + transcript: who speaks, gender, on/off face, **body actions** (e.g. takes glasses off at 4–5 s), overlapping voices to drop | free |
 | 4 | Translate | A | localisation prompt per language (needs the long timeout, see gaps) | LLM |
 | 5 | Build prompts | A | `build_v2_prompts.py` → AICP-335 format per segment | free |
@@ -61,6 +61,7 @@ together, one listening pass for both.
 | Garbled ASR (pl) | captions from the script; language goes to a separate check |
 | Accent in the target language (pl) | operator decision: deliver, or hold the language |
 | Clip shorter than the segment (14.72 s truncation) | keep segments ≤ 14.72 s |
+| The source's own CTA end card generated (wrong voice, the person pasted onto the graphic, two CTAs with the tail) | cut it at the scene cut; the language's CTA tail replaces it (AICP-390, autopilot flow v2) |
 
 ## Reference cost (79 s, 7 segments, 720p)
 

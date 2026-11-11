@@ -1,0 +1,310 @@
+{
+ "_about": "AICP-390: project ecb9ac03 (Whatshedoing_Creator, 2026-11-05): its transcribe/v3 transcript, the segments after the AICP-347 re-cut and the scene cuts of its source. It ends with the source's own CTA end card (off-screen narrator over a promo graphic, 49.07-54.47 s).",
+ "duration_sec": 54.466667,
+ "scene_cuts": [
+  12.266666666666667,
+  22.866666666666667,
+  30.866666666666667,
+  36.833333333333336,
+  42.3,
+  49.06666666666667
+ ],
+ "segments": [
+  [
+   0.0,
+   12.9
+  ],
+  [
+   12.9,
+   21.0
+  ],
+  [
+   21.0,
+   34.5
+  ],
+  [
+   34.5,
+   49.06666666666667
+  ],
+  [
+   49.06666666666667,
+   54.466667
+  ]
+ ],
+ "transcript": {
+  "schema_version": 3,
+  "model": "gemini-3.1-pro",
+  "prompt_version": "transcribe/v3",
+  "created_at": "2026-11-04T23:53:09+00:00",
+  "source_language": "en",
+  "video_summary": "A woman in a bookstore demonstrates the Listenify app to an interviewer, showing how it reads scanned text aloud. She highlights its features, including changing the voice to celebrity options like Snoop Dogg and adjusting the playback speed, emphasizing that it frees her from reading glasses and looking at screens. The video ends with a promotional graphic for the app.",
+  "scene_context": "The scene takes place in a bookstore where a woman is interacting with an off-screen interviewer who is holding a small white microphone towards her. The woman uses her smartphone to demonstrate the app, holding it up for the camera to see the screen clearly during key moments like scanning text, changing voices, and adjusting the reading speed.",
+  "speakers": [
+   {
+    "label": "the woman in the green shirt",
+    "tag": "WOMAN",
+    "kind": "person",
+    "gender": "female",
+    "voice": "middle-aged, clear, conversational",
+    "description": "A blonde woman wearing a green t-shirt and glasses resting on her head, holding her smartphone."
+   },
+   {
+    "label": "off-screen interviewer",
+    "tag": "INTERVIEWER",
+    "kind": "person",
+    "gender": "female",
+    "voice": "young adult, enthusiastic",
+    "description": "The unseen person operating the camera, holding a small white microphone towards the woman."
+   },
+   {
+    "label": "the smartphone playing a female voice",
+    "tag": "APP",
+    "kind": "device",
+    "gender": "female",
+    "voice": "smooth, articulate, synthetic",
+    "description": "The woman's smartphone playing an automated reading voice (Gwyneth Paltrow)."
+   },
+   {
+    "label": "the smartphone playing a male voice",
+    "tag": "APP",
+    "kind": "device",
+    "gender": "male",
+    "voice": "deep, relaxed",
+    "description": "The woman's smartphone playing an automated reading voice (Snoop Dogg)."
+   },
+   {
+    "label": "off-screen narrator",
+    "tag": "NARRATOR",
+    "kind": "person",
+    "gender": "male",
+    "voice": "deep, relaxed",
+    "description": "An unseen voiceover speaking during the final promotional graphic."
+   }
+  ],
+  "lines": [
+   {
+    "id": 1,
+    "start": 0.0,
+    "end": 3.5,
+    "speaker": "the woman in the green shirt",
+    "on_screen": true,
+    "text": "I have an app that if I take a picture of the text, it can read it out to me.",
+    "face_visible": true
+   },
+   {
+    "id": 2,
+    "start": 3.8,
+    "end": 4.8,
+    "speaker": "off-screen interviewer",
+    "on_screen": false,
+    "text": "Wait, what? Can I see?",
+    "face_visible": false,
+    "frame": "the camera is pointed at the woman"
+   },
+   {
+    "id": 3,
+    "start": 5.0,
+    "end": 6.0,
+    "speaker": "the woman in the green shirt",
+    "on_screen": true,
+    "text": "So I take a picture of the text",
+    "face_visible": true
+   },
+   {
+    "id": 4,
+    "start": 6.0,
+    "end": 7.5,
+    "speaker": "the woman in the green shirt",
+    "on_screen": false,
+    "text": "and now it's reading to me.",
+    "face_visible": false,
+    "frame": "the camera zooms in on the phone screen in her hands"
+   },
+   {
+    "id": 5,
+    "start": 7.5,
+    "end": 11.0,
+    "speaker": "the smartphone playing a female voice",
+    "on_screen": true,
+    "text": "Introduction to Peptides. Peptides are short chains of amino acids. Gen-",
+    "face_visible": false,
+    "frame": "close-up of the phone screen showing the scanned text"
+   },
+   {
+    "id": 6,
+    "start": 11.0,
+    "end": 12.8,
+    "speaker": "off-screen interviewer",
+    "on_screen": false,
+    "text": "No way. That's amazing.",
+    "face_visible": false,
+    "frame": "the camera is pointed at the woman showing her phone"
+   },
+   {
+    "id": 7,
+    "start": 13.0,
+    "end": 17.5,
+    "speaker": "the woman in the green shirt",
+    "on_screen": false,
+    "text": "And if I want I can change the voice midway, so say I want to listen to Snoop Dogg.",
+    "face_visible": false,
+    "frame": "close-up of the phone screen as she selects a new voice"
+   },
+   {
+    "id": 8,
+    "start": 17.5,
+    "end": 19.0,
+    "speaker": "the smartphone playing a male voice",
+    "on_screen": true,
+    "text": "My name is Snoop Dogg.",
+    "face_visible": false,
+    "frame": "close-up of the phone screen showing voice options"
+   },
+   {
+    "id": 9,
+    "start": 19.0,
+    "end": 21.0,
+    "speaker": "off-screen interviewer",
+    "on_screen": false,
+    "text": "Wait, Snoop Dogg can read your books to you?",
+    "face_visible": false,
+    "frame": "the camera is pointed back at the woman's face"
+   },
+   {
+    "id": 10,
+    "start": 21.0,
+    "end": 30.5,
+    "speaker": "the woman in the green shirt",
+    "on_screen": true,
+    "text": "Yeah, it makes it so fun. And it's not just my books, he can read out PDFs, emails, texts. And I can swap around, there are a lot more voices than just Gwyneth and Snoop Dogg.",
+    "face_visible": true
+   },
+   {
+    "id": 11,
+    "start": 30.5,
+    "end": 31.5,
+    "speaker": "off-screen interviewer",
+    "on_screen": false,
+    "text": "And what is that speed control?",
+    "face_visible": false,
+    "frame": "the camera is pointed at the woman's phone"
+   },
+   {
+    "id": 12,
+    "start": 31.5,
+    "end": 34.5,
+    "speaker": "the woman in the green shirt",
+    "on_screen": false,
+    "text": "I can go up to like three point fifty five.",
+    "face_visible": false,
+    "frame": "close-up of the phone screen showing the speed control slider"
+   },
+   {
+    "id": 13,
+    "start": 34.5,
+    "end": 36.0,
+    "speaker": "off-screen interviewer",
+    "on_screen": false,
+    "text": "So you prefer listening over reading?",
+    "face_visible": false,
+    "frame": "the camera is pointed at the woman"
+   },
+   {
+    "id": 14,
+    "start": 36.0,
+    "end": 43.5,
+    "speaker": "the woman in the green shirt",
+    "on_screen": true,
+    "text": "Hundred percent, that way I don't even need my reading glasses and I can go outside and walk and listen, I don't always have to look at the text.",
+    "face_visible": true
+   },
+   {
+    "id": 15,
+    "start": 43.5,
+    "end": 45.0,
+    "speaker": "off-screen interviewer",
+    "on_screen": false,
+    "text": "That's amazing. What is this app called?",
+    "face_visible": false,
+    "frame": "the camera is pointed at the woman"
+   },
+   {
+    "id": 16,
+    "start": 45.0,
+    "end": 47.5,
+    "speaker": "the woman in the green shirt",
+    "on_screen": true,
+    "text": "It's called Listenify, and you can download it in the App Store.",
+    "face_visible": true
+   },
+   {
+    "id": 17,
+    "start": 47.5,
+    "end": 48.5,
+    "speaker": "off-screen interviewer",
+    "on_screen": false,
+    "text": "Thank you so much.",
+    "face_visible": false,
+    "frame": "the camera is pointed at the woman"
+   },
+   {
+    "id": 18,
+    "start": 49.0,
+    "end": 53.0,
+    "speaker": "off-screen narrator",
+    "on_screen": false,
+    "text": "Listen to anything. Download Listenify now.",
+    "face_visible": false,
+    "frame": "a digital graphic showing the Listenify app interface and promotional text"
+   }
+  ],
+  "actions": [
+   {
+    "start": 16.0,
+    "end": 18.0,
+    "speaker": "the woman in the green shirt",
+    "action": "taps the phone screen to select a new voice",
+    "do_not": ""
+   },
+   {
+    "start": 32.0,
+    "end": 34.0,
+    "speaker": "the woman in the green shirt",
+    "action": "taps the phone screen to adjust the reading speed",
+    "do_not": ""
+   }
+  ],
+  "brands": [
+   {
+    "name": "Listenify",
+    "pronunciation": "LISTEN-ih-fy"
+   },
+   {
+    "name": "App Store",
+    "pronunciation": "APP-store"
+   }
+  ],
+  "on_screen_text": [
+   {
+    "start": 7.5,
+    "end": 11.0,
+    "text": "Introduction to Peptides. Peptides are short chains of amino acids."
+   },
+   {
+    "start": 16.0,
+    "end": 19.0,
+    "text": "Snoop Dogg, MrBeast, Gwyneth"
+   },
+   {
+    "start": 31.0,
+    "end": 34.0,
+    "text": "Speed Reader, 3.55x"
+   },
+   {
+    "start": 49.0,
+    "end": 53.0,
+    "text": "Listen to anything, Download Listenify now, 5-star Reviews, App Of The Day"
+   }
+  ]
+ }
+}

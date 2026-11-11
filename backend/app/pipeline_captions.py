@@ -41,6 +41,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from typing import Optional
 
 from sqlalchemy import or_
@@ -49,8 +50,10 @@ from . import caption_placement as caption_placement_mod
 from . import captions as captions_mod
 from . import localisation as localisation_mod
 from . import media as media_mod
+from . import paid_attempts
 from . import spend as spend_mod
 from .config import settings
+from .paid_attempts_models import OWNER_LLM_CAPTION_ASR
 from .db import get_session
 from .gdrive_client import GDriveClient
 from .models import Run, RunCaption, RunTailEdit
@@ -332,7 +335,112 @@ def _deliver_with_retry(
     raise last_exc  # type: ignore[misc]
 
 
-def process_caption(caption_id: str, *, gdrive: Optional[GDriveClient] = None) -> None:
+class CaptionFenced(RuntimeError):
+    """This job no longer owns the caption's ASR (AICP-351): write nothing."""
+
+
+def caption_asr_job_timeout_sec() -> int:
+    from .tasks import CAPTION_JOB_TIMEOUT
+
+    return int(CAPTION_JOB_TIMEOUT)
+
+
+def _caption_fence(caption_id: str, token: Optional[str]):
+    """True while this job owns the caption's ASR (locks the caption row: lock
+    order caption -> attempt)."""
+
+    def fence(db) -> bool:
+        cap = db.query(RunCaption).filter(RunCaption.id == caption_id).with_for_update() \
+            .populate_existing().one_or_none()
+        return (cap is not None and token is not None
+                and cap.status == CaptionStatus.transcribing and cap.asr_claim == token)
+
+    return fence
+
+
+def _transcribe_with_attempts(caption_id: str, token: Optional[str], epoch: int,
+                              final_path: str, *, run_id: Optional[str]):
+    """The caption's ASR as §5.2 attempts (at most 3 per epoch, only an unknown
+    outcome retried). Returns ``(transcript, attempt_id)`` with the attempt
+    still ``started`` (accepted by the fenced transcript write); raises
+    :class:`CaptionFenced` or ``LocalisationError``."""
+    from .localisation_jobs import _llm_attempts
+
+    owner = paid_attempts.caption_owner_id(caption_id, epoch)
+    result, aid, err, fenced = _llm_attempts(
+        owner_kind=OWNER_LLM_CAPTION_ASR, job_id=owner, token=token,
+        sessions=get_session, fence=_caption_fence(caption_id, token),
+        max_calls=paid_attempts.TRANSCRIBE_CALLS_PER_ATTEMPT * localisation_mod.transcribe_chain_len(),
+        lease_sec=paid_attempts.llm_lease_sec(caption_asr_job_timeout_sec()),
+        scope=spend_mod.caption_scope(caption_id), kind="transcribe",
+        call=lambda ledger: localisation_mod.transcribe_video(final_path, ledger=ledger),
+        run_id=run_id,
+    )
+    if fenced:
+        raise CaptionFenced(f"caption {caption_id}: ASR claim superseded before the transcript")
+    if err is not None:
+        if err.startswith("interrupted:"):
+            err = (err + " — or replace the ASR with captions from the script "
+                   "(PATCH the caption's lines).")
+        raise localisation_mod.LocalisationError(err)
+    return result, aid
+
+
+def _release_caption_scope(session, caption) -> None:
+    """At a caption's terminal write: release its unused reservation once no
+    ASR attempt of it can still send (AICP-351 §5.2). Never raises."""
+    try:
+        with session.begin_nested():
+            paid_attempts.release_llm_scope_if_idle(
+                session, OWNER_LLM_CAPTION_ASR,
+                paid_attempts.caption_owner_id(caption.id, caption.asr_epoch),
+                spend_mod.caption_scope(caption.id), kind="captions")
+    except Exception:
+        log.exception("caption %s: reservation release failed", caption.id)
+
+
+def asr_reap_decision(session, caption, *, evidence) -> str:
+    """The derived reaper's decision on an orphaned caption in ``transcribing``
+    (caller's transaction; AICP-351 §5.2): ``requeue`` (the ASR claim replaced
+    by a re-dispatch nonce, ``caption.asr_claim = "dispatch:<nonce>"``; the
+    caller enqueues with that nonce after its commit), ``wait`` (its attempt's sender
+    may still run and its lease has not run out) or ``fail`` (the bound is
+    spent: reaped to failed as before)."""
+    from datetime import datetime
+
+    session.refresh(caption, with_for_update=True)
+    owner = paid_attempts.caption_owner_id(caption.id, caption.asr_epoch)
+    now = datetime.utcnow()
+    att = paid_attempts.open_attempt(session, OWNER_LLM_CAPTION_ASR, owner, for_update=True)
+    if att is not None:
+        if paid_attempts.reap_llm_attempt(session, att, now=now, evidence=evidence) is None:
+            return "wait"
+        session.flush()  # the latest-attempt read below must see this decision
+    # Only an UNKNOWN outcome is retried (§5.2): the epoch's latest attempt
+    # must have ended unknown / superseded. A worker that died before its
+    # first call, or after a definite failure, is reaped to failed as before.
+    from .paid_attempts_models import STOPPED, SUPERSEDED, UNKNOWN, PaidSubmitAttempt
+
+    last = session.query(PaidSubmitAttempt).filter(
+        PaidSubmitAttempt.owner_kind == OWNER_LLM_CAPTION_ASR,
+        PaidSubmitAttempt.owner_id == owner,
+    ).order_by(PaidSubmitAttempt.attempt_no.desc()).first()
+    # STOPPED = superseded then acknowledged: its outcome is still unknown.
+    if (last is None or last.status not in (UNKNOWN, SUPERSEDED, STOPPED)
+            or paid_attempts.attempt_count(session, OWNER_LLM_CAPTION_ASR, owner)
+            >= paid_attempts.LLM_MAX_ATTEMPTS):
+        caption.asr_claim = None
+        return "fail"
+    caption.asr_claim = DISPATCH_PREFIX + uuid.uuid4().hex
+    caption.error_message = "worker gone mid-transcription — retried automatically (AICP-351)"
+    return "requeue"
+
+
+DISPATCH_PREFIX = "dispatch:"
+
+
+def process_caption(caption_id: str, *, gdrive: Optional[GDriveClient] = None,
+                    dispatch: Optional[str] = None) -> None:
     """
     Re-transcribe a done Run's delivered result, burn the lines in, deliver.
 
@@ -363,6 +471,22 @@ def process_caption(caption_id: str, *, gdrive: Optional[GDriveClient] = None) -
         if caption is None:
             raise ValueError(f"RunCaption not found: {caption_id}")
 
+        asr_token = None
+        if dispatch is not None:
+            # AICP-351: a reaper re-dispatch runs only while the caption still
+            # carries ITS nonce (taken under the row lock); a stale duplicate
+            # delivery — or one overtaken by an operator Retry — exits untouched.
+            session.refresh(caption, with_for_update=True)
+            if caption.asr_claim != DISPATCH_PREFIX + dispatch:
+                session.rollback()
+                log.warning("process_caption: caption %s re-dispatch %s is stale (claim %r) — "
+                            "not run", caption_id, dispatch, caption.asr_claim)
+                return
+            # Consume the nonce in the SAME transaction as the check: a duplicate
+            # delivery of this dispatch then finds the claim changed and exits.
+            asr_token = uuid.uuid4().hex
+            caption.asr_claim = asr_token
+            session.commit()
         try:
             # Orphan-resume: any non-queued starting status means a prior
             # attempt was interrupted mid-flight — reset to queued before
@@ -394,6 +518,11 @@ def process_caption(caption_id: str, *, gdrive: Optional[GDriveClient] = None) -
                 caption,
                 CaptionStatus.burning if skip_transcribe else CaptionStatus.transcribing,
             )
+            # AICP-351 §5.2: this job's ASR dispatch fence (a fresh token per
+            # entry into `transcribing`; the reaper clears it to re-dispatch).
+            if not skip_transcribe:
+                asr_token = asr_token or uuid.uuid4().hex
+                caption.asr_claim = asr_token
             session.commit()
 
             run: Run = session.get(Run, caption.run_id)
@@ -458,17 +587,32 @@ def process_caption(caption_id: str, *, gdrive: Optional[GDriveClient] = None) -
                         caption.audio_sha256[:12],
                     )
                 else:
-                    transcript = localisation_mod.transcribe_video(
-                        final_path,
-                        spend_scope=spend_mod.caption_scope(caption_id),
+                    # AICP-351 §5.2: bounded, claimed, single-send attempts;
+                    # the transcript write below is fenced by the ASR claim
+                    # AND the attempt (a superseded worker writes nothing).
+                    transcript, asr_attempt = _transcribe_with_attempts(
+                        caption_id, asr_token, int(caption.asr_epoch or 0), final_path,
+                        run_id=run.id,
                     )
                     lines = transcript.get("lines") or []
-
+                    session.refresh(caption, with_for_update=True)
+                    if (caption.status != CaptionStatus.transcribing
+                            or caption.asr_claim != asr_token
+                            or not paid_attempts.finish_llm(session, asr_attempt, "accepted")):
+                        session.rollback()
+                        # Acknowledge the attempt anyway (its last I/O has
+                        # returned): a superseded sender must not stay counted
+                        # active forever (design §9 item 2).
+                        paid_attempts.finish_llm_own_session(asr_attempt, "accepted",
+                                                             sessions=get_session)
+                        raise CaptionFenced(
+                            f"caption {caption_id}: ASR claim superseded — transcript discarded")
                     caption.lines = lines
                     caption.lines_source = LINES_SOURCE_TRANSCRIBE
                     caption.language = (
                         caption.language or run.language or transcript.get("source_language")
                     )
+                caption.asr_claim = None
                 session.commit()
 
                 if not lines:
@@ -567,15 +711,29 @@ def process_caption(caption_id: str, *, gdrive: Optional[GDriveClient] = None) -
             # Clear any stale failure message from a prior attempt.
             caption.error_message = None
             transition(caption, CaptionStatus.done)
+            session.flush()
+            _release_caption_scope(session, caption)
             session.commit()
             log.info(
                 "process_caption done: caption_id=%s total=%.1fs",
                 caption_id, time.monotonic() - t_start,
             )
 
+        except CaptionFenced as exc:
+            # Another dispatch owns this caption's ASR now: write NOTHING (a
+            # failed write here would fail the new owner's job).
+            session.rollback()
+            log.warning("process_caption: %s", exc)
+            return
         except Exception as exc:
             log.exception("process_caption failed: caption_id=%s", caption_id)
+            session.rollback()
             caption = session.get(RunCaption, caption_id)
+            if caption is not None and asr_token is not None and caption.asr_claim not in (
+                    None, asr_token):
+                log.warning("process_caption: caption %s re-dispatched meanwhile — failure "
+                            "not written", caption_id)
+                return
             if caption is not None:
                 if caption.status not in (CaptionStatus.done, CaptionStatus.failed):
                     try:
@@ -583,6 +741,10 @@ def process_caption(caption_id: str, *, gdrive: Optional[GDriveClient] = None) -
                     except Exception:
                         caption.status = CaptionStatus.failed
                 caption.error_message = _truncate_error(exc)
+                if caption.status == CaptionStatus.failed:
+                    caption.asr_claim = None
+                    session.flush()
+                    _release_caption_scope(session, caption)
             try:
                 session.commit()
             except Exception:

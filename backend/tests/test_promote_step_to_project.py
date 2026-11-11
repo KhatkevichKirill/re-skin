@@ -156,6 +156,31 @@ class TestPromoteStep:
         assert p.mute_source is True
         assert p.max_segment_sec == 30.0
 
+    @pytest.mark.parametrize("kind", [None, *KINDS])
+    @pytest.mark.parametrize(
+        "project_type,expected",
+        [("face_swap", False), ("cover_change", True), ("localisation", True)],
+    )
+    def test_mute_source_from_a_muted_localisation_lineage(
+        self, spy_client, SessionFactory, db_session, tmp_path, kind, project_type, expected
+    ):
+        """Every element of a run (the run itself, captions, tail edit,
+        overlay) follows the same rule: a Face changing project starts with
+        "Remove original audio" OFF even when the parent is a muted
+        localisation project; other types keep their behaviour."""
+        client, _ = spy_client
+        project, run = _done_run(
+            db_session, tmp_path, project_type="localisation", mute_source=True
+        )
+        step_id = None if kind is None else _make_step(db_session, tmp_path, kind, run.id).id
+
+        resp = _post(client, run.id, kind, step_id, project_type=project_type)
+        assert resp.status_code == 201, resp.text
+        session = SessionFactory()
+        p = session.get(VideoProject, resp.json()["project_id"])
+        session.close()
+        assert p.mute_source is expected
+
     def test_unusable_parent_cap_is_not_propagated(
         self, spy_client, SessionFactory, db_session, tmp_path
     ):

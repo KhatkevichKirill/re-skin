@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api_overlay import router as api_overlay_router
 from .api_ops import router as api_ops_router, web_router as ops_web_router
+from .api_paid_attempts import router as api_paid_attempts_router
 from .api_assistant import router as api_assistant_router
 from .knowledge.api import router as knowledge_router
 from .knowledge.web import router as knowledge_web_router
@@ -68,6 +69,7 @@ app.include_router(api_segment_fill_router, prefix="/api/v2")  # AICP-358
 app.include_router(api_rebuild_run_router, prefix="/api/v2")  # rebuild images-only runs
 app.include_router(autopilot_router, prefix="/api/v2")  # AICP-363
 app.include_router(api_ops_router, prefix="/api/v2")  # AICP-350 drain status
+app.include_router(api_paid_attempts_router, prefix="/api/v2")  # AICP-351 parked attempts
 
 # Overlay feature REST API (standalone PNG-burn)
 app.include_router(api_overlay_router, prefix="/api/v2/overlays")

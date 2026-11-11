@@ -32,6 +32,17 @@ def main() -> None:
 
     conn = Redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
     logger.info("localise worker: listening on %r (no scheduler)", QUEUE_LOCALISE)
+    # AICP-351 §5.2: the translate jobs' LLM attempts record this container's
+    # boot id as their sender identity (rebuild_paid_call.sender_proof), so a
+    # restarted container proves its old senders gone. Registered BEFORE any
+    # work-horse is forked; never fatal (an attempt without one is released
+    # only by its own write or by host attestation).
+    try:
+        from app.rebuild_paid_call import register_boot
+
+        register_boot(conn)
+    except Exception:
+        logger.exception("boot id registration failed — attempts will need attestation")
     Worker([Queue(QUEUE_LOCALISE, connection=conn)], connection=conn).work()
 
 
